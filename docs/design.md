@@ -137,7 +137,7 @@ Minutas lives in a GitHub repository. `install.sh` installs and updates it: it c
 
 | Step | What it puts in place | Skipped when |
 | --- | --- | --- |
-| System packages | `python3-gi`, `gir1.2-gtk-4.0`, `gir1.2-adw-1`, `gir1.2-ecal-2.0`, `gir1.2-edataserver-1.2`, GStreamer with its PipeWire and Opus plugins, through `apt` | All are installed |
+| System packages | `python3-gi`, `gir1.2-gtk-4.0`, `gir1.2-adw-1`, `gir1.2-ecal-2.0`, `gir1.2-edataserver-1.2`, GStreamer's base and good plugins and `gst-launch-1.0` (Opus, Ogg, and capture through PipeWire's PulseAudio server), `gio`, `secret-tool` and `curl`, through `apt` | All are installed |
 | glab | GitLab's [`glab` snap](https://snapcraft.io/glab), installed or refreshed | `glab` 1.91 or newer is on the PATH |
 | uv | `uv` at the version pinned in the repository, in `~/.local/bin` | That version is there |
 | Speech environment | Parakeet through NeMo, pyannote.audio, Silero VAD and CPU-only PyTorch, synced from `uv.lock` into `~/.local/share/minutas/speech` with a uv-managed Python | `uv.lock` didn't change |
@@ -148,7 +148,7 @@ Minutas lives in a GitHub repository. `install.sh` installs and updates it: it c
 | Devin CLI | Nothing; prints how to install it | It's on the PATH |
 
 - **Output:** every step prints `ok` when nothing needed doing, or what it installed or updated; a second run in a row prints `ok` for all of them.
-- **No needless downloads:** the tool versions, `uv.lock` and the model revisions are pinned in the repository, so a release that doesn't change them downloads nothing; uv's and Hugging Face's caches keep files between runs, and an interrupted model download resumes.
+- **No needless downloads:** the tool versions, `uv.lock` and the model revisions are pinned in the repository, so a release that doesn't change them downloads nothing; uv's and Hugging Face's caches keep files between runs, and an interrupted model download starts that file again without leaving the partial one behind.
 - **Failures:** a failed step stops the script with what went wrong and what to do; running it again carries on from there.
 - **sudo:** asked only when `apt` or `snap` actually has something to install.
 - **Updating:** `minutas update` fetches the repository's tags, checks out the latest release tag and re-runs `install.sh`; on the latest tag it says so and changes nothing.
