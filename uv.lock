@@ -20,6 +20,12 @@ resolution-markers = [
     "python_full_version < '3.13' and sys_platform == 'darwin'",
 ]
 
+[manifest]
+constraints = [
+    { name = "torchaudio", specifier = ">=2.11.1", index = "https://download.pytorch.org/whl/cpu" },
+    { name = "torchcodec", specifier = ">=0.17.0", index = "https://download.pytorch.org/whl/cpu" },
+]
+
 [[package]]
 name = "absl-py"
 version = "2.5.1"
@@ -2593,6 +2599,17 @@ dependencies = [
     { name = "jiwer" },
 ]
 
+[package.optional-dependencies]
+speech = [
+    { name = "nemo-toolkit", extra = ["asr"] },
+    { name = "omegaconf" },
+    { name = "pyannote-audio" },
+    { name = "silero-vad" },
+    { name = "soundfile" },
+    { name = "torch", version = "2.15.0", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform == 'darwin'" },
+    { name = "torch", version = "2.15.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform != 'darwin'" },
+]
+
 [package.dev-dependencies]
 dev = [
     { name = "actionlint-py" },
@@ -2619,20 +2636,18 @@ dev = [
     { name = "typos" },
     { name = "zizmor" },
 ]
-speech = [
-    { name = "nemo-toolkit", extra = ["asr"] },
-    { name = "pyannote-audio" },
-    { name = "silero-vad" },
-    { name = "torch", version = "2.15.0", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform == 'darwin'" },
-    { name = "torch", version = "2.15.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform != 'darwin'" },
-    { name = "torchaudio", version = "2.11.1", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform == 'darwin'" },
-    { name = "torchaudio", version = "2.11.1+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform != 'darwin'" },
-    { name = "torchcodec", version = "0.17.0", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform == 'darwin'" },
-    { name = "torchcodec", version = "0.17.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform != 'darwin'" },
-]
 
 [package.metadata]
-requires-dist = [{ name = "jiwer", specifier = ">=4.0.0" }]
+requires-dist = [
+    { name = "jiwer", specifier = ">=4.0.0" },
+    { name = "nemo-toolkit", extras = ["asr"], marker = "extra == 'speech'", specifier = ">=3.0.0" },
+    { name = "omegaconf", marker = "extra == 'speech'", specifier = ">=2.3.0" },
+    { name = "pyannote-audio", marker = "extra == 'speech'", specifier = ">=4" },
+    { name = "silero-vad", marker = "extra == 'speech'", specifier = ">=6.2.3" },
+    { name = "soundfile", marker = "extra == 'speech'", specifier = ">=0.14.0" },
+    { name = "torch", marker = "extra == 'speech'", specifier = ">=2.15.0", index = "https://download.pytorch.org/whl/cpu" },
+]
+provides-extras = ["speech"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -2659,14 +2674,6 @@ dev = [
     { name = "ty", specifier = ">=0.0.105" },
     { name = "typos", specifier = ">=1.52.2" },
     { name = "zizmor", specifier = ">=1.32.0" },
-]
-speech = [
-    { name = "nemo-toolkit", extras = ["asr"], specifier = ">=3.0.0" },
-    { name = "pyannote-audio", specifier = ">=4" },
-    { name = "silero-vad", specifier = ">=6.2.3" },
-    { name = "torch", specifier = ">=2.15.0", index = "https://download.pytorch.org/whl/cpu" },
-    { name = "torchaudio", specifier = ">=2.11.1", index = "https://download.pytorch.org/whl/cpu" },
-    { name = "torchcodec", specifier = ">=0.17.0", index = "https://download.pytorch.org/whl/cpu" },
 ]
 
 [[package]]

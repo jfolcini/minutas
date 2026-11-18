@@ -302,9 +302,9 @@ The scorer comes first, so every later step is measured; the tool is usable end 
 
 ## Open questions
 
-Everything else is decided; one thing is left to measure.
+Everything is decided.
 
-- [ ] How long does an hour of audio take on the laptop at full precision with phrase boosting? Measured in M2; if it's too slow, compare int8 against the test set before switching.
+- [x] How long does an hour of audio take on the laptop at full precision with phrase boosting? Measured in M2 ([#5](https://github.com/jfolcini/minutas/issues/5)): about a tenth of the recording's length, so full precision stays and int8 isn't needed.
 
 ## Sources
 

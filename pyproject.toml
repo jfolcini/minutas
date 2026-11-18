@@ -10,6 +10,18 @@ dependencies = [
     "jiwer>=4.0.0",
 ]
 
+[project.optional-dependencies]
+# The speech environment install.sh builds, where minutas.transcriber runs. An extra, not a
+# dependency group: deptry reads a group as development tools the package may not import.
+speech = [
+    "nemo-toolkit[asr]>=3.0.0",
+    "omegaconf>=2.3.0",
+    "pyannote-audio>=4",
+    "silero-vad>=6.2.3",
+    "soundfile>=0.14.0",
+    "torch>=2.15.0",
+]
+
 [project.scripts]
 minutas = "minutas.cli:main"
 
@@ -45,16 +57,6 @@ dev = [
     "typos>=1.52.2",
     "zizmor>=1.32.0",
 ]
-# torchaudio and torchcodec come in through pyannote; they are listed so that
-# [tool.uv.sources] takes their CPU builds from the PyTorch index along with torch.
-speech = [
-    "nemo-toolkit[asr]>=3.0.0",
-    "pyannote-audio>=4",
-    "silero-vad>=6.2.3",
-    "torch>=2.15.0",
-    "torchaudio>=2.11.1",
-    "torchcodec>=0.17.0",
-]
 
 [build-system]
 requires = ["uv_build>=0.11.32,<0.14"]
@@ -62,6 +64,9 @@ build-backend = "uv_build"
 
 [tool.uv]
 required-version = ">=0.11.32"
+# pyannote brings these in; naming them here is what makes [tool.uv.sources] take their CPU
+# builds from the PyTorch index along with torch.
+constraint-dependencies = ["torchaudio>=2.11.1", "torchcodec>=0.17.0"]
 
 [[tool.uv.index]]
 name = "pytorch-cpu"
@@ -88,6 +93,9 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
+"src/minutas/transcriber.py" = [
+    "PLC0415", # the speech stack is imported where it is used: the app and the tests lack it
+]
 "tests/**" = [
     "INP001",  # tests are not a package (pytest --import-mode=importlib)
     "PLR2004", # literal expected values are the point of a test
@@ -99,6 +107,10 @@ docstring-code-format = true
 
 [tool.ty.src]
 include = ["src", "tests"]
+
+[tool.ty.analysis]
+# The speech stack lives in install.sh's environment, not in the development one.
+allowed-unresolved-imports = ["nemo.**", "omegaconf", "silero_vad", "soundfile", "torch.**"]
 
 [tool.ty.rules]
 # Every rule, the ones off by default included, is an error. ty checks types;
@@ -130,6 +142,19 @@ pytest_add_cli_args = ["--no-cov", "-o", "beartype_packages="]
 [tool.deptry]
 known_first_party = ["minutas"]
 
+# The speech extra is not installed where deptry runs, so it cannot look these up.
+[tool.deptry.package_module_name_map]
+nemo-toolkit = "nemo"
+omegaconf = "omegaconf"
+pyannote-audio = "pyannote"
+silero-vad = "silero_vad"
+soundfile = "soundfile"
+torch = "torch"
+
+[tool.deptry.per_rule_ignores]
+# Speaker detection (M5) imports pyannote; install.sh already fetches its model.
+DEP002 = ["pyannote-audio"]
+
 [tool.coverage.run]
 branch = true
 source = ["minutas"]
@@ -149,3 +174,9 @@ root_package = "minutas"
 name = "layers"
 type = "layers"
 layers = ["minutas.cli", "(minutas.recorder) | (minutas.worker)", "(minutas.store)"]
+
+[[tool.importlinter.contracts]]
+name = "the transcriber runs in the speech environment and shares no code with the app"
+type = "forbidden"
+source_modules = ["minutas.transcriber"]
+forbidden_modules = ["minutas.*"]
