@@ -204,7 +204,7 @@ The first version supports Devin, GitLab and GNOME on Ubuntu only; GitHub, Claud
 Every recording is a row, newest first; expanding it shows its speakers, its audio files and its four actions, each with its last result: an output link, or why it failed and a Retry button.
 
 - **Name:** the row's name says where it came from (calendar, summary or default) and has Edit; a typed name is kept for good, and the next Publish to Agaric applies it.
-- **Speakers:** the call's speakers are listed under Transcribe once it has run, numbered in the order they first speak; each one is set to a calendar attendee or a custom name, and the transcript is written again with it, so publishing uses the current names.
+- **Speakers:** the call's speakers are listed under Transcribe once it has run, numbered in the order they first speak; each one is set to a calendar attendee or a custom name, and the transcript is written again with it; a transcript already published keeps the names it went with.
 - **Actions:** Transcribe (runs on stop; Run again re-transcribes, for example after the word list changes), Summarize, Publish to Agaric and Publish to GitLab. Every run is kept with its time, status and output link; Publish to Agaric run again adds what the page lacks, such as the summary, and applies a changed name.
 - **Failed runs:** show the reason and the fix, with Retry and Details; see *When an action fails* below.
 - **Summarize:** the menu lists built-in presets, saved presets, then Custom; Custom opens a text box with Save as preset. Saved presets can be deleted, built-in ones can't.

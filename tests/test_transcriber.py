@@ -5,6 +5,7 @@ import itertools
 import json
 import multiprocessing
 import os
+import pickle
 import subprocess
 import sys
 import tracemalloc
@@ -12,6 +13,7 @@ import types
 import weakref
 from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
 from concurrent.futures import Future
+from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 from typing import Self
 
@@ -294,7 +296,7 @@ def test_segments_are_the_turns_with_words_under_their_speakers_keys() -> None:
     ]
 
 
-def test_a_speaker_with_no_words_takes_no_number() -> None:
+def test_a_speaker_with_no_words_keeps_their_number_and_shows_no_segment() -> None:
     paragraphs = [
         (them(1, 2, "SPEAKER_00"), ""),
         (them(4, 9, "SPEAKER_01"), "Dale."),
@@ -302,8 +304,18 @@ def test_a_speaker_with_no_words_takes_no_number() -> None:
     ]
 
     assert segments(paragraphs) == [
-        {"start": 4.0, "end": 9.0, "speaker": "Speaker 1", "text": "Dale."}
+        {"start": 4.0, "end": 9.0, "speaker": "Speaker 2", "text": "Dale."}
     ]
+
+
+def test_new_words_in_a_turn_leave_every_speakers_number_alone() -> None:
+    turns = [them(1, 2, "SPEAKER_00"), them(4, 9, "SPEAKER_01"), them(10, 12, "SPEAKER_02")]
+
+    before = segments(list(zip(turns, ["", "Dale.", "Sí."], strict=True)))
+    after = segments(list(zip(turns, ["Eh.", "Dale.", "Sí."], strict=True)))
+
+    assert [segment["speaker"] for segment in before] == ["Speaker 2", "Speaker 3"]
+    assert [segment["speaker"] for segment in after] == ["Speaker 1", "Speaker 2", "Speaker 3"]
 
 
 def test_words_are_one_phrase_per_line_without_blank_lines(tmp_path: Path) -> None:
@@ -452,8 +464,8 @@ SPOKEN = {
     "mic.opus": {(20, 24): "CI is green since this morning.", (60, 64): "Dale."},
     "call.opus": {(4, 8): "", (12, 16): "", (28, 40): "", (44, 52): ""},
 }
-# Whom pyannote hears on the call. SPEAKER_00 says nothing Parakeet makes words of, and the
-# last stretch is two people's.
+# Whom pyannote hears on the call. SPEAKER_00 says nothing Parakeet makes words of, yet keeps
+# the number of their first turn; the last stretch is two people's.
 HEARD = [
     (4.0, 16.0, "SPEAKER_01"),
     (28.0, 40.0, "SPEAKER_00"),
@@ -469,7 +481,7 @@ TURNS = {
 SEGMENTS = [
     {"start": 4.0, "end": 16.0, "speaker": "Speaker 1", "text": "Arrancamos con el release."},
     {"start": 20.0, "end": 24.0, "speaker": "Me", "text": "CI is green since this morning."},
-    {"start": 44.0, "end": 48.0, "speaker": "Speaker 2", "text": "Sí, dale."},
+    {"start": 44.0, "end": 48.0, "speaker": "Speaker 3", "text": "Sí, dale."},
     {"start": 48.0, "end": 52.0, "speaker": "Speaker 1", "text": "Perfecto."},
     {"start": 60.0, "end": 64.0, "speaker": "Me", "text": "Dale."},
 ]
@@ -844,6 +856,52 @@ def test_pyannote_hears_the_whole_call_read_once(
     assert stack.whole_reads == [("call.opus", "float32")]
     assert [(run["samples"], run["batched"], run["sample_rate"]) for run in stack.diarizations] == [
         (68 * SECOND, True, 16000)
+    ]
+
+
+def test_speaker_detection_killed_at_the_memory_limit_says_so(
+    home: Path,
+    stack: FakeSpeechStack,
+    recording: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    install_models(home)
+
+    def killed(_work: Callable[..., object], *_arguments: object) -> Future[object]:
+        broken: Future[object] = Future()
+        broken.set_exception(BrokenProcessPool("A process was terminated abruptly"))
+        return broken
+
+    monkeypatch.setattr(stack, "submit", killed)
+
+    assert main([str(recording)]) == 1
+
+    assert capsys.readouterr().err == "Speaker detection ran out of its memory limit\n"
+    assert not (recording / "transcript.json").exists()
+    assert stack.restored == []
+
+
+def test_diarize_reaches_its_own_process_by_name() -> None:
+    # A spawned process is sent the function as its module and name: a closure never arrives.
+    sent = pickle.dumps(transcriber.diarize)
+
+    assert pickle.loads(sent) is transcriber.diarize  # noqa: S301 - pickled on the line above
+
+
+def test_a_sliver_a_speaker_change_cuts_off_a_stretch_is_not_transcribed(
+    home: Path, stack: FakeSpeechStack, recording: Path
+) -> None:
+    install_models(home)
+    stack.spoken = {"mic.opus": {}, "call.opus": {(4, 12): ""}}
+    # The change falls half-way through their pause, 50 ms before the stretch ends.
+    stack.heard = [(4.0, 11.9, "SPEAKER_00"), (12.0, 16.0, "SPEAKER_01")]
+
+    assert main([str(recording)]) == 0
+
+    assert stack.reads == [("call.opus", 4 * SECOND, 191_200, "float32")]
+    assert transcript(recording) == [
+        {"start": 4.0, "end": 11.95, "speaker": "Speaker 1", "text": "Palabra."}
     ]
 
 

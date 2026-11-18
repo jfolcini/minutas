@@ -31,6 +31,7 @@ import sys
 import tempfile
 from collections.abc import Callable, Iterable, Sequence, Sized
 from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TypedDict
@@ -55,6 +56,10 @@ BOOSTING_WEIGHT = 1.0
 
 class TranscriberError(Exception):
     """Its message is the one line a person acts on."""
+
+
+# The worker says the same of the transcriber when the limit kills it instead.
+DIARIZATION_KILLED = "Speaker detection ran out of its memory limit"
 
 
 @dataclass(frozen=True)
@@ -130,10 +135,14 @@ def number_speakers(speakers: Iterable[str]) -> dict[str, str]:
     return keys
 
 
-def segments(paragraphs: Iterable[tuple[Turn, str]]) -> list[Segment]:
-    """One segment per turn that has words; a speaker without any takes no number."""
+def segments(paragraphs: Sequence[tuple[Turn, str]]) -> list[Segment]:
+    """One segment per turn that has words, the call's speakers numbered by their first turn.
+
+    Numbered by their words instead, a turn that Run again's new words turn from nothing into
+    "Eh." would move every later speaker's name onto someone else's lines.
+    """
+    keys = number_speakers(turn.speaker for turn, _ in paragraphs)
     spoken = [(turn, text.strip()) for turn, text in paragraphs if text.strip()]
-    keys = number_speakers(turn.speaker for turn, _ in spoken)
     return [
         Segment(
             start=round(turn.start / SAMPLE_RATE, 3),
@@ -293,13 +302,20 @@ def transcribe(folder: Path, words: Sequence[str]) -> list[Segment]:
     if on_the_call:
         # In a process of its own: what pyannote took, its libraries included, goes back whole
         # when it ends. Started afresh, since this one already runs torch's threads.
-        with ProcessPoolExecutor(1, mp_context=multiprocessing.get_context("spawn")) as apart:
-            heard = apart.submit(diarize, pipeline, folder / CALL).result()
+        try:
+            with ProcessPoolExecutor(1, mp_context=multiprocessing.get_context("spawn")) as apart:
+                heard = apart.submit(diarize, pipeline, folder / CALL).result()
+        except BrokenProcessPool:
+            # At the memory limit the kernel kills the biggest process: pyannote's, not this one.
+            raise TranscriberError(DIARIZATION_KILLED) from None
         speech += assign_speakers(on_the_call, heard)
-    turns = merge_turns(speech)
+    # A cut at a speaker change can leave a sliver of a stretch, too short to hold a word.
+    turns = [
+        turn for turn in merge_turns(speech) if turn.end - turn.start >= SHORTEST_SPEECH_SAMPLES
+    ]
     if not turns:
         return []
-    return segments(zip(turns, recognize(weights, folder, turns, words), strict=True))
+    return segments(list(zip(turns, recognize(weights, folder, turns, words), strict=True)))
 
 
 def main(argv: Sequence[str] | None = None) -> int:
