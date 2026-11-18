@@ -20,7 +20,7 @@ fmt:
 
 # Type-check.
 typecheck:
-    uv run mypy
+    uv run ty check
 
 # Every hook over the whole tree: CI's lint job.
 lint:

@@ -99,9 +99,9 @@ stages = ["pre-commit"]
 # Whole program: a type error's answer for one file depends on the others.
 # WHY: type errors reaching CI
 [[repos.hooks]]
-id = "mypy"
-name = "mypy (strict)"
-entry = "uv run --frozen mypy"
+id = "ty"
+name = "ty (every rule an error)"
+entry = "uv run --frozen ty check"
 language = "system"
 types_or = ["python", "pyi", "toml"]
 pass_filenames = false

@@ -6,7 +6,7 @@ Read [AGENTS.md](AGENTS.md) and [docs/design.md](docs/design.md). The design's D
 
 ## Bootstrap
 
-You need [uv](https://docs.astral.sh/uv/) and git. uv installs the Python the project pins (`.python-version`) and every development tool: ruff, mypy, pytest, prek and the hook tools are dev dependencies pinned by `uv.lock`.
+You need [uv](https://docs.astral.sh/uv/) and git. uv installs the Python the project pins (`.python-version`) and every development tool: ruff, ty, pytest, prek and the hook tools are dev dependencies pinned by `uv.lock`.
 
 ```bash
 git clone https://github.com/jfolcini/minutas
@@ -26,10 +26,10 @@ The [`justfile`](justfile) wraps the commands below (`just --list`). Nothing nee
 | Run the tests with coverage | `uv run pytest` |
 | Lint, fixing what can be fixed | `uv run ruff check --fix` |
 | Format | `uv run ruff format` |
-| Type-check | `uv run mypy` |
+| Type-check | `uv run ty check` |
 | Every hook over the whole tree (CI's lint job) | `uv run prek run --all-files` |
 
-- **At commit**, the hooks fix whitespace, formatting and fixable lint findings in place and abort the commit once: re-stage and commit again. They also run mypy, typos, the Markdown, shell and workflow linters, and gitleaks.
+- **At commit**, the hooks fix whitespace, formatting and fixable lint findings in place and abort the commit once: re-stage and commit again. They also run ty, typos, the Markdown, shell and workflow linters, and gitleaks.
 - **At push**, the hooks run the test suite with its coverage floor and `pip-audit` over `uv.lock`, and refuse a direct push to `main`.
 - **CI** runs the same hooks (`.github/workflows/_validate.yml`), the tests, and a link check over the Markdown.
 

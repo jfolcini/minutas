@@ -14,7 +14,7 @@ Read this section first. It outranks everything below it.
 - **Climb the ladder before writing.** Stop at the first rung that holds: it does not need to exist; the codebase already does it; the standard library or the platform does it; an installed dependency does it; one plain line does it; only then the minimum that works.
 - **Lazy about the solution, never about reading.** Read the code you touch and trace the real path before picking a rung.
 - **Lazy, not negligent.** Trust-boundary validation, data-loss handling (a recording is never lost), security, and a test shown red are the floor under the ladder, not rungs on it.
-- **Work and code earn their keep.** A guard, test, abstraction, rule, comment or issue exists because it prevents a real problem someone hit. A rule an existing linter provides (ruff, mypy) may be turned on preventively when it encodes a best practice and its hits are real; turning it on means burning its infractions down to zero in the same PR.
+- **Work and code earn their keep.** A guard, test, abstraction, rule, comment or issue exists because it prevents a real problem someone hit. A rule an existing linter provides (ruff, ty) may be turned on preventively when it encodes a best practice and its hits are real; turning it on means burning its infractions down to zero in the same PR.
 - **Do not engineer for speculative situations.** "Could happen" is not a defect. Threat model: one user on their own desktop ([SECURITY.md](SECURITY.md)).
 - **No gold-plating.** No scope creep, no refactor-because-we-were-here, no helper for a one-off, no option nobody asked for.
 - **Reviews judge impact.** A finding needs a concrete failure and a named victim. Otherwise fix it if trivial, or let it go. Over-building is a finding too.
@@ -39,7 +39,7 @@ Read this section first. It outranks everything below it.
 | `src/minutas/` | The package (src layout; `minutas` console script in `cli.py`) |
 | `tests/` | pytest suite, one `test_<module>.py` per module |
 | `scripts/` | Shell helpers the hooks call |
-| `pyproject.toml` | Metadata, dependencies, and the ruff, mypy, pytest and coverage config |
+| `pyproject.toml` | Metadata, dependencies, and the ruff, ty, pytest and coverage config |
 | `prek.toml` | The git hooks, which CI also runs |
 
 ## Build Commands
@@ -53,7 +53,7 @@ uv run pytest                    # tests + branch coverage, fails under the floo
 uv run pytest tests/test_cli.py -k version   # one test
 uv run ruff check --fix          # lint
 uv run ruff format               # format
-uv run mypy                      # strict type-check
+uv run ty check                  # type-check, every rule an error
 uv run prek run --all-files      # every hook over the tree: CI's lint job
 ```
 
@@ -64,7 +64,7 @@ Add a dependency with `uv add <pkg>` (`--dev` for a tool) and commit `pyproject.
 Strict settings are project-wide; do not weaken them.
 
 - ruff: `select = ["ALL"]`; the ignore list in `pyproject.toml` is the deliberate exceptions, each with its reason. Prefer fixing over `# noqa`; a `# noqa` names the rule and says why.
-- mypy: `strict = true` over `src` and `tests`. No `Any` leaking from our own code; `# type: ignore[<code>]` only at an untyped third-party boundary.
+- ty: every rule is an error (`[tool.ty.rules] all = "error"`) over `src` and `tests`; ruff's `ANN` rules require the annotations ty checks. A suppression is `# ty: ignore[<rule>]`, only at an untyped third-party boundary.
 - Python: 3.12 is the floor (Ubuntu 24.04's system Python, which the GTK window will run under).
 
 ## Testing
@@ -87,7 +87,7 @@ A test that cannot fail covers nothing. Before calling a test done, break the co
 
 ### Guards earn their keep
 
-Add a hook or a custom check only when the defect has occurred, nothing already catches it (ruff, mypy, a test, another hook), it is fast, and it fails loudly with file, line and fix. Every hook carries a `# WHY:` line directly above it. A guard that never fires on a real defect is a liability: delete it.
+Add a hook or a custom check only when the defect has occurred, nothing already catches it (ruff, ty, a test, another hook), it is fast, and it fails loudly with file, line and fix. Every hook carries a `# WHY:` line directly above it. A guard that never fires on a real defect is a liability: delete it.
 
 ## Releases
 

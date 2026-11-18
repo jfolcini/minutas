@@ -21,7 +21,6 @@ Issues = "https://github.com/jfolcini/minutas/issues"
 dev = [
     "actionlint-py>=1.7.12.25",
     "conventional-pre-commit>=4.5.0",
-    "mypy>=2.4.1",
     "pip-audit>=2.10.1",
     "prek>=0.5.11",
     "pytest>=9.2.0",
@@ -30,6 +29,7 @@ dev = [
     "rumdl>=0.3.4",
     "shellcheck-py>=0.11.0.1",
     "shfmt-py>=4.2.0",
+    "ty>=0.0.105",
     "typos>=1.52.2",
     "zizmor>=1.32.0",
 ]
@@ -65,10 +65,13 @@ ignore = [
 [tool.ruff.format]
 docstring-code-format = true
 
-[tool.mypy]
-strict = true
-warn_unreachable = true
-files = ["src", "tests"]
+[tool.ty.src]
+include = ["src", "tests"]
+
+[tool.ty.rules]
+# Every rule, the ones off by default included, is an error. ty checks types;
+# ruff's ANN rules require the annotations it checks.
+all = "error"
 
 [tool.pytest.ini_options]
 minversion = "9.0"

@@ -1,6 +1,6 @@
 name: CodeQL
 
-# Weekly, not per PR: ruff (with its bandit rules), mypy and zizmor gate PRs.
+# Weekly, not per PR: ruff (with its bandit rules), ty and zizmor gate PRs.
 on:
   schedule:
     - cron: '0 6 * * 2'
