@@ -131,6 +131,33 @@ One Python program does the work and draws the history window; the GNOME extensi
 | Publish to GitLab | Asks for a link; uploads transcript and audio, posts the summary with their links as a comment or a new issue titled `<name> <YYYY-MM-DD>`; output the comment or issue link; enabled once a summary exists | `glab api` (uploads, issues, notes) |
 | Scorer | Word error rate on the test set for every change | `jiwer` |
 
+### Between the extension and the program
+
+The extension holds no state of its own: it runs three commands and watches one file. `DATA` is `${XDG_DATA_HOME:-~/.local/share}/minutas`, and each recording is a folder `DATA/recordings/<id>`, named by its local start time (`2026-11-18T13-05-42`).
+
+| Command | Does |
+| --- | --- |
+| `minutas record start` | Starts the recorder unit, waits until both tracks receive audio, and prints `{"id": …, "started_at": …}`; exits 1 with the reason on stderr when already recording or no audio arrives |
+| `minutas record stop` | Stops the recorder; exits 1 when nothing is recording |
+| `minutas history [--recording <id>]` | Opens the history window; until it exists, the recordings folder or that recording's folder |
+
+The program rewrites `DATA/status.json` atomically after every change, and the extension reads it with a file monitor:
+
+```json
+{
+  "version": 1,
+  "recording": {"id": "2026-11-18T13-05-42", "started_at": "2026-11-18T13:05:42+01:00"},
+  "recent": [
+    {"id": "2026-11-18T12-00-03", "name": "Meeting", "started_at": "2026-11-18T12:00:03+01:00",
+     "duration_seconds": 1834, "incomplete": false, "transcribe": "succeeded", "failed": []}
+  ]
+}
+```
+
+- `recording` is the active recording, or `null`; `recent` holds the last five others, newest first.
+- `incomplete` means the recorder died before Stop; what it captured is kept.
+- `transcribe` is the latest Transcribe run's status, or `null`; `failed` lists the actions whose latest run failed: `transcribe`, `summarize`, `publish_agaric`, `publish_gitlab`.
+
 ## Installing and updating
 
 Minutas lives in a GitHub repository. `install.sh` installs and updates it: it can run any number of times, and each step only acts when something is missing or changed.
