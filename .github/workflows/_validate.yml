@@ -126,7 +126,8 @@ jobs:
 
   extension:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    # Room for a cold package cache on a slow mirror; a warm run takes about a minute.
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: extension
@@ -140,15 +141,34 @@ jobs:
           node-version: 24
           package-manager-cache: false
 
+      # The runners' Ubuntu mirror has taken longer than this job's old limit to serve GNOME
+      # Shell's packages, so the downloaded .debs are kept in the Actions cache, keyed on the
+      # runner image, and saved right after the install so a later failing step can't lose them.
+      - name: Restore the GNOME Shell packages
+        id: apt-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/apt-archives
+          key: extension-apt-${{ env.ImageOS }}-${{ env.ImageVersion }}-gnome-shell-gjs-dbus-daemon
+
       # Ubuntu 24.04 ships GNOME Shell 46 and gjs 1.80, the oldest the extension supports.
-      # A mirror that stalls mid-download hung this step until the job timed out;
-      # the timeout and retries make apt fetch the file again instead.
+      # The timeout and retries make apt fetch a stalled file again instead of hanging.
       - name: Install GNOME Shell and gjs
         run: |
+          mkdir -p ~/apt-archives/partial
           sudo apt-get update -q
           sudo apt-get install -y -q --no-install-recommends \
+            -o Dir::Cache::Archives="$HOME/apt-archives" -o APT::Keep-Downloaded-Packages=true \
             -o Acquire::http::Timeout=30 -o Acquire::Retries=3 \
             gnome-shell gjs dbus-daemon
+          sudo chown -R "$(id -u):$(id -g)" ~/apt-archives
+
+      - name: Save the GNOME Shell packages
+        if: steps.apt-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/apt-archives
+          key: ${{ steps.apt-cache.outputs.cache-primary-key }}
 
       - name: Install the Node tools
         run: npm ci
