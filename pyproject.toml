@@ -115,7 +115,14 @@ include = ["src", "tests"]
 
 [tool.ty.analysis]
 # The speech stack lives in install.sh's environment, not in the development one.
-allowed-unresolved-imports = ["nemo.**", "omegaconf", "silero_vad", "soundfile", "torch.**"]
+allowed-unresolved-imports = [
+    "nemo.**",
+    "omegaconf",
+    "pyannote.**",
+    "silero_vad",
+    "soundfile",
+    "torch.**",
+]
 
 [tool.ty.rules]
 # Every rule, the ones off by default included, is an error. ty checks types;
@@ -164,8 +171,6 @@ torch = "torch"
 # PyGObject is Ubuntu's own (python3-gi, an install.sh system package): the window runs on the
 # system Python, and PyPI's builds only against GTK's development headers.
 DEP001 = ["gi"]
-# Speaker detection (M5) imports pyannote; install.sh already fetches its model.
-DEP002 = ["pyannote-audio"]
 
 [tool.coverage.run]
 branch = true

@@ -35,6 +35,14 @@ class TrackView:
 
 
 @dataclass(frozen=True)
+class SpeakerView:
+    # The transcriber's key for the speaker: "Speaker 1".
+    key: str
+    # The name a person gave it; empty until one does.
+    name: str
+
+
+@dataclass(frozen=True)
 class ActionView:
     """An action's last result and its button, the next step."""
 
@@ -66,6 +74,9 @@ class RowView:
     # Why Delete now cannot be pressed; empty when it can.
     delete_disabled: str
     transcribe: ActionView
+    # The call's speakers, in the order they first speak, and the names offered for them.
+    speakers: tuple[SpeakerView, ...]
+    attendees: tuple[str, ...]
     publish: ActionView
 
 
@@ -206,5 +217,10 @@ def row(
         delete_disabled=no_audio
         or ("" if transcribing is None else "Cancel the transcription first"),
         transcribe=transcribe,
+        speakers=tuple(
+            SpeakerView(key=key, name="" if name == key else name)
+            for key, name in recording.get("speakers", {}).items()
+        ),
+        attendees=tuple(recording.get("attendees", [])),
         publish=publish,
     )

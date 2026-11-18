@@ -1,10 +1,15 @@
-"""One folder per recording under DATA/recordings, and DATA/status.json for the extension."""
+"""One folder per recording under DATA/recordings, and DATA/status.json for the extension.
+
+A recording's transcript.md is written here, from the segments the transcriber leaves in
+transcript.json and the names the call's speakers have in recording.json, every time either
+changes: whatever reads it, publishing included, reads the current names.
+"""
 
 import fcntl
 import json
 import os
 import tempfile
-from collections.abc import Generator
+from collections.abc import Generator, Iterable, Mapping
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -12,6 +17,10 @@ from typing import NotRequired, TypedDict, cast
 
 RECORDING_ID_FORMAT = "%Y-%m-%dT%H-%M-%S"
 TRACKS = ("mic.opus", "call.opus")
+SEGMENTS = "transcript.json"
+TRANSCRIPT = "transcript.md"
+# The transcriber's key for the mic track's speaker, who has no other name.
+ME = "Me"
 ACTIONS = ("transcribe", "summarize", "publish_agaric", "publish_gitlab")
 RECENT_IN_STATUS = 5
 # Where a name can come from, lowest first: a name gives way only to one from as high a source.
@@ -28,6 +37,20 @@ class Recording(TypedDict):
     name_source: str
     # The calendar event's, for naming the speakers and boosting their names.
     attendees: NotRequired[list[str]]
+    # The name of each speaker on the call, by the transcriber's key for it ("Speaker 1"),
+    # which is also its name until a person gives it one.
+    speakers: NotRequired[dict[str, str]]
+
+
+class Segment(TypedDict):
+    """What one speaker said in one turn, as the transcriber leaves it."""
+
+    # Seconds into the recording.
+    start: float
+    end: float
+    # A key: ME, or one of the call's speakers.
+    speaker: str
+    text: str
 
 
 class Choice(TypedDict):
@@ -82,16 +105,19 @@ def is_recording(recording_id: str) -> bool:
     return folder.parent == recordings_dir() and (folder / "recording.json").is_file()
 
 
-def write_json(path: Path, value: object) -> None:
+def write_text(path: Path, text: str) -> None:
     with tempfile.NamedTemporaryFile(
-        "w", dir=path.parent, prefix=f".{path.name}.", suffix=".tmp", delete=False
+        "w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}.", suffix=".tmp", delete=False
     ) as tmp:
-        json.dump(value, tmp, indent=2)
-        tmp.write("\n")
+        tmp.write(text)
         tmp.flush()
         # A rename that reaches the disk before the data leaves an empty file after a power cut.
         os.fsync(tmp.fileno())
     Path(tmp.name).replace(path)
+
+
+def write_json(path: Path, value: object) -> None:
+    write_text(path, json.dumps(value, indent=2) + "\n")
 
 
 def create_recording(started: datetime) -> Recording:
@@ -193,6 +219,56 @@ def set_calendar_event(recording_id: str, name: str, attendees: list[str]) -> No
         recording["name"], recording["name_source"] = chosen_name(recording, name, "calendar")
         recording["attendees"] = attendees
         write_json(recording_dir(recording_id) / "recording.json", recording)
+
+
+def format_timestamp(seconds: float) -> str:
+    whole = int(seconds)
+    return f"{whole // 3600:02}:{whole // 60 % 60:02}:{whole % 60:02}"
+
+
+def format_transcript(segments: Iterable[Segment], names: Mapping[str, str]) -> str:
+    """One paragraph per segment, under its speaker's name (design § Agaric contract)."""
+    return "\n".join(
+        f"[{format_timestamp(segment['start'])}] "
+        f"**{names.get(segment['speaker'], segment['speaker'])}:** {segment['text']}\n"
+        for segment in segments
+    )
+
+
+def load_segments(recording_id: str) -> list[Segment]:
+    segments = (recording_dir(recording_id) / SEGMENTS).read_text(encoding="utf-8")
+    return cast("list[Segment]", json.loads(segments))
+
+
+def save_speakers(recording: Recording, segments: list[Segment], speakers: dict[str, str]) -> None:
+    """Keeps the speakers' names and writes the transcript under them; inside the lock."""
+    recording["speakers"] = speakers
+    folder = recording_dir(recording["id"])
+    write_json(folder / "recording.json", recording)
+    write_text(folder / TRANSCRIPT, format_transcript(segments, speakers))
+
+
+def write_transcript(recording_id: str) -> None:
+    """Writes transcript.md for the segments the transcriber left.
+
+    The call's speakers in them are the recording's from now on: one heard before keeps the name
+    it had, so transcribing again loses no name.
+    """
+    with lock():
+        recording = load_recording(recording_id)
+        segments = load_segments(recording_id)
+        named = recording.get("speakers", {})
+        heard = dict.fromkeys(
+            segment["speaker"] for segment in segments if segment["speaker"] != ME
+        )
+        save_speakers(recording, segments, {key: named.get(key, key) for key in heard})
+
+
+def set_speaker_name(recording_id: str, speaker: str, name: str) -> None:
+    with lock():
+        recording = load_recording(recording_id)
+        speakers = {**recording.get("speakers", {}), speaker: name}
+        save_speakers(recording, load_segments(recording_id), speakers)
 
 
 def delete_tracks(recording_id: str) -> None:

@@ -9,6 +9,7 @@ from minutas import store
 from minutas.window_view import (
     ActionView,
     RowView,
+    SpeakerView,
     TrackView,
     clean_name,
     duration,
@@ -71,8 +72,35 @@ def test_a_stopped_recording_shows_its_name_its_tracks_and_what_can_run() -> Non
         ),
         delete_disabled="",
         transcribe=action("Not run yet", "Transcribe"),
+        speakers=(),
+        attendees=(),
         publish=action("Not published", "Publish"),
     )
+
+
+def test_a_transcribed_recording_lists_the_calls_speakers_and_who_they_may_be() -> None:
+    view = shown(
+        [run("transcribe", "succeeded", output="transcript.md")],
+        {
+            "attendees": ["Ana Díaz", "bob.ruiz"],
+            "speakers": {"Speaker 1": "Speaker 1", "Speaker 2": "Ana Díaz", "Speaker 3": "Caro"},
+        },
+    )
+
+    # In the order they first speak; one nobody named yet has no name to show.
+    assert view.speakers == (
+        SpeakerView(key="Speaker 1", name=""),
+        SpeakerView(key="Speaker 2", name="Ana Díaz"),
+        SpeakerView(key="Speaker 3", name="Caro"),
+    )
+    assert view.attendees == ("Ana Díaz", "bob.ruiz")
+
+
+def test_a_meeting_without_a_calendar_event_has_speakers_and_no_attendees() -> None:
+    view = shown([], {"speakers": {"Speaker 1": "Speaker 1"}})
+
+    assert view.speakers == (SpeakerView(key="Speaker 1", name=""),)
+    assert view.attendees == ()
 
 
 def test_a_typed_name_says_so() -> None:

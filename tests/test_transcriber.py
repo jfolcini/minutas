@@ -2,13 +2,16 @@ import builtins
 import contextlib
 import gc
 import itertools
+import json
+import multiprocessing
 import os
 import subprocess
 import sys
 import tracemalloc
 import types
 import weakref
-from collections.abc import Generator, Iterator, Mapping, Sequence
+from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
+from concurrent.futures import Future
 from pathlib import Path
 from typing import Self
 
@@ -16,31 +19,42 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
+from minutas import transcriber
 from minutas.transcriber import (
     MAX_TURN_SAMPLES,
     SAMPLE_RATE,
+    Segment,
     TranscriberError,
     Turn,
-    format_timestamp,
-    format_transcript,
+    VoicedOnly,
+    assign_speakers,
     main,
     merge_turns,
     model_file,
+    number_speakers,
     read_words,
+    segments,
     write_transcript,
 )
 
 SECOND = SAMPLE_RATE
 REVISION = "541d1f99c6b0c3cd0b11a95167540bb8edefd82b"
-MODEL_NOT_FOUND = "Parakeet model not found in ~/.cache/minutas/models; run install.sh"
+PARAKEET = "nvidia/parakeet-tdt-0.6b-v3"
+PYANNOTE = "pyannote/speaker-diarization-community-1"
+PARAKEET_NOT_FOUND = f"{PARAKEET} not found in ~/.cache/minutas/models; run install.sh"
+PYANNOTE_NOT_FOUND = f"{PYANNOTE} not found in ~/.cache/minutas/models; run install.sh"
 
 
 def me(start: float, end: float) -> Turn:
     return Turn("Me", int(start * SECOND), int(end * SECOND))
 
 
-def them(start: float, end: float) -> Turn:
-    return Turn("Speaker 1", int(start * SECOND), int(end * SECOND))
+def them(start: float, end: float, speaker: str = "SPEAKER_00") -> Turn:
+    return Turn(speaker, int(start * SECOND), int(end * SECOND))
+
+
+def span(start: float, end: float) -> tuple[int, int]:
+    return int(start * SECOND), int(end * SECOND)
 
 
 def test_a_speaker_who_goes_on_after_a_pause_keeps_the_turn() -> None:
@@ -95,7 +109,7 @@ def track_segments(draw: st.DrawFn, speaker: str) -> list[Turn]:
     return segments
 
 
-@given(track_segments("Me"), track_segments("Speaker 1"))
+@given(track_segments("Me"), track_segments("SPEAKER_00"))
 def test_merging_keeps_every_segment_in_order_within_the_limit(
     mic: list[Turn], call: list[Turn]
 ) -> None:
@@ -117,44 +131,179 @@ def test_merging_keeps_every_segment_in_order_within_the_limit(
             assert later.end - earlier.start > MAX_TURN_SAMPLES
 
 
-@pytest.mark.parametrize(
-    ("samples", "stamp"),
-    [
-        (0, "00:00:00"),
-        (4 * SECOND, "00:00:04"),
-        (5 * SECOND - 1, "00:00:04"),
-        (59 * SECOND, "00:00:59"),
-        (60 * SECOND, "00:01:00"),
-        (3599 * SECOND, "00:59:59"),
-        (3661 * SECOND, "01:01:01"),
-        (100 * 3600 * SECOND, "100:00:00"),
-    ],
-)
-def test_timestamp_is_whole_seconds_from_the_recording_start(samples: int, stamp: str) -> None:
-    assert format_timestamp(samples) == stamp
+def test_each_stretch_of_the_call_is_whose_pyannote_says_it_is() -> None:
+    heard = [them(4, 16, "SPEAKER_01"), them(28, 40, "SPEAKER_00")]
 
-
-def test_transcript_is_one_paragraph_per_turn_with_a_blank_line_between() -> None:
-    paragraphs = [
-        (them(4, 9), "Arrancamos con el release."),
-        (me(11, 14), "CI is green since this morning."),
+    assert assign_speakers([span(4, 8), span(12, 16), span(28, 40)], heard) == [
+        them(4, 8, "SPEAKER_01"),
+        them(12, 16, "SPEAKER_01"),
+        them(28, 40, "SPEAKER_00"),
     ]
 
-    assert format_transcript(paragraphs) == (
-        "[00:00:04] **Speaker 1:** Arrancamos con el release.\n"
-        "\n"
-        "[00:00:11] **Me:** CI is green since this morning.\n"
-    )
+
+def test_a_stretch_two_people_share_is_cut_half_way_through_the_pause_between_them() -> None:
+    heard = [them(44, 47, "SPEAKER_02"), them(49, 52, "SPEAKER_01")]
+
+    assert assign_speakers([span(44, 52)], heard) == [
+        them(44, 48, "SPEAKER_02"),
+        them(48, 52, "SPEAKER_01"),
+    ]
 
 
-def test_transcript_leaves_out_turns_with_no_words() -> None:
-    paragraphs = [(me(1, 2), ""), (them(4, 9), " Dale. "), (me(11, 14), "  ")]
+def test_a_stretch_is_cut_once_for_every_change_of_speaker_in_it() -> None:
+    heard = [them(0, 4, "A"), them(4, 6, "B"), them(6, 7, "B"), them(8, 20, "A"), them(30, 31, "C")]
 
-    assert format_transcript(paragraphs) == "[00:00:04] **Speaker 1:** Dale.\n"
+    assert assign_speakers([span(1, 19)], heard) == [
+        them(1, 4, "A"),
+        them(4, 7.5, "B"),
+        them(7.5, 19, "A"),
+    ]
 
 
-def test_transcript_of_nothing_is_empty() -> None:
-    assert format_transcript([]) == ""
+def test_a_stretch_that_starts_and_ends_where_the_speaker_changes_is_not_cut() -> None:
+    heard = [them(0, 4, "A"), them(4, 8, "B"), them(8, 12, "A")]
+
+    # A cut there would leave a turn with no audio in it.
+    assert assign_speakers([span(4, 8)], heard) == [them(4, 8, "B")]
+
+
+def test_speech_pyannote_missed_goes_to_whoever_it_heard_nearest_in_time() -> None:
+    heard = [them(10, 20, "A"), them(40, 50, "B")]
+
+    assert assign_speakers([span(1, 2), span(28, 29), span(31, 32), span(58, 59)], heard) == [
+        them(1, 2, "A"),
+        them(28, 29, "A"),
+        them(31, 32, "B"),
+        them(58, 59, "B"),
+    ]
+
+
+def test_a_moment_of_someone_else_between_two_speakers_cuts_nothing() -> None:
+    quarter_second = SECOND // 4
+    blip = Turn("B", 20 * SECOND, 20 * SECOND + quarter_second - 1)
+    word = Turn("B", 20 * SECOND, 20 * SECOND + quarter_second)
+
+    assert assign_speakers([span(10, 21)], [them(10, 20, "A"), blip, them(22, 30, "C")]) == [
+        them(10, 21, "A")
+    ]
+    assert assign_speakers([span(10, 21)], [them(10, 20, "A"), word, them(22, 30, "C")]) == [
+        them(10, 20, "A"),
+        them(20, 21, "B"),
+    ]
+
+
+def test_a_call_on_which_pyannote_heard_nobody_has_one_speaker() -> None:
+    nobody = [Turn("A", 3 * SECOND, 3 * SECOND + 100)]
+
+    for heard in ([], nobody):
+        assert assign_speakers([span(1, 2), span(5, 9)], heard) == [
+            Turn("unheard", SECOND, 2 * SECOND),
+            Turn("unheard", 5 * SECOND, 9 * SECOND),
+        ]
+
+
+def distance(turn: Turn, sample: int) -> int:
+    return max(turn.start - sample, sample - turn.end, 0)
+
+
+@given(
+    track_segments("call"),
+    track_segments("call"),
+    st.lists(st.sampled_from(["A", "B", "C"]), min_size=8, max_size=8),
+)
+def test_assigning_tiles_every_stretch_with_the_nearest_speakers(
+    speech: list[Turn], heard_spans: list[Turn], speakers: list[str]
+) -> None:
+    spans = [(turn.start, turn.end) for turn in speech]
+    heard = [
+        Turn(speaker, turn.start, turn.end)
+        for turn, speaker in zip(heard_spans, speakers, strict=False)
+        if turn.end - turn.start >= SECOND // 4
+    ]
+    blips = [
+        Turn("blip", turn.start, turn.end)
+        for turn in heard_spans
+        if turn.end - turn.start < SECOND // 4
+    ]
+
+    turns = assign_speakers(spans, [*heard, *blips])
+
+    tiles: list[Turn] = []
+    for start, end in spans:
+        pieces = [turn for turn in turns if start <= turn.start and turn.end <= end]
+        tiles += pieces
+        assert [pieces[0].start, *(piece.end for piece in pieces)] == [
+            start,
+            *(piece.start for piece in pieces[1:]),
+            end,
+        ]
+        assert all(piece.start < piece.end for piece in pieces)
+        assert all(
+            earlier.speaker != later.speaker for earlier, later in itertools.pairwise(pieces)
+        )
+        for piece in pieces:
+            assert piece.speaker in ({turn.speaker for turn in heard} or {"unheard"})
+            for sample in (piece.start, piece.end - 1):
+                nearest = min((distance(turn, sample) for turn in heard), default=0)
+                own = [distance(turn, sample) for turn in heard if turn.speaker == piece.speaker]
+                # Within a sample: half a pause of an odd length is not a whole number of them.
+                assert min(own, default=0) <= nearest + 1
+    assert tiles == turns
+
+
+def test_the_calls_speakers_are_numbered_in_the_order_they_first_speak() -> None:
+    speakers = ["SPEAKER_02", "Me", "SPEAKER_00", "SPEAKER_02", "Me", "SPEAKER_01"]
+
+    assert number_speakers(speakers) == {
+        "Me": "Me",
+        "SPEAKER_02": "Speaker 1",
+        "SPEAKER_00": "Speaker 2",
+        "SPEAKER_01": "Speaker 3",
+    }
+
+
+def test_with_nobody_on_the_call_there_is_only_me() -> None:
+    assert number_speakers(["Me", "Me"]) == {"Me": "Me"}
+    assert number_speakers([]) == {"Me": "Me"}
+
+
+@given(st.lists(st.sampled_from(["Me", "A", "B", "C", "D"])))
+def test_numbering_counts_up_from_one_by_first_appearance(speakers: list[str]) -> None:
+    numbered = number_speakers(speakers)
+
+    on_the_call = list(dict.fromkeys(speaker for speaker in speakers if speaker != "Me"))
+    assert numbered == {
+        "Me": "Me",
+        **{speaker: f"Speaker {place}" for place, speaker in enumerate(on_the_call, 1)},
+    }
+
+
+def test_segments_are_the_turns_with_words_under_their_speakers_keys() -> None:
+    paragraphs = [
+        (them(4, 9, "SPEAKER_01"), " Arrancamos con el release. "),
+        (Turn("Me", 11 * SECOND, 225_001), "CI is green since this morning."),
+        (them(15, 16, "SPEAKER_00"), "Dale."),
+        (them(17, 18, "SPEAKER_01"), "Sí."),
+    ]
+
+    assert segments(paragraphs) == [
+        {"start": 4.0, "end": 9.0, "speaker": "Speaker 1", "text": "Arrancamos con el release."},
+        {"start": 11.0, "end": 14.063, "speaker": "Me", "text": "CI is green since this morning."},
+        {"start": 15.0, "end": 16.0, "speaker": "Speaker 2", "text": "Dale."},
+        {"start": 17.0, "end": 18.0, "speaker": "Speaker 1", "text": "Sí."},
+    ]
+
+
+def test_a_speaker_with_no_words_takes_no_number() -> None:
+    paragraphs = [
+        (them(1, 2, "SPEAKER_00"), ""),
+        (them(4, 9, "SPEAKER_01"), "Dale."),
+        (me(11, 14), "  "),
+    ]
+
+    assert segments(paragraphs) == [
+        {"start": 4.0, "end": 9.0, "speaker": "Speaker 1", "text": "Dale."}
+    ]
 
 
 def test_words_are_one_phrase_per_line_without_blank_lines(tmp_path: Path) -> None:
@@ -179,94 +328,121 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return tmp_path
 
 
-def install_model(home: Path, revisions: str | None = None) -> Path:
+def install_models(home: Path, revisions: str | None = None) -> tuple[Path, Path]:
+    """Parakeet's weights and pyannote's pipeline, as install.sh leaves them."""
     models = home / ".cache" / "minutas" / "models"
-    snapshot = models / "models--nvidia--parakeet-tdt-0.6b-v3" / "snapshots" / REVISION
-    snapshot.mkdir(parents=True)
-    (snapshot / "parakeet-tdt-0.6b-v3.nemo").write_bytes(b"weights")
+    parakeet = models / "models--nvidia--parakeet-tdt-0.6b-v3" / "snapshots" / REVISION
+    parakeet.mkdir(parents=True)
+    (parakeet / "parakeet-tdt-0.6b-v3.nemo").write_bytes(b"weights")
     pyannote = models / "models--pyannote--speaker-diarization-community-1/snapshots/3533c8cf"
     pyannote.mkdir(parents=True)
     (pyannote / "config.yaml").write_bytes(b"pipeline")
     (models / "revisions").write_text(
         revisions
         if revisions is not None
-        else "pyannote/speaker-diarization-community-1 3533c8cf *\n"
-        f"nvidia/parakeet-tdt-0.6b-v3 {REVISION} *.nemo\n",
+        else f"{PYANNOTE} 3533c8cf *\n{PARAKEET} {REVISION} *.nemo\n",
         encoding="utf-8",
     )
-    return snapshot / "parakeet-tdt-0.6b-v3.nemo"
+    return parakeet / "parakeet-tdt-0.6b-v3.nemo", pyannote / "config.yaml"
 
 
-def test_model_file_is_the_pinned_revision_install_sh_fetched(home: Path) -> None:
-    installed = install_model(home)
+def test_model_file_is_in_the_pinned_revision_install_sh_fetched(home: Path) -> None:
+    weights, pipeline = install_models(home)
 
-    assert model_file() == installed
+    assert model_file(PARAKEET, "*.nemo") == weights
+    assert model_file(PYANNOTE, "config.yaml") == pipeline
 
 
 def test_model_file_ignores_a_snapshot_of_another_revision(home: Path) -> None:
-    install_model(home, revisions="nvidia/parakeet-tdt-0.6b-v3 0000000 *.nemo\n")
+    install_models(home, revisions=f"{PARAKEET} 0000000 *.nemo\n")
 
     with pytest.raises(TranscriberError) as error:
-        model_file()
+        model_file(PARAKEET, "*.nemo")
 
-    assert str(error.value) == MODEL_NOT_FOUND
+    assert str(error.value) == PARAKEET_NOT_FOUND
 
 
-@pytest.mark.parametrize("revisions", ["", "pyannote/speaker-diarization-community-1 3533c8cf *\n"])
-def test_model_file_needs_parakeet_among_the_fetched_revisions(home: Path, revisions: str) -> None:
-    install_model(home, revisions=revisions)
+@pytest.mark.parametrize("revisions", ["", f"{PYANNOTE} 3533c8cf *\n"])
+def test_model_file_needs_the_model_among_the_fetched_revisions(home: Path, revisions: str) -> None:
+    install_models(home, revisions=revisions)
 
     with pytest.raises(TranscriberError) as error:
-        model_file()
+        model_file(PARAKEET, "*.nemo")
 
-    assert str(error.value) == MODEL_NOT_FOUND
+    assert str(error.value) == PARAKEET_NOT_FOUND
 
 
 def test_model_file_needs_install_sh_to_have_finished(home: Path) -> None:
-    (install_model(home).parents[3] / "revisions").unlink()
+    (install_models(home)[0].parents[3] / "revisions").unlink()
 
     with pytest.raises(TranscriberError) as error:
-        model_file()
+        model_file(PARAKEET, "*.nemo")
 
-    assert str(error.value) == MODEL_NOT_FOUND
+    assert str(error.value) == PARAKEET_NOT_FOUND
 
 
-def test_model_file_needs_the_weights(home: Path) -> None:
-    install_model(home).unlink()
+def test_model_file_needs_the_file(home: Path) -> None:
+    weights, pipeline = install_models(home)
+    weights.unlink()
+    pipeline.unlink()
 
     with pytest.raises(TranscriberError) as error:
-        model_file()
+        model_file(PARAKEET, "*.nemo")
+    assert str(error.value) == PARAKEET_NOT_FOUND
 
-    assert str(error.value) == MODEL_NOT_FOUND
+    with pytest.raises(TranscriberError) as error:
+        model_file(PYANNOTE, "config.yaml")
+    assert str(error.value) == PYANNOTE_NOT_FOUND
+
+
+SAID: list[Segment] = [
+    {"start": 4.0, "end": 9.0, "speaker": "Speaker 1", "text": "Año nuevo."},
+    {"start": 11.0, "end": 14.5, "speaker": "Me", "text": "Dale."},
+]
+SAID_AS_WRITTEN = """[
+  {
+    "start": 4.0,
+    "end": 9.0,
+    "speaker": "Speaker 1",
+    "text": "Año nuevo."
+  },
+  {
+    "start": 11.0,
+    "end": 14.5,
+    "speaker": "Me",
+    "text": "Dale."
+  }
+]
+"""
 
 
 def test_transcript_replaces_the_old_one_and_leaves_nothing_else(tmp_path: Path) -> None:
-    (tmp_path / "transcript.md").write_text("old\n", encoding="utf-8")
+    (tmp_path / "transcript.json").write_text("[]\n", encoding="utf-8")
 
-    write_transcript(tmp_path, "[00:00:04] **Me:** Año nuevo.\n")
+    write_transcript(tmp_path, SAID)
 
-    assert (tmp_path / "transcript.md").read_text(encoding="utf-8") == (
-        "[00:00:04] **Me:** Año nuevo.\n"
-    )
-    assert [path.name for path in tmp_path.iterdir()] == ["transcript.md"]
+    assert (tmp_path / "transcript.json").read_text(encoding="utf-8") == SAID_AS_WRITTEN
+    assert [path.name for path in tmp_path.iterdir()] == ["transcript.json"]
 
 
 def test_transcript_arrives_whole_by_a_rename_inside_the_folder(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    (tmp_path / "transcript.md").write_text("old\n", encoding="utf-8")
+    (tmp_path / "transcript.json").write_text("[]\n", encoding="utf-8")
     renames = []
     rename = Path.replace
 
     def watched(source: Path, target: Path) -> Path:
-        renames.append((source.parent, source.read_text(), target.name, target.read_text()))
+        renames.append(
+            (source.parent, source.read_text("utf-8"), target.name, target.read_text("utf-8"))
+        )
         return rename(source, target)
 
     monkeypatch.setattr(Path, "replace", watched)
 
-    write_transcript(tmp_path, "new\n")
+    write_transcript(tmp_path, SAID)
 
-    assert renames == [(tmp_path, "new\n", "transcript.md", "old\n")]
+    assert renames == [(tmp_path, SAID_AS_WRITTEN, "transcript.json", "[]\n")]
 
 
 WINDOW = 512
@@ -274,31 +450,114 @@ WINDOW = 512
 # multiple of four seconds, which is a whole number of VAD windows.
 SPOKEN = {
     "mic.opus": {(20, 24): "CI is green since this morning.", (60, 64): "Dale."},
-    "call.opus": {(4, 8): "Arrancamos", (12, 16): "con el release.", (28, 40): ""},
+    "call.opus": {(4, 8): "", (12, 16): "", (28, 40): "", (44, 52): ""},
 }
-# The call's first two stretches make one turn.
-SPOKEN["call.opus"][4, 16] = "Arrancamos con el release."
-TRANSCRIPT = (
-    "[00:00:04] **Speaker 1:** Arrancamos con el release.\n"
-    "\n"
-    "[00:00:20] **Me:** CI is green since this morning.\n"
-    "\n"
-    "[00:01:00] **Me:** Dale.\n"
-)
+# Whom pyannote hears on the call. SPEAKER_00 says nothing Parakeet makes words of, and the
+# last stretch is two people's.
+HEARD = [
+    (4.0, 16.0, "SPEAKER_01"),
+    (28.0, 40.0, "SPEAKER_00"),
+    (44.0, 47.0, "SPEAKER_02"),
+    (49.0, 52.0, "SPEAKER_01"),
+]
+# What Parakeet makes of the turns that are not one stretch: two merged, and one cut in two.
+TURNS = {
+    ("call.opus", 4, 16): "Arrancamos con el release.",
+    ("call.opus", 44, 48): "Sí, dale.",
+    ("call.opus", 48, 52): "Perfecto.",
+}
+SEGMENTS = [
+    {"start": 4.0, "end": 16.0, "speaker": "Speaker 1", "text": "Arrancamos con el release."},
+    {"start": 20.0, "end": 24.0, "speaker": "Me", "text": "CI is green since this morning."},
+    {"start": 44.0, "end": 48.0, "speaker": "Speaker 2", "text": "Sí, dale."},
+    {"start": 48.0, "end": 52.0, "speaker": "Speaker 1", "text": "Perfecto."},
+    {"start": 60.0, "end": 64.0, "speaker": "Me", "text": "Dale."},
+]
+MINE = [SEGMENTS[1], SEGMENTS[4]]
+# The masks pyannote asks an embedding for: of a chunk nobody speaks in, and of one someone does.
+SILENT, VOICED = [[0.0, 0.0, 0.0]], [[0.0, 1.0, 1.0]]
+
+
+def transcript(folder: Path) -> object:
+    return json.loads((folder / "transcript.json").read_text(encoding="utf-8"))
 
 
 class Checkpoint:
     itself: "Checkpoint"
 
 
+class CallAudio:
+    """A whole track in memory, as heavy as the real one: four bytes a sample."""
+
+    def __init__(self, frames: int) -> None:
+        self.samples = bytearray(4 * frames)
+        self.batched = False
+
+    def __getitem__(self, _: None) -> Self:
+        self.batched = True
+        return self
+
+
+class FakeEmbedding:
+    """Stands in for pyannote's embedding model, which the pipeline asks about itself too."""
+
+    dimension = 256
+    min_num_samples = 400
+
+    def __init__(self) -> None:
+        self.embedded: list[tuple[str, list[list[float]]]] = []
+
+    def __call__(self, waveforms: str, *, masks: list[list[float]]) -> str:
+        self.embedded.append((waveforms, masks))
+        return f"embeddings of {waveforms}"
+
+
+class FakePipeline:
+    """Stands in for pyannote's pipeline."""
+
+    def __init__(self, stack: "FakeSpeechStack") -> None:
+        self.stack = stack
+        self.embedding_batch_size = 32
+        self.model = FakeEmbedding()
+        self._embedding: Callable[..., object] = self.model
+
+    def __call__(self, file: dict[str, object]) -> types.SimpleNamespace:
+        waveform = file["waveform"]
+        assert isinstance(waveform, CallAudio)
+        # As pyannote does: it asks what the model needs, then for every chunk's embeddings.
+        needs = getattr(self._embedding, "min_num_samples", None)
+        self.stack.diarizations.append(
+            {
+                "samples": len(waveform.samples) // 4,
+                "batched": waveform.batched,
+                "sample_rate": file["sample_rate"],
+                "embedding_batch_size": self.embedding_batch_size,
+                "min_num_samples": needs,
+                "embeddings": [
+                    self._embedding("chunk 1", masks=SILENT),
+                    self._embedding("chunk 2", masks=VOICED),
+                ],
+                "embedded": self.model.embedded,
+                "in a process of its own": self.stack.apart,
+            }
+        )
+        return types.SimpleNamespace(exclusive_speaker_diarization=self)
+
+    def itertracks(self, *, yield_label: bool) -> Iterator[tuple[types.SimpleNamespace, str, str]]:
+        assert yield_label
+        for start, end, speaker in self.stack.heard:
+            yield types.SimpleNamespace(start=start, end=end), "A", speaker
+
+
 class FakeSpeechStack:
-    """Stands in for soundfile, torch, silero_vad, NeMo and omegaconf; records how they are used.
+    """Stands in for soundfile, torch, silero_vad, pyannote, NeMo and omegaconf; records their use.
 
     A track's audio is its speech itself: a window is all ones where someone speaks.
     """
 
     def __init__(self) -> None:
         self.spoken: dict[str, dict[tuple[int, int], str]] = SPOKEN
+        self.heard: list[tuple[float, float, str]] = HEARD
         self.seconds = 68
         self.opened: list[str] = []
         self.block_settings: list[dict[str, object]] = []
@@ -308,7 +567,15 @@ class FakeSpeechStack:
         self.inference_in_vad: set[bool] = set()
         self.vad_rates: set[int] = set()
         self.vad_settings: list[dict[str, object]] = []
+        self.telemetry_when_pyannote_is_imported: str | None = None
+        self.pipelines: list[Path] = []
+        self.processes: list[tuple[int, str]] = []
+        self.apart = False
+        self.diarizations: list[dict[str, object]] = []
+        self.whole_reads: list[tuple[str, str]] = []
         self.restored: list[tuple[str, str]] = []
+        self.apart_when_parakeet_loads: bool | None = None
+        self.traced_when_parakeet_loads = 0
         self.load_config = types.SimpleNamespace(mmap=False)
         self.checkpoint_mapped = False
         self.checkpoint: weakref.ref[Checkpoint] = weakref.ref(Checkpoint())
@@ -330,7 +597,8 @@ class FakeSpeechStack:
         return self
 
     def __exit__(self, *_: object) -> None:
-        self.opened.append("closed")
+        self.opened.append("process ended" if self.apart else "closed")
+        self.apart = False
 
     @property
     def frames(self) -> int:
@@ -343,7 +611,12 @@ class FakeSpeechStack:
             speaking = any(first * SECOND <= start < last * SECOND for first, last in speech)
             yield [float(speaking)] * WINDOW
 
-    def read(self, track: Path, *, start: int, stop: int, dtype: str) -> tuple[list[float], int]:
+    def read(
+        self, track: Path, *, start: int | None = None, stop: int | None = None, dtype: str
+    ) -> tuple[list[float] | CallAudio, int]:
+        if start is None or stop is None:
+            self.whole_reads.append((track.name, dtype))
+            return CallAudio(self.frames), SAMPLE_RATE
         self.reads.append((track.name, start, stop, dtype))
         self.clip = [1.0] * (stop - start)
         return self.clip, SAMPLE_RATE
@@ -390,10 +663,35 @@ class FakeSpeechStack:
                 spans[-1]["end"] += WINDOW
         return spans
 
+    # concurrent.futures: the work is done here, between the start and the end of "its process"
+
+    def process_pool(
+        self, max_workers: int, *, mp_context: multiprocessing.context.BaseContext
+    ) -> "FakeSpeechStack":
+        self.processes.append((max_workers, mp_context.get_start_method()))
+        self.opened.append("process started")
+        self.apart = True
+        return self
+
+    def submit(self, work: Callable[..., object], *arguments: object) -> Future[object]:
+        done: Future[object] = Future()
+        done.set_result(work(*arguments))
+        return done
+
+    # pyannote
+
+    def from_pretrained(self, checkpoint: Path) -> FakePipeline:
+        self.pipelines.append(checkpoint)
+        return FakePipeline(self)
+
     # NeMo
 
     def restore_from(self, path: str, *, map_location: str) -> "FakeSpeechStack":
         self.restored.append((path, map_location))
+        self.apart_when_parakeet_loads = self.apart
+        if tracemalloc.is_tracing():
+            self.traced_when_parakeet_loads, _ = tracemalloc.get_traced_memory()
+            tracemalloc.reset_peak()
         self.checkpoint_mapped = self.load_config.mmap
         # As NeMo does, the checkpoint outlives the call in a reference cycle.
         checkpoint = Checkpoint()
@@ -423,13 +721,17 @@ class FakeSpeechStack:
                 "checkpoint in memory": self.checkpoint() is not None,
             }
         )
-        text = self.spoken[track].get((start // SECOND, stop // SECOND), "Palabra.")
+        turn = (start // SECOND, stop // SECOND)
+        text = TURNS.get((track, *turn)) or self.spoken[track].get(turn, "Palabra.")
         return [types.SimpleNamespace(text=text)]
 
 
 @pytest.fixture
 def stack(monkeypatch: pytest.MonkeyPatch) -> FakeSpeechStack:
     fake = FakeSpeechStack()
+    # The transcriber changes it in this very process; as it was again when the test ends.
+    monkeypatch.setenv("PYANNOTE_METRICS_ENABLED", "true")
+    monkeypatch.setattr(transcriber, "ProcessPoolExecutor", fake.process_pool)
     serialization = types.SimpleNamespace(config=types.SimpleNamespace(load=fake.load_config))
     modules = {
         "soundfile": {"SoundFile": fake.sound_file, "read": fake.read},
@@ -438,6 +740,9 @@ def stack(monkeypatch: pytest.MonkeyPatch) -> FakeSpeechStack:
             "set_num_threads": fake.set_num_threads,
             "inference_mode": fake.inference_mode,
             "from_numpy": lambda window: window,
+            "any": lambda masks: any(any(mask) for mask in masks),
+            "full": lambda shape, value: types.SimpleNamespace(numpy=lambda: (shape, value)),
+            "nan": "not a number",
             "backends": types.SimpleNamespace(
                 mkldnn=types.SimpleNamespace(flags=fake.mkldnn_flags)
             ),
@@ -449,6 +754,8 @@ def stack(monkeypatch: pytest.MonkeyPatch) -> FakeSpeechStack:
             "load_silero_vad": fake.load_silero_vad,
             "get_speech_timestamps_from_probs": fake.get_speech_timestamps_from_probs,
         },
+        "pyannote": {},
+        "pyannote.audio": {"Pipeline": types.SimpleNamespace(from_pretrained=fake.from_pretrained)},
         "nemo": {},
         "nemo.collections": {},
         "nemo.collections.asr": {},
@@ -473,6 +780,9 @@ def stack(monkeypatch: pytest.MonkeyPatch) -> FakeSpeechStack:
         if name == "silero_vad":
             # As the real one does, on import: load_silero_vad is too late to read torch's count.
             fake.torch_threads = 1
+        if name == "pyannote.audio":
+            # The real one reads it on import, and reports its runs unless it says not to.
+            fake.telemetry_when_pyannote_is_imported = os.environ.get("PYANNOTE_METRICS_ENABLED")
         return real_import(name, module_globals, module_locals, fromlist, level)
 
     monkeypatch.setattr(builtins, "__import__", importing)
@@ -491,19 +801,20 @@ def recording(tmp_path: Path) -> Path:
 def test_main_writes_who_said_what_in_time_order(
     home: Path, stack: FakeSpeechStack, recording: Path
 ) -> None:
-    installed = install_model(home)
+    weights, pipeline = install_models(home)
 
     assert main([str(recording)]) == 0
 
-    assert (recording / "transcript.md").read_text(encoding="utf-8") == TRANSCRIPT
-    assert stack.restored == [(str(installed), "cpu")]
+    assert transcript(recording) == SEGMENTS
+    assert stack.pipelines == [pipeline]
+    assert stack.restored == [(str(weights), "cpu")]
     assert stack.decoding_changes == []
 
 
 def test_speech_is_found_window_by_window_in_pieces_within_the_turn_limit(
     home: Path, stack: FakeSpeechStack, recording: Path
 ) -> None:
-    install_model(home)
+    install_models(home)
 
     main([str(recording)])
 
@@ -523,10 +834,86 @@ def test_speech_is_found_window_by_window_in_pieces_within_the_turn_limit(
     )
 
 
+def test_pyannote_hears_the_whole_call_read_once(
+    home: Path, stack: FakeSpeechStack, recording: Path
+) -> None:
+    install_models(home)
+
+    main([str(recording)])
+
+    assert stack.whole_reads == [("call.opus", "float32")]
+    assert [(run["samples"], run["batched"], run["sample_rate"]) for run in stack.diarizations] == [
+        (68 * SECOND, True, 16000)
+    ]
+
+
+def test_pyannote_is_told_not_to_report_the_run_before_it_is_imported(
+    home: Path, stack: FakeSpeechStack, recording: Path
+) -> None:
+    install_models(home)
+
+    main([str(recording)])
+
+    assert stack.telemetry_when_pyannote_is_imported == "false"
+
+
+def test_pyannote_embeds_one_voice_at_a_time_and_only_where_someone_speaks(
+    home: Path, stack: FakeSpeechStack, recording: Path
+) -> None:
+    install_models(home)
+
+    main([str(recording)])
+
+    (run,) = stack.diarizations
+    assert run["embedding_batch_size"] == 1
+    assert run["embedded"] == [("chunk 2", VOICED)]
+    assert run["embeddings"] == [((1, 256), "not a number"), "embeddings of chunk 2"]
+    assert run["min_num_samples"] == 400
+
+
+def test_a_silent_batch_gets_one_empty_embedding_for_each_of_its_masks(
+    stack: FakeSpeechStack,
+) -> None:
+    model = FakeEmbedding()
+
+    embeddings = VoicedOnly(model)("chunk", masks=[*SILENT, *SILENT])
+
+    assert embeddings == ((2, 256), "not a number")
+    assert model.embedded == []
+    assert stack.diarizations == []
+
+
+@pytest.mark.usefixtures("stack")
+def test_a_batch_in_which_anyone_speaks_goes_to_the_model_whole() -> None:
+    model = FakeEmbedding()
+
+    embeddings = VoicedOnly(model)("chunk", masks=[*SILENT, *VOICED])
+
+    assert embeddings == "embeddings of chunk"
+    assert model.embedded == [("chunk", [*SILENT, *VOICED])]
+
+
+def test_pyannote_runs_in_a_process_of_its_own_that_ends_before_parakeet_loads(
+    home: Path, stack: FakeSpeechStack, recording: Path
+) -> None:
+    install_models(home)
+
+    main([str(recording)])
+
+    # One process, started afresh: forked, it would share the threads torch already runs here.
+    assert stack.processes == [(1, "spawn")]
+    assert [run["in a process of its own"] for run in stack.diarizations] == [True]
+    assert stack.opened == [
+        *("mic.opus", "closed", "call.opus", "closed"),
+        *("process started", "process ended"),
+    ]
+    assert stack.apart_when_parakeet_loads is False
+
+
 def test_parakeet_hears_one_turn_at_a_time_read_from_its_track(
     home: Path, stack: FakeSpeechStack, recording: Path
 ) -> None:
-    install_model(home)
+    install_models(home)
 
     main([str(recording)])
 
@@ -534,46 +921,48 @@ def test_parakeet_hears_one_turn_at_a_time_read_from_its_track(
         ("call.opus", 4 * SECOND, 16 * SECOND, "float32"),
         ("mic.opus", 20 * SECOND, 24 * SECOND, "float32"),
         ("call.opus", 28 * SECOND, 40 * SECOND, "float32"),
+        ("call.opus", 44 * SECOND, 48 * SECOND, "float32"),
+        ("call.opus", 48 * SECOND, 52 * SECOND, "float32"),
         ("mic.opus", 60 * SECOND, 64 * SECOND, "float32"),
     ]
-    assert [(run["batch_size"], run["verbose"]) for run in stack.transcriptions] == [(1, False)] * 4
+    assert [(run["batch_size"], run["verbose"]) for run in stack.transcriptions] == [(1, False)] * 6
 
 
 def test_parakeet_gets_the_threads_torch_had_before_silero_took_them(
     home: Path, stack: FakeSpeechStack, recording: Path
 ) -> None:
-    install_model(home)
+    install_models(home)
 
     main([str(recording)])
 
-    assert [run["threads"] for run in stack.transcriptions] == [8] * 4
+    assert [run["threads"] for run in stack.transcriptions] == [8] * 6
 
 
 def test_the_models_run_without_recording_gradients(
     home: Path, stack: FakeSpeechStack, recording: Path
 ) -> None:
-    install_model(home)
+    install_models(home)
 
     main([str(recording)])
 
     assert stack.inference_in_vad == {True}
-    assert [run["inference"] for run in stack.transcriptions] == [True] * 4
+    assert [run["inference"] for run in stack.transcriptions] == [True] * 6
 
 
 def test_parakeet_runs_without_the_cache_that_grows_with_every_new_turn_length(
     home: Path, stack: FakeSpeechStack, recording: Path
 ) -> None:
-    install_model(home)
+    install_models(home)
 
     main([str(recording)])
 
-    assert [run["oneDNN"] for run in stack.transcriptions] == [False] * 4
+    assert [run["oneDNN"] for run in stack.transcriptions] == [False] * 6
 
 
 def test_the_checkpoint_is_mapped_and_gone_before_the_first_turn(
     home: Path, stack: FakeSpeechStack, recording: Path
 ) -> None:
-    install_model(home)
+    install_models(home)
     # Only the transcriber's own collection may free the checkpoint.
     gc.disable()
 
@@ -583,35 +972,40 @@ def test_the_checkpoint_is_mapped_and_gone_before_the_first_turn(
         gc.enable()
 
     assert stack.checkpoint_mapped is True
-    assert [run["checkpoint in memory"] for run in stack.transcriptions] == [False] * 4
+    assert [run["checkpoint in memory"] for run in stack.transcriptions] == [False] * 6
 
 
 def test_memory_follows_the_longest_turn_not_the_length_of_the_meeting(
     home: Path, stack: FakeSpeechStack, recording: Path
 ) -> None:
-    install_model(home)
+    install_models(home)
     # Ten minutes in which each side speaks four seconds out of every sixteen. The fake audio
-    # is 38 MB of turns and 154 MB of VAD windows; one turn is half a megabyte.
+    # is 38 MB of turns, 154 MB of VAD windows and 38 MB of call for pyannote, which takes it
+    # whole; one turn is half a megabyte.
     stack.seconds = 600
     stack.spoken = {
         "mic.opus": {(start, start + 4): "Dale." for start in range(0, 600, 16)},
         "call.opus": {(start, start + 4): "Sí." for start in range(8, 600, 16)},
     }
+    stack.heard = [(0.0, 600.0, "SPEAKER_00")]
     tracemalloc.start()
     before, _ = tracemalloc.get_traced_memory()
 
     try:
         assert main([str(recording)]) == 0
+        # Since Parakeet loaded: the fake starts the peak again there.
         _, peak = tracemalloc.get_traced_memory()
     finally:
         tracemalloc.stop()
 
     assert len(stack.reads) == 75
+    # Nothing of the call pyannote heard came back from its process.
+    assert stack.traced_when_parakeet_loads - before < 1_000_000
     assert peak - before < 4_000_000
 
 
 def test_main_boosts_the_words(home: Path, stack: FakeSpeechStack, recording: Path) -> None:
-    install_model(home)
+    install_models(home)
     words = home / "glossary.txt"
     words.write_text("Añatuya\ndeploy\n", encoding="utf-8")
 
@@ -628,7 +1022,7 @@ def test_main_boosts_the_words(home: Path, stack: FakeSpeechStack, recording: Pa
 def test_an_empty_words_file_boosts_nothing(
     home: Path, stack: FakeSpeechStack, recording: Path
 ) -> None:
-    install_model(home)
+    install_models(home)
     words = home / "glossary.txt"
     words.write_text("\n", encoding="utf-8")
 
@@ -641,51 +1035,74 @@ def test_an_empty_words_file_boosts_nothing(
 def test_a_recording_without_speech_gets_an_empty_transcript_and_loads_no_model(
     home: Path, stack: FakeSpeechStack, recording: Path
 ) -> None:
-    install_model(home)
+    install_models(home)
     stack.spoken = {"mic.opus": {}, "call.opus": {}}
 
     assert main([str(recording)]) == 0
 
-    assert (recording / "transcript.md").read_text(encoding="utf-8") == ""
+    assert (recording / "transcript.json").read_text(encoding="utf-8") == "[]\n"
+    assert stack.processes == []
     assert stack.restored == []
+
+
+def test_a_call_nobody_speaks_on_is_not_given_to_pyannote(
+    home: Path, stack: FakeSpeechStack, recording: Path
+) -> None:
+    install_models(home)
+    stack.spoken = {"mic.opus": SPOKEN["mic.opus"], "call.opus": {}}
+
+    assert main([str(recording)]) == 0
+
+    assert transcript(recording) == MINE
+    assert stack.processes == []
+    assert stack.whole_reads == []
 
 
 def test_a_track_that_is_missing_or_empty_is_left_out(
     home: Path, stack: FakeSpeechStack, recording: Path
 ) -> None:
-    install_model(home)
+    install_models(home)
     (recording / "call.opus").unlink()
-    transcript = "[00:00:20] **Me:** CI is green since this morning.\n\n[00:01:00] **Me:** Dale.\n"
 
     assert main([str(recording)]) == 0
-    assert (recording / "transcript.md").read_text(encoding="utf-8") == transcript
+    assert transcript(recording) == MINE
 
     (recording / "call.opus").write_bytes(b"")
 
     assert main([str(recording)]) == 0
-    assert (recording / "transcript.md").read_text(encoding="utf-8") == transcript
+    assert transcript(recording) == MINE
     assert stack.opened == ["mic.opus", "closed"] * 2
+    assert stack.processes == []
 
 
 def test_a_folder_without_tracks_gets_an_empty_transcript(
     home: Path, stack: FakeSpeechStack, tmp_path: Path
 ) -> None:
-    install_model(home)
+    install_models(home)
 
     assert main([str(tmp_path)]) == 0
 
-    assert (tmp_path / "transcript.md").read_text(encoding="utf-8") == ""
+    assert transcript(tmp_path) == []
     assert stack.opened == []
 
 
-@pytest.mark.usefixtures("home")
-def test_a_missing_model_fails_with_the_fix_and_writes_no_transcript(
-    stack: FakeSpeechStack, recording: Path, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize("missing", [PARAKEET, PYANNOTE])
+def test_a_missing_model_fails_with_the_fix_before_any_work(
+    home: Path,
+    stack: FakeSpeechStack,
+    recording: Path,
+    capsys: pytest.CaptureFixture[str],
+    missing: str,
 ) -> None:
+    weights, pipeline = install_models(home)
+    (weights if missing == PARAKEET else pipeline).unlink()
+
     assert main([str(recording)]) == 1
 
-    assert capsys.readouterr().err.splitlines()[-1] == MODEL_NOT_FOUND
-    assert not (recording / "transcript.md").exists()
+    assert capsys.readouterr().err.splitlines()[-1] == (
+        f"{missing} not found in ~/.cache/minutas/models; run install.sh"
+    )
+    assert not (recording / "transcript.json").exists()
     assert stack.opened == []
 
 
@@ -701,5 +1118,5 @@ def test_the_command_ends_its_stderr_with_the_reason_when_the_model_is_missing(
     )
 
     assert result.returncode == 1
-    assert result.stderr.splitlines()[-1] == MODEL_NOT_FOUND
-    assert not (recording / "transcript.md").exists()
+    assert result.stderr.splitlines()[-1] == PARAKEET_NOT_FOUND
+    assert not (recording / "transcript.json").exists()

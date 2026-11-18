@@ -46,7 +46,9 @@ def start_command(data_home: Path, config_home: Path) -> list[str]:
 
 
 def write_transcript(args: list[str], _: TextIO) -> int:
-    (Path(args[3]) / "transcript.md").write_text("[00:00:01] **Me:** Hola.\n")
+    """As the transcriber does: what was said, under the speakers' keys."""
+    said = [{"start": 1.0, "end": 2.5, "speaker": "Speaker 1", "text": "Hola."}]
+    (Path(args[3]) / "transcript.json").write_text(json.dumps(said))
     return 0
 
 
@@ -343,9 +345,28 @@ def test_work_transcribes_and_records_success(system: FakeSystem, tmp_path: Path
         {**QUEUED, "status": "succeeded", "details": "run-0.log", "output": "transcript.md"}
     ]
     assert (folder / "run-0.log").read_text() == "loading the model\n"
-    assert (folder / "transcript.md").read_text() == "[00:00:01] **Me:** Hola.\n"
+    assert store.load_recording(recording_id).get("speakers") == {"Speaker 1": "Speaker 1"}
+    assert (folder / "transcript.md").read_text() == "[00:00:01] **Speaker 1:** Hola.\n"
     assert transcribe_status(recording_id) == ("succeeded", [])
     assert worker_lock_held() is False
+
+
+@pytest.mark.usefixtures("speech", "sigterm", "system")
+def test_work_writes_the_transcript_under_the_names_the_speakers_already_have() -> None:
+    recording_id = recording()
+    # An earlier transcription found the speaker, and a person named it.
+    write_transcript(
+        ["python", "-m", TRANSCRIBER, str(store.recording_dir(recording_id))], sys.stderr
+    )
+    store.write_transcript(recording_id)
+    store.set_speaker_name(recording_id, "Speaker 1", "Ana Díaz")
+    put_runs(recording_id, [queued_run(START)])
+
+    worker.work()
+
+    transcript = store.recording_dir(recording_id) / "transcript.md"
+    assert transcript.read_text(encoding="utf-8") == "[00:00:01] **Ana Díaz:** Hola.\n"
+    assert store.load_recording(recording_id).get("speakers") == {"Speaker 1": "Ana Díaz"}
 
 
 @pytest.mark.usefixtures("speech", "sigterm")

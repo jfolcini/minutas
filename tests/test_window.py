@@ -175,6 +175,71 @@ def expand(shown: window.HistoryWindow, recording_id: str = FIRST) -> window.Rec
     return row
 
 
+SAID = [
+    store.Segment(start=4.0, end=9.0, speaker="Speaker 1", text="Arrancamos."),
+    store.Segment(start=11.0, end=14.0, speaker="Me", text="Dale."),
+    store.Segment(start=15.0, end=16.0, speaker="Speaker 2", text="Sí."),
+]
+CHOICES = ["Ana Díaz", "bob_ruiz", "Custom name…"]
+
+
+def transcribe(segments: list[store.Segment], recording_id: str = FIRST) -> None:
+    """What a transcription that succeeds leaves, and tells the window."""
+    folder = store.recording_dir(recording_id)
+    (folder / "transcript.json").write_text(json.dumps(segments), encoding="utf-8")
+    store.write_transcript(recording_id)
+    store.save_runs(recording_id, [run("transcribe", "succeeded", output="transcript.md")])
+    store.write_status()
+
+
+def transcribed() -> str:
+    """A recording of a calendar event, transcribed: two speakers on the call."""
+    recording_id = recording()
+    store.set_calendar_event(recording_id, "Weekly sync", ["Ana Díaz", "bob_ruiz"])
+    transcribe(SAID, recording_id)
+    return recording_id
+
+
+def read_transcript(recording_id: str = FIRST) -> str:
+    return (store.recording_dir(recording_id) / "transcript.md").read_text(encoding="utf-8")
+
+
+def pickers(row: Gtk.Widget) -> dict[str, Gtk.MenuButton]:
+    """The menu that names a speaker, by the title of the speaker's line."""
+    return {
+        line.get_title(): picker
+        for line in descendants(row)
+        if isinstance(line, Adw.ActionRow)
+        for picker in descendants(line)
+        if isinstance(picker, Gtk.MenuButton)
+    }
+
+
+def choices(shown: window.HistoryWindow, picker: Gtk.MenuButton) -> list[str]:
+    """What the open menu reads, top to bottom."""
+    picker.popup()
+    draw(shown)
+    popover = picker.get_popover()
+    assert popover is not None
+    offered = [text for text in texts(popover) if text]
+    picker.popdown()
+    settle()
+    return offered
+
+
+def choose(shown: window.HistoryWindow, picker: Gtk.MenuButton, choice: str) -> None:
+    """Activates the menu's item, as a click on it does."""
+    menu = picker.get_menu_model()
+    assert menu is not None
+    [item] = [place for place, label in enumerate(choices(shown, picker)) if label == choice]
+    action = menu.get_item_attribute_value(item, "action", None)
+    assert action is not None
+    assert shown.activate_action(
+        action.get_string(), menu.get_item_attribute_value(item, "target", None)
+    )
+    settle()
+
+
 def status_names() -> list[object]:
     status = json.loads((store.data_dir() / "status.json").read_text())
     return [entry["name"] for entry in status["recent"]]
@@ -514,6 +579,149 @@ def test_edit_changes_nothing_when_cancelled_or_left_empty(
     saved = store.load_recording(FIRST)
     assert (saved["name"], saved["name_source"]) == ("Meeting", "default")
     assert shown.get_visible_dialog() is None
+
+
+def test_the_speakers_sit_between_the_transcription_and_the_publishing(
+    history: Callable[[], window.HistoryWindow],
+) -> None:
+    transcribed()
+    store.set_speaker_name(FIRST, "Speaker 1", "Ana Díaz")
+    shown = history()
+
+    row = expand(shown)
+
+    assert lines(row)[5:] == [
+        ("Transcribe", "Succeeded"),
+        ("Speaker 1", "Ana Díaz"),
+        ("Speaker 2", ""),
+        ("Publish to Agaric", "Not published"),
+    ]
+    # An attendee's "_" is a letter of the name, not the mark of a shortcut key.
+    assert {speaker: choices(shown, picker) for speaker, picker in pickers(row).items()} == {
+        "Speaker 1": CHOICES,
+        "Speaker 2": CHOICES,
+    }
+
+
+def test_without_a_calendar_event_a_speaker_can_still_be_named(
+    history: Callable[[], window.HistoryWindow],
+) -> None:
+    recording()
+    transcribe(SAID)
+    shown = history()
+
+    row = expand(shown)
+
+    assert choices(shown, pickers(row)["Speaker 1"]) == ["Custom name…"]
+
+
+@pytest.mark.parametrize("attendee", ["Ana Díaz", "bob_ruiz"])
+def test_picking_an_attendee_names_the_speaker_in_the_transcript(
+    history: Callable[[], window.HistoryWindow], attendee: str
+) -> None:
+    transcribed()
+    shown = history()
+    row = expand(shown)
+
+    choose(shown, pickers(row)["Speaker 2"], attendee)
+
+    assert store.load_recording(FIRST).get("speakers") == {
+        "Speaker 1": "Speaker 1",
+        "Speaker 2": attendee,
+    }
+    assert read_transcript() == (
+        "[00:00:04] **Speaker 1:** Arrancamos.\n"
+        "\n"
+        "[00:00:11] **Me:** Dale.\n"
+        "\n"
+        f"[00:00:15] **{attendee}:** Sí.\n"
+    )
+    wait_until(lambda: ("Speaker 2", attendee) in lines(row))
+    assert ("Speaker 1", "") in lines(row)
+
+
+def test_a_custom_name_is_typed_and_kept(history: Callable[[], window.HistoryWindow]) -> None:
+    transcribed()
+    shown = history()
+    row = expand(shown)
+
+    choose(shown, pickers(row)["Speaker 1"], "Custom name…")
+    dialog = open_dialog(shown)
+    assert isinstance(dialog, Adw.AlertDialog)
+    assert dialog.get_heading() == "Name Speaker 1"
+    [entry] = [widget for widget in descendants(dialog) if isinstance(widget, Gtk.Entry)]
+    assert entry.get_text() == ""
+    entry.set_text("  Caro\tPaz ")
+    press(dialog, "Save")
+
+    assert store.load_recording(FIRST).get("speakers") == {
+        "Speaker 1": "Caro Paz",
+        "Speaker 2": "Speaker 2",
+    }
+    assert read_transcript().splitlines()[0] == "[00:00:04] **Caro Paz:** Arrancamos."
+    wait_until(lambda: ("Speaker 1", "Caro Paz") in lines(row))
+
+    # Typed again, it starts from the name it has.
+    choose(shown, pickers(row)["Speaker 1"], "Custom name…")
+    dialog = open_dialog(shown)
+    [entry] = [widget for widget in descendants(dialog) if isinstance(widget, Gtk.Entry)]
+    assert entry.get_text() == "Caro Paz"
+    press(dialog, "Cancel")
+
+
+@pytest.mark.parametrize(("typed", "answer"), [("Caro Paz", "Cancel"), (" ", "Save")])
+def test_a_custom_name_changes_nothing_when_cancelled_or_left_empty(
+    history: Callable[[], window.HistoryWindow], typed: str, answer: str
+) -> None:
+    transcribed()
+    before = read_transcript()
+    shown = history()
+    row = expand(shown)
+
+    choose(shown, pickers(row)["Speaker 1"], "Custom name…")
+    dialog = open_dialog(shown)
+    [entry] = [widget for widget in descendants(dialog) if isinstance(widget, Gtk.Entry)]
+    entry.set_text(typed)
+    press(dialog, answer)
+
+    assert store.load_recording(FIRST).get("speakers") == {
+        "Speaker 1": "Speaker 1",
+        "Speaker 2": "Speaker 2",
+    }
+    assert read_transcript() == before
+    assert shown.get_visible_dialog() is None
+
+
+def test_the_speakers_follow_each_transcription(
+    history: Callable[[], window.HistoryWindow],
+) -> None:
+    recording()
+    shown = history()
+    row = expand(shown)
+    assert lines(row)[5:] == [
+        ("Transcribe", "Not run yet"),
+        ("Publish to Agaric", "Not published"),
+    ]
+
+    transcribe(SAID)
+
+    wait_until(lambda: ("Speaker 2", "") in lines(row))
+    assert lines(row)[5:] == [
+        ("Transcribe", "Succeeded"),
+        ("Speaker 1", ""),
+        ("Speaker 2", ""),
+        ("Publish to Agaric", "Not published"),
+    ]
+
+    # Run again hears one speaker fewer.
+    transcribe(SAID[:2])
+
+    wait_until(lambda: ("Speaker 2", "") not in lines(row))
+    assert lines(row)[5:] == [
+        ("Transcribe", "Succeeded"),
+        ("Speaker 1", ""),
+        ("Publish to Agaric", "Not published"),
+    ]
 
 
 def test_a_failed_transcription_shows_why_with_retry_and_details(
@@ -1013,14 +1221,25 @@ def finalized(widgets: list[Gtk.Widget]) -> list[bool]:
 def test_a_row_that_goes_takes_everything_it_showed_with_it(
     history: Callable[[], window.HistoryWindow], desktop_calls: Desktop
 ) -> None:
-    recording([run("transcribe", "failed", error="Out of memory", details="run-0.log")])
+    transcribed()
+    store.save_runs(
+        FIRST, [run("transcribe", "failed", error="Out of memory", details="run-0.log")]
+    )
     (store.recording_dir(FIRST) / "run-0.log").write_text("Out of memory\n")
     shown = history()
     row = expand(shown)
     # Everything that hangs a handler on the row's widgets, dialogs included.
     buttons(shown.details[FIRST].tracks["mic.opus"].row)["Play"].emit("clicked")
-    for label, answer in (("Edit", "Cancel"), ("Delete now", "Cancel"), ("Details", None)):
-        press(row, label)
+    for label, answer in (
+        ("Edit", "Cancel"),
+        ("Delete now", "Cancel"),
+        ("Details", None),
+        ("Custom name…", "Cancel"),
+    ):
+        if label == "Custom name…":
+            choose(shown, pickers(row)["Speaker 2"], label)
+        else:
+            press(row, label)
         dialog = open_dialog(shown)
         closed = finalized([dialog])
         if answer is None:
@@ -1033,7 +1252,9 @@ def test_a_row_that_goes_takes_everything_it_showed_with_it(
         assert shown.get_visible_dialog() is None
         assert closed == [True]
     watched = [
-        widget for widget in descendants(row) if isinstance(widget, Gtk.Button | Adw.ActionRow)
+        widget
+        for widget in descendants(row)
+        if isinstance(widget, Gtk.Button | Gtk.MenuButton | Adw.ActionRow)
     ]
     freed = finalized([row, *watched])
     expected = len(watched) + 1
@@ -1051,18 +1272,21 @@ def test_a_row_that_goes_takes_everything_it_showed_with_it(
 
 
 def test_a_change_updates_the_row_in_place(history: Callable[[], window.HistoryWindow]) -> None:
-    recording([run("transcribe", "queued")])
+    transcribed()
+    store.save_runs(FIRST, [run("transcribe", "queued")])
     shown = history()
     row = expand(shown)
     before = list(descendants(shown))
 
     for status in ("running", "failed", "cancelled", "succeeded", "queued"):
         store.save_runs(FIRST, [run("transcribe", status, error="Out of memory")])
+        store.set_speaker_name(FIRST, "Speaker 1", f"Ana {status}")
         shown.refresh()
 
     # The same widgets, relabelled: hours of changes leave nothing behind to free.
     assert list(descendants(shown)) == before
     assert ("Transcribe", "Queued") in lines(row)
+    assert ("Speaker 1", "Ana queued") in lines(row)
 
 
 def stop_after_a_while() -> int:

@@ -52,8 +52,8 @@ flowchart TD
     mic["Mic track<br/>always me"]
     calltrack["Call track<br/>everyone else"]
     cal["Calendar event<br/>Nextcloud via GNOME"]
-    vad["Silero VAD<br/>my turns"]
-    diar["pyannote community-1<br/>who spoke when"]
+    vad["Silero VAD<br/>where the speech is"]
+    diar["pyannote community-1<br/>whose the call's speech is"]
     words["Names and word list<br/>attendees + glossary"]
     asr["Parakeet TDT 0.6B v3 (NeMo)<br/>each turn transcribed alone, up to 30 s, with the word list boosted"]
     hist["History window<br/>transcript ready · name the speakers · run the actions"]
@@ -66,6 +66,7 @@ flowchart TD
     rec --> mic
     rec --> calltrack
     mic --> vad
+    calltrack --> vad
     calltrack --> diar
     cal --> words
     vad --> asr
@@ -119,13 +120,13 @@ One Python program does the work and draws the history window; the GNOME extensi
 | History window | Every recording with its name, speakers, actions and their runs (status, error, Retry, Cancel, output link), its audio files, and the settings | GTK 4 and libadwaita through PyGObject |
 | Player and file buttons | Play, Save a copy, Open folder and Delete now for the recording's two tracks | GTK 4 `MediaFile` and `MediaControls`, `FileDialog`, `FileLauncher` |
 | Recorder | Mic and computer audio as two Opus tracks; survives the lock screen and a Shell restart; if it dies, what was captured is kept; a setting records the echo-cancelled mic instead | `systemd-run --user`, GStreamer or `pw-record`, PipeWire |
-| Store | One folder per recording: the two Opus tracks, transcript, summary, the name and where it came from, and a JSON log of every run with its status, error and output link | Python standard library |
+| Store | One folder per recording: the two Opus tracks, transcript, summary, the name and where it came from, the speakers' names, and a JSON log of every run with its status, error and output link | Python standard library |
 | Calendar lookup | The event overlapping the recording: name, date, attendee names | PyGObject `ECal` and `EDataServer` |
 | Page name | Picks the name: one typed in the history window, else the calendar event's, else the summary's proposal, else "Meeting" | Python standard library |
-| Turn finder | Who spoke when: my turns from the mic track, everyone else's from the call track | Silero VAD; pyannote.audio 4 with community-1 |
-| Transcriber | Runs on stop, and again on Retry or Run again: one pass per turn, same-speaker turns merged up to about 30 s, with the meeting's word list | NeMo, Parakeet TDT 0.6B v3, phrase boosting |
-| Speaker naming | Each speaker set to a calendar attendee or a custom name in the history window; voice memory later | Calendar attendees; community-1 speaker embeddings later |
-| Formatter | Writes `[hh:mm:ss] **Name:** text` with the current names | Python standard library |
+| Turn finder | Who spoke when: Silero VAD finds the speech on both tracks; the mic's is mine, and pyannote says whose each stretch of the call's is. pyannote runs in a process of its own, which ends before Parakeet loads, from the model on disk and with its usage reporting off | Silero VAD; pyannote.audio 4 with community-1 |
+| Transcriber | Runs on stop, and again on Retry or Run again: one pass per turn, same-speaker turns merged up to about 30 s, with the meeting's word list. Writes `transcript.json`: each turn's start, end and text under its speaker's key, `Me` or `Speaker 1`, `Speaker 2`… in the order they first speak | NeMo, Parakeet TDT 0.6B v3, phrase boosting |
+| Speaker naming | Each speaker set to a calendar attendee or a custom name in the history window, kept with the recording and through Run again; voice memory later | Calendar attendees; community-1 speaker embeddings later |
+| Formatter | Writes `transcript.md`, `[hh:mm:ss] **Name:** text`, from `transcript.json` and the current names, after every transcription and every naming | Python standard library |
 | Summarize | A built-in preset (General, Standup, 1:1, Stakeholder call) or a saved one, or Custom typed at run time and savable as a preset; always in English. Every prompt gets one added instruction: start with a line `Title: <a few words, no date>`, which becomes the proposed page name and is cut from `summary.md` | Devin CLI, `devin -p --prompt-file` |
 | Publish to Agaric | The page, audio and transcript; the summary once it exists; renames the page when its automatic name changed; output `agaric://page/<id>` | `agaric-mcp call add_meeting`, `update_block_content` |
 | Publish to GitLab | Asks for a link; uploads transcript and audio, posts the summary with their links as a comment or a new issue titled `<name> <YYYY-MM-DD>`; output the comment or issue link; enabled once a summary exists | `glab api` (uploads, issues, notes) |
@@ -203,7 +204,7 @@ The first version supports Devin, GitLab and GNOME on Ubuntu only; GitHub, Claud
 Every recording is a row, newest first; expanding it shows its speakers, its audio files and its four actions, each with its last result: an output link, or why it failed and a Retry button.
 
 - **Name:** the row's name says where it came from (calendar, summary or default) and has Edit; a typed name is kept for good, and the next Publish to Agaric applies it.
-- **Speakers:** each one is set to a calendar attendee or a custom name; publishing uses the current names.
+- **Speakers:** the call's speakers are listed under Transcribe once it has run, numbered in the order they first speak; each one is set to a calendar attendee or a custom name, and the transcript is written again with it, so publishing uses the current names.
 - **Actions:** Transcribe (runs on stop; Run again re-transcribes, for example after the word list changes), Summarize, Publish to Agaric and Publish to GitLab. Every run is kept with its time, status and output link; Publish to Agaric run again adds what the page lacks, such as the summary, and applies a changed name.
 - **Failed runs:** show the reason and the fix, with Retry and Details; see *When an action fails* below.
 - **Summarize:** the menu lists built-in presets, saved presets, then Custom; Custom opens a text box with Save as preset. Saved presets can be deleted, built-in ones can't.
@@ -305,7 +306,7 @@ The scorer comes first, so every later step is measured; the tool is usable end 
 
 Everything is decided.
 
-- [x] How long does an hour of audio take on the laptop at full precision with phrase boosting? Measured in M2 ([#5](https://github.com/jfolcini/minutas/issues/5)): about a tenth of the recording's length, so full precision stays and int8 isn't needed.
+- [x] How long does an hour of audio take on the laptop at full precision with phrase boosting? Measured in M2 ([#5](https://github.com/jfolcini/minutas/issues/5)): Parakeet takes about a tenth of the recording's length, so full precision stays and int8 isn't needed. With speaker detection, measured in M5 ([#8](https://github.com/jfolcini/minutas/issues/8)), a transcription takes about a quarter of it, most of that pyannote on the call track.
 
 ## Sources
 
