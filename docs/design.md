@@ -142,7 +142,7 @@ Minutas lives in a GitHub repository. `install.sh` installs and updates it: it c
 | uv | `uv` at the version pinned in the repository, in `~/.local/bin` | That version is there |
 | Speech environment | Parakeet through NeMo, pyannote.audio, Silero VAD and CPU-only PyTorch, synced from `uv.lock` into `~/.local/share/minutas/speech` with a uv-managed Python | `uv.lock` didn't change |
 | App | The history window and helper in `~/.local/share/minutas/app`, the `minutas` command in `~/.local/bin`, a desktop file | Files are identical |
-| GNOME extension | `~/.local/share/gnome-shell/extensions/minutas@<domain>/`, enabled with `gnome-extensions enable` | Files are identical and it's enabled |
+| GNOME extension | `~/.local/share/gnome-shell/extensions/minutas@jfolcini.github.io/`, enabled with `gnome-extensions enable` | Files are identical and it's enabled |
 | Hugging Face token | Asked once, after you accept pyannote's conditions on Hugging Face; kept in the GNOME keyring | The keyring has it |
 | Models | Parakeet v3 and pyannote community-1 at the revisions pinned in the repository, in `~/.cache/minutas/models` | Those revisions are there |
 | Devin CLI | Nothing; prints how to install it | It's on the PATH |
@@ -275,10 +275,9 @@ The scorer comes first, so every later step is measured; the tool is usable end 
 
 ## Open questions
 
-Everything else is decided; one thing is left to measure and one to name.
+Everything else is decided; one thing is left to measure.
 
 - [ ] How long does an hour of audio take on the laptop at full precision with phrase boosting? Measured in M2; if it's too slow, compare int8 against the test set before switching.
-- [ ] Which domain goes in the extension's id, `minutas@<domain>`? It can't change later without users re-enabling the extension.
 
 ## Sources
 
