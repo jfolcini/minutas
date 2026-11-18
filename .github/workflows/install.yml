@@ -1,0 +1,52 @@
+name: Install
+
+# install.sh twice on a fresh Ubuntu 24.04, without the Hugging Face token and the
+# models; the second run must print `ok` for every step it runs (docs/design.md
+# § Installing and updating). The speech environment is a large download, so only a
+# change to what install.sh installs runs it. Never make this a required check: on a
+# PR the `paths` filter skips, its context would never report.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - install.sh
+      - pyproject.toml
+      - uv.lock
+      - .python-version
+      - .github/workflows/install.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: install-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  install:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      MINUTAS_SKIP_MODELS: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # install.sh installs what is missing; refreshing the package index is the system's job.
+      - name: Refresh the package index
+        run: sudo apt-get update
+
+      - name: First run
+        run: ./install.sh
+
+      - name: Second run prints ok for every step
+        shell: bash
+        run: |
+          ./install.sh 2>&1 | tee second-run.log
+          if grep -Ev '^[^:]+: (ok|skipped: MINUTAS_SKIP_MODELS=1)$' second-run.log; then
+            echo "::error::The second run did something (lines above); every step must print ok."
+            exit 1
+          fi
