@@ -190,7 +190,7 @@ layers = [
     # The window draws what window_view works out, and reaches the rest of the program only
     # through the worker, the store and the publisher's run log; it runs the publisher as a command.
     "minutas.window",
-    "(minutas.recorder) | (minutas.worker) | (minutas.agaric) | (minutas.window_view)",
+    "(minutas.recorder) | (minutas.worker) | (minutas.agaric) | (minutas.window_view) | (minutas.calendar)",
     "minutas.settings",
     "minutas.store",
 ]

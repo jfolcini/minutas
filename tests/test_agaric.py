@@ -1,6 +1,7 @@
 import json
 import signal
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta, timezone
 from pathlib import Path
@@ -316,10 +317,20 @@ def test_publish_again_with_the_same_name_changes_nothing(system: FakeSystem) ->
 
 
 @pytest.mark.usefixtures("configured")
-def test_publish_again_after_a_rename_renames_the_page(system: FakeSystem) -> None:
+@pytest.mark.parametrize(
+    "rename",
+    [
+        lambda recording_id: store.set_typed_name(recording_id, "Weekly sync"),
+        lambda recording_id: store.set_calendar_event(recording_id, "Weekly sync", []),
+    ],
+    ids=["typed", "calendar"],
+)
+def test_publish_again_after_a_rename_renames_the_page(
+    system: FakeSystem, rename: Callable[[str], None]
+) -> None:
     recording_id = recording()
     put_runs(recording_id, [succeeded_run()])
-    store.set_typed_name(recording_id, "Weekly sync")
+    rename(recording_id)
 
     assert agaric.publish(recording_id, PUBLISHED) is True
 

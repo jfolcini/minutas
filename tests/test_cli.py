@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, cast
 import pytest
 from keyring.errors import KeyringLocked
 
-from minutas import agaric, cli, recorder, settings, store, worker
+from minutas import agaric, calendar, cli, recorder, settings, store, worker
 from minutas.cli import main
 
 if TYPE_CHECKING:
@@ -19,6 +19,25 @@ if TYPE_CHECKING:
     from types import ModuleType
 
 START = datetime(2026, 11, 18, 13, 5, 42, tzinfo=UTC)
+
+
+class FakeCalendar:
+    """Stands in for the calendar lookup: no Evolution Data Server."""
+
+    def __init__(self) -> None:
+        self.event: calendar.Event | None = None
+        self.asked: list[tuple[datetime, datetime]] = []
+
+    def lookup(self, start: datetime, stop: datetime) -> calendar.Event | None:
+        self.asked.append((start, stop))
+        return self.event
+
+
+@pytest.fixture(autouse=True)
+def fake_calendar(monkeypatch: pytest.MonkeyPatch) -> FakeCalendar:
+    fake = FakeCalendar()
+    monkeypatch.setattr(calendar, "lookup", fake.lookup)
+    return fake
 
 
 class FakeRecorder:
@@ -356,7 +375,7 @@ def test_record_stopped_queues_a_transcription_of_what_was_captured(
 
 
 def test_record_stopped_queues_nothing_for_a_recording_without_audio(
-    fake_worker: FakeWorker,
+    fake_worker: FakeWorker, fake_calendar: FakeCalendar
 ) -> None:
     recording = store.create_recording(START)
     for name in store.TRACKS:
@@ -366,6 +385,62 @@ def test_record_stopped_queues_nothing_for_a_recording_without_audio(
 
     assert store.load_runs(recording["id"]) == []
     assert fake_worker.starts == 0
+    assert fake_calendar.asked == []
+
+
+WEEKLY_SYNC = calendar.Event(
+    name="Weekly sync", attendees=("Ana Díaz", "bob.ruiz"), start=1795006800, end=1795010400
+)
+
+
+@pytest.mark.usefixtures("fake_worker")
+def test_record_stopped_names_the_recording_after_the_calendar_event(
+    fake_calendar: FakeCalendar, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recording_id = with_audio(store.create_recording(START)["id"])
+    fake_calendar.event = WEEKLY_SYNC
+    monkeypatch.setenv("SERVICE_RESULT", "success")
+    monkeypatch.setattr(cli, "now", lambda: START + timedelta(seconds=90))
+
+    assert main(["record", "stopped", recording_id]) == 0
+
+    assert fake_calendar.asked == [(START, START + timedelta(seconds=90))]
+    assert store.load_recording(recording_id) == {
+        "id": "2026-11-18T13-05-42",
+        "started_at": "2026-11-18T13:05:42+00:00",
+        "stopped_at": "2026-11-18T13:07:12+00:00",
+        "incomplete": False,
+        "name": "Weekly sync",
+        "name_source": "calendar",
+        "attendees": ["Ana Díaz", "bob.ruiz"],
+    }
+    recent = read_status()["recent"]
+    assert isinstance(recent, list)
+    assert [(entry["name"], entry["transcribe"]) for entry in recent] == [("Weekly sync", "queued")]
+
+
+@pytest.mark.usefixtures("fake_worker")
+def test_record_stopped_keeps_a_name_typed_while_recording(fake_calendar: FakeCalendar) -> None:
+    recording_id = with_audio(store.create_recording(START)["id"])
+    store.set_typed_name(recording_id, "Planning")
+    fake_calendar.event = WEEKLY_SYNC
+
+    assert main(["record", "stopped", recording_id]) == 0
+
+    recording = store.load_recording(recording_id)
+    assert (recording["name"], recording["name_source"]) == ("Planning", "typed")
+    assert recording.get("attendees") == ["Ana Díaz", "bob.ruiz"]
+
+
+@pytest.mark.usefixtures("fake_worker")
+def test_record_stopped_without_an_event_keeps_the_default_name() -> None:
+    recording_id = with_audio(store.create_recording(START)["id"])
+
+    assert main(["record", "stopped", recording_id]) == 0
+
+    recording = store.load_recording(recording_id)
+    assert (recording["name"], recording["name_source"]) == ("Meeting", "default")
+    assert "attendees" not in recording
 
 
 def test_record_stopped_reports_a_worker_that_will_not_start(

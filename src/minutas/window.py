@@ -419,12 +419,13 @@ class HistoryWindow(Adw.ApplicationWindow):
         self.publish(recording_id, f"--name={name}")
 
     def publish(self, recording_id: str, *options: str) -> None:
+        # Counted before the spawn, whose command may record its run first.
+        self.runs_before_publish[recording_id] = len(store.load_runs(recording_id))
         command = Gio.Subprocess.new(
             [*MINUTAS, "publish", "agaric", recording_id, *options],
             Gio.SubprocessFlags.STDOUT_SILENCE | Gio.SubprocessFlags.STDERR_PIPE,
         )
         self.publishing[recording_id] = command
-        self.runs_before_publish[recording_id] = len(store.load_runs(recording_id))
         command.communicate_utf8_async(None, None, self.published, recording_id)
         self.refresh()
 

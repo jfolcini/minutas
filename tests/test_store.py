@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import cast
 
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 
 from minutas import store
 
@@ -85,6 +87,104 @@ def test_set_typed_name_keeps_the_name_and_says_it_was_typed() -> None:
     }
 
 
+def test_set_calendar_event_names_the_recording_and_keeps_the_attendees() -> None:
+    recording_id = make_stopped(START, seconds=90)
+
+    store.set_calendar_event(recording_id, "Weekly sync", ["Ana Díaz", "bob.ruiz"])
+
+    assert json.loads((store.recording_dir(recording_id) / "recording.json").read_text()) == {
+        "id": "2026-11-18T13-05-42",
+        "started_at": "2026-11-18T13:05:42+00:00",
+        "stopped_at": "2026-11-18T13:07:12+00:00",
+        "incomplete": False,
+        "name": "Weekly sync",
+        "name_source": "calendar",
+        "attendees": ["Ana Díaz", "bob.ruiz"],
+    }
+
+
+def test_set_calendar_event_keeps_a_typed_name() -> None:
+    recording_id = make_stopped(START)
+    store.set_typed_name(recording_id, "Planning")
+
+    store.set_calendar_event(recording_id, "Weekly sync", ["Ana Díaz"])
+
+    recording = store.load_recording(recording_id)
+    assert (recording["name"], recording["name_source"]) == ("Planning", "typed")
+    assert recording.get("attendees") == ["Ana Díaz"]
+
+
+def test_an_event_without_a_name_keeps_the_default_name() -> None:
+    recording_id = make_stopped(START)
+
+    store.set_calendar_event(recording_id, " ", ["Ana Díaz"])
+
+    recording = store.load_recording(recording_id)
+    assert (recording["name"], recording["name_source"]) == ("Meeting", "default")
+
+
+def default_recording() -> store.Recording:
+    return store.Recording(
+        id="2026-11-18T13-05-42",
+        started_at="2026-11-18T13:05:42+00:00",
+        stopped_at=None,
+        incomplete=False,
+        name="Meeting",
+        name_source="default",
+    )
+
+
+@pytest.mark.parametrize(
+    ("current", "offered", "kept"),
+    [
+        (("Meeting", "default"), ("Weekly sync", "calendar"), ("Weekly sync", "calendar")),
+        (("Meeting", "default"), ("Release plan", "summary"), ("Release plan", "summary")),
+        (("Weekly sync", "calendar"), ("Release plan", "summary"), ("Weekly sync", "calendar")),
+        (("Release plan", "summary"), ("Weekly sync", "calendar"), ("Weekly sync", "calendar")),
+        (("Weekly sync", "calendar"), ("Standup", "calendar"), ("Standup", "calendar")),
+        (("Planning", "typed"), ("Weekly sync", "calendar"), ("Planning", "typed")),
+        (("Weekly sync", "calendar"), ("Planning", "typed"), ("Planning", "typed")),
+        (("Meeting", "default"), (" Weekly sync ", "calendar"), ("Weekly sync", "calendar")),
+        (("Meeting", "default"), ("  ", "calendar"), ("Meeting", "default")),
+    ],
+)
+def test_page_name_order_examples(
+    current: tuple[str, str], offered: tuple[str, str], kept: tuple[str, str]
+) -> None:
+    recording = default_recording()
+    recording["name"], recording["name_source"] = current
+
+    assert store.chosen_name(recording, *offered) == kept
+
+
+offers = st.lists(
+    st.tuples(
+        st.sampled_from(["", " ", "Weekly sync", " Standup", "Planning "]),
+        st.sampled_from(["summary", "calendar", "typed"]),
+    ),
+    max_size=6,
+)
+
+
+@given(offers=offers)
+def test_the_name_kept_is_the_latest_from_the_highest_source_that_gave_one(
+    offers: list[tuple[str, str]],
+) -> None:
+    recording = default_recording()
+
+    for name, source in offers:
+        recording["name"], recording["name_source"] = store.chosen_name(recording, name, source)
+
+    given_names = [(name.strip(), source) for name, source in offers if name.strip()]
+    rank = ["summary", "calendar", "typed"].index
+    if not given_names:
+        assert (recording["name"], recording["name_source"]) == ("Meeting", "default")
+    else:
+        highest = max(rank(source) for _, source in given_names)
+        latest = [named for named in given_names if rank(named[1]) == highest][-1]
+        assert (recording["name"], recording["name_source"]) == latest
+
+
 def test_set_typed_name_fails_for_a_recording_that_is_gone() -> None:
     with pytest.raises(FileNotFoundError):
         store.set_typed_name("2026-11-18T13-05-42", "Weekly sync")
@@ -97,6 +197,7 @@ def test_set_typed_name_fails_for_a_recording_that_is_gone() -> None:
     [
         lambda: store.set_typed_name("2026-11-18T13-05-42", "Weekly sync"),
         lambda: store.mark_stopped("2026-11-18T13-05-42", START, incomplete=False),
+        lambda: store.set_calendar_event("2026-11-18T13-05-42", "Weekly sync", ["Ana Díaz"]),
     ],
 )
 def test_a_recording_is_read_and_rewritten_inside_the_store_lock(
