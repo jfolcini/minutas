@@ -163,6 +163,17 @@ language = "system"
 types = ["shell"]
 stages = ["pre-commit"]
 
+# The tool is the extension's npm dev dependency (`just ext setup`), pinned by
+# extension/package-lock.json; ESLint finds extension/eslint.config.js from each file.
+# WHY: an undefined name or unused variable in the extension surfaces only when GNOME Shell loads it
+[[repos.hooks]]
+id = "eslint"
+name = "eslint (extension)"
+entry = "extension/node_modules/.bin/eslint"
+language = "system"
+files = '^extension/.*\.js$'
+stages = ["pre-commit"]
+
 # WHY: workflow syntax and expression errors surface only on the next CI run
 [[repos.hooks]]
 id = "actionlint"

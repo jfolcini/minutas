@@ -33,3 +33,19 @@ updates:
       # The lint, test and hook toolchain moves as one PR.
       dev-tools:
         dependency-type: development
+
+  - package-ecosystem: npm
+    directory: /extension
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: chore(deps)
+    labels: [dependencies, extension]
+    groups:
+      # The extension's lint and type-check tools move as one PR.
+      extension-dev-tools:
+        dependency-type: development

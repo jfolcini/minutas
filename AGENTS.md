@@ -38,7 +38,7 @@ Read this section first. It outranks everything below it.
 | --- | --- |
 | `src/minutas/` | The package (src layout; `minutas` console script in `cli.py`) |
 | `tests/` | pytest suite, one `test_<module>.py` per module |
-| `extension/` | The GNOME Shell extension; its pure logic in `status.js`, tested by `gjs -m extension/tests/status.test.js` |
+| `extension/` | The GNOME Shell extension; its pure logic in `status.js`, tested by `gjs -m extension/tests/status.test.js`; its checks in `extension/justfile` (`just ext`) |
 | `scripts/` | Shell helpers the hooks call |
 | `install.sh` | Installs and updates Minutas on the desktop, step by step, each skipped when already done (design § Installing and updating) |
 | `pyproject.toml` | Metadata, dependencies, and the ruff, ty, pytest and coverage config |
@@ -63,6 +63,8 @@ The `justfile` wraps these (`uv run just --list`): `just check` is the inner loo
 
 Add a dependency with `uv add <pkg>` (`--dev` for a tool) and commit `pyproject.toml` with `uv.lock`; never hand-edit the lock.
 
+The extension's tools are npm dev dependencies in `extension/package.json`, at exact versions pinned by `extension/package-lock.json`; add one with `npm install --save-dev --save-exact <pkg>` in `extension/`. `uv run just ext setup` installs them (Node and npm); `uv run just ext check` runs ESLint, the type check, the gjs unit tests and the headless GNOME Shell smoke test (`gnome-shell` and `gjs` from apt).
+
 ## Code Quality Enforcement
 
 Strict settings are project-wide; do not weaken them.
@@ -71,6 +73,7 @@ Strict settings are project-wide; do not weaken them.
 - ty: every rule is an error (`[tool.ty.rules] all = "error"`) over `src` and `tests`; ruff's `ANN` rules require the annotations ty checks. A suppression is `# ty: ignore[<rule>]`, only at an untyped third-party boundary.
 - import-linter (`[tool.importlinter]` in `pyproject.toml`): the module layers; a new module takes its place in the contract in the same PR. deptry: every import is a declared dependency and every runtime dependency is imported.
 - Python: 3.12 is the floor (Ubuntu 24.04's system Python, which the GTK window will run under).
+- Extension: ESLint's recommended rules plus `eqeqeq` and `prefer-const` (`extension/eslint.config.js`). TypeScript `checkJs`, strict, against `@girs/gjs` (`extension/tsconfig.json`), over the Shell-free `status.js` and its test; `extension.js` is left to ESLint and the smoke test, because under strict every field `enable()` sets and `disable()` nulls is "possibly null" everywhere else. A suppression is `// @ts-expect-error: <why>`.
 
 ## Testing
 
@@ -90,7 +93,7 @@ A test that cannot fail covers nothing. Before calling a test done, break the co
 
 - **Pre-commit:** `prek.toml` is the list. Formatters and fixers rewrite files and abort the commit once; re-stage and commit again.
 - **Pre-push:** the full test suite with the coverage floor, `pip-audit`, and no direct push to `main`.
-- **CI:** `.github/workflows/_validate.yml` runs every hook in both stages plus zizmor's online audits and a link check (`lint`), the suite on Python 3.12, the newest Python and the lowest allowed dependency versions with diff coverage on PRs (`test`), and the aggregate `validate-all`. The required contexts on `main` are `dco` and `validate / validate-all`.
+- **CI:** `.github/workflows/_validate.yml` runs every hook in both stages plus zizmor's online audits and a link check (`lint`), the suite on Python 3.12, the newest Python and the lowest allowed dependency versions with diff coverage on PRs (`test`), the extension's ESLint, type check, gjs unit tests and headless GNOME Shell 46 smoke test (`extension`), and the aggregate `validate-all`. The required contexts on `main` are `dco` and `validate / validate-all`.
 - **Claude Code Review:** `claude-code-review.yml` reviews every non-draft PR that changes more than Markdown, and approves or requests changes. It is advisory: nothing requires it. A push does not re-run it; adding the `re-review` label does.
 - **Commits:** Conventional Commits subjects and a DCO `Signed-off-by:` on every commit; the hooks enforce both locally, CI on the PR.
 

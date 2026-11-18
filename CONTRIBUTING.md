@@ -13,7 +13,10 @@ git clone https://github.com/jfolcini/minutas
 cd minutas
 uv sync                 # the virtualenv, the package and the whole toolchain
 uv run prek install     # wires the pre-commit, commit-msg, prepare-commit-msg and pre-push hooks
+uv run just ext setup   # the extension's ESLint and TypeScript, from extension/package-lock.json
 ```
+
+The extension's tools need Node and npm; its tests need GNOME Shell and gjs (`sudo apt install gnome-shell gjs` on Ubuntu 24.04).
 
 ### The `just` task runner
 
@@ -34,10 +37,18 @@ uv run prek install     # wires the pre-commit, commit-msg, prepare-commit-msg a
 | Everything CI checks | `just verify` | |
 | Push and confirm the remote has the commit | `just push` | |
 | Is a PR ready to merge | `just merge-ready <pr>` | needs `gh` |
+| The extension's checks (CI's extension job) | `just ext check` | |
+| Lint the extension | `just ext lint` | `cd extension && npx eslint .` |
+| Type-check the extension's Shell-free modules | `just ext typecheck` | `cd extension && npx tsc -p .` |
+| The extension's unit tests | `just ext test` | `gjs -m extension/tests/status.test.js` |
+| Load and drive the extension in a headless GNOME Shell | `just ext smoke [out-dir]` | `bash extension/tests/smoke.sh [out-dir]` |
+| Install the extension into your session and enable it (log out once on Wayland) | `just ext install` | |
+| Try the installed extension in a GNOME Shell window | `just ext nested` | |
+| Follow GNOME Shell's log | `just ext logs` | `journalctl -f -o cat /usr/bin/gnome-shell` |
 
-- **At commit**, the hooks fix whitespace, formatting and fixable lint findings in place and abort the commit once: re-stage and commit again. They also run ty, typos, the Markdown, shell and workflow linters, and gitleaks.
+- **At commit**, the hooks fix whitespace, formatting and fixable lint findings in place and abort the commit once: re-stage and commit again. They also run ty, typos, ESLint on the extension, the Markdown, shell and workflow linters, and gitleaks.
 - **At push**, the hooks run the test suite with its coverage floor and `pip-audit` over `uv.lock`, and refuse a direct push to `main`.
-- **CI** runs the same hooks (`.github/workflows/_validate.yml`), the tests, and a link check over the Markdown.
+- **CI** runs the same hooks (`.github/workflows/_validate.yml`), the tests, the extension's checks, and a link check over the Markdown.
 
 Coverage is measured with branches, and `pytest` fails under the floor set in `pyproject.toml` (`[tool.coverage.report] fail_under`); on a pull request every changed line must be covered. The tests run in random order (pytest-randomly; rerun a failure with the `--randomly-seed=…` it prints), with a per-test timeout, with every annotation checked at run time by beartype, and with warnings as errors.
 
