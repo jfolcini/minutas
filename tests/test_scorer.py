@@ -23,10 +23,6 @@ def test_normalize_strips_speaker_prefixes_case_and_punctuation() -> None:
     assert normalize(transcript) == "arrancamos con el release ci is green its fine está"
 
 
-def test_normalize_keeps_accents() -> None:
-    assert normalize("Está") != normalize("Esta")
-
-
 def test_normalize_composes_decomposed_accents() -> None:
     assert normalize("está") == normalize("está")
 

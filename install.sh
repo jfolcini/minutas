@@ -95,40 +95,38 @@ step_huggingface_token() {
   report "Hugging Face token" "stored in the GNOME keyring"
 }
 
+# The list is copied in only once every download finished: snapshot_download's offline check
+# accepts the README-only snapshot folder that a refused gated download leaves behind.
 step_models() {
+  local revisions=$models_dir/revisions
+  if printf '%s\n' "${models[@]}" | cmp -s - "$revisions"; then
+    report Models ok
+    return
+  fi
   local token
   token=$(secret-tool lookup "${token_attributes[@]}" 2>/dev/null) || token=
-  # huggingface_hub restarts an interrupted file under a new name and never removes the old one.
+  # A killed download leaves its partial file under a name huggingface_hub never reuses.
   if [[ -d $models_dir ]]; then find "$models_dir" -name '*.incomplete' -delete; fi
-  if ! HF_TOKEN=$token "$speech_env/bin/python" - "$models_dir" "${models[@]}" <<'PY'
+  HF_TOKEN=$token "$speech_env/bin/python" - "$models_dir" "${models[@]}" <<'PY' || fail Models "see above, then run install.sh again."
 import sys
 
 from huggingface_hub import snapshot_download
-from huggingface_hub.errors import GatedRepoError, LocalEntryNotFoundError
+from huggingface_hub.errors import GatedRepoError
 
-cache_dir, specs = sys.argv[1], [spec.split() for spec in sys.argv[2:]]
-downloaded = []
-for repo_id, revision, pattern in specs:
-    where = {"repo_id": repo_id, "revision": revision, "cache_dir": cache_dir, "allow_patterns": pattern}
+for repo_id, revision, pattern in (spec.split() for spec in sys.argv[2:]):
     try:
-        snapshot_download(**where, local_files_only=True)
-        continue
-    except LocalEntryNotFoundError:
-        pass
-    try:
-        snapshot_download(**where)
+        snapshot_download(
+            repo_id=repo_id, revision=revision, cache_dir=sys.argv[1], allow_patterns=pattern
+        )
     except GatedRepoError:
         sys.exit(
             f"Hugging Face refused {repo_id}. Accept its conditions at "
             f"https://huggingface.co/{repo_id} with the account the token belongs to. To replace "
             "the token: secret-tool clear service minutas username huggingface"
         )
-    downloaded.append(f"{repo_id}@{revision[:7]}")
-print("Models:", f"downloaded {', '.join(downloaded)}" if downloaded else "ok")
 PY
-  then
-    fail Models "see above, then run install.sh again."
-  fi
+  printf '%s\n' "${models[@]}" >"$revisions"
+  report Models "fetched the pinned revisions into $models_dir"
 }
 
 main() {
