@@ -23,13 +23,32 @@ def load() -> dict[str, object]:
     return cast("dict[str, object]", json.loads(path.read_text())) if path.is_file() else {}
 
 
+def save(changes: dict[str, object]) -> None:
+    settings_path().parent.mkdir(parents=True, exist_ok=True)
+    store.write_json(settings_path(), {**load(), **changes})
+
+
 def agaric_space_id() -> str | None:
     return cast("str | None", load().get("agaric_space_id"))
 
 
 def set_agaric_space_id(space_id: str) -> None:
-    settings_path().parent.mkdir(parents=True, exist_ok=True)
-    store.write_json(settings_path(), {**load(), "agaric_space_id": space_id})
+    save({"agaric_space_id": space_id})
+
+
+def saved_presets() -> dict[str, str]:
+    """The summary prompts saved from Custom, by name, oldest first."""
+    return cast("dict[str, str]", load().get("presets", {}))
+
+
+def save_preset(name: str, prompt: str) -> None:
+    save({"presets": {**saved_presets(), name: prompt}})
+
+
+def delete_preset(name: str) -> None:
+    presets = saved_presets()
+    presets.pop(name, None)
+    save({"presets": presets})
 
 
 def agaric_token() -> str | None:

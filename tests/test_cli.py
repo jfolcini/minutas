@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, cast
 import pytest
 from keyring.errors import KeyringLocked
 
-from minutas import agaric, calendar, cli, recorder, settings, store, worker
+from minutas import agaric, calendar, cli, recorder, settings, store, summarizer, worker
 from minutas.cli import main
 
 if TYPE_CHECKING:
@@ -710,6 +710,83 @@ def test_publish_agaric_refuses_an_unknown_recording(
 
     assert capsys.readouterr().err == "No recording 2026-11-18T13-05-42.\n"
     assert fake_publisher.published == []
+
+
+class FakeSummarizer:
+    """Stands in for the summarizer module: no Devin."""
+
+    def __init__(self) -> None:
+        self.succeeds = True
+        self.summarized: list[tuple[str, datetime, str]] = []
+
+    def summarize(self, recording_id: str, started: datetime, prompt: str) -> bool:
+        self.summarized.append((recording_id, started, prompt))
+        return self.succeeds
+
+
+@pytest.fixture
+def fake_summarizer(monkeypatch: pytest.MonkeyPatch) -> FakeSummarizer:
+    fake = FakeSummarizer()
+    monkeypatch.setattr(summarizer, "summarize", fake.summarize)
+    monkeypatch.setattr(cli, "now", lambda: START + timedelta(hours=1))
+    return fake
+
+
+def transcribed() -> str:
+    recording_id = store.create_recording(START)["id"]
+    (store.recording_dir(recording_id) / "transcript.md").write_text("[00:00:01] **Me:** Hola.\n")
+    return recording_id
+
+
+@pytest.mark.parametrize(("succeeds", "code"), [(True, 0), (False, 1)])
+def test_summarize_summarizes_the_recording_with_the_prompt(
+    fake_summarizer: FakeSummarizer, *, succeeds: bool, code: int
+) -> None:
+    recording_id = transcribed()
+    fake_summarizer.succeeds = succeeds
+
+    # With "=", as the window passes it: a prompt that starts with a dash is still the prompt.
+    assert main(["summarize", recording_id, "--prompt=- Only the blockers. "]) == code
+
+    assert fake_summarizer.summarized == [
+        (recording_id, START + timedelta(hours=1), "- Only the blockers.")
+    ]
+
+
+@pytest.mark.parametrize(
+    ("arguments", "error"),
+    [
+        (["--prompt", " \n "], "A prompt can't be blank."),
+        (["--prompt", "Summarize."], "No recording 2026-11-18T13-05-42."),
+    ],
+    ids=["blank prompt", "unknown recording"],
+)
+def test_summarize_refuses_a_blank_prompt_or_an_unknown_recording(
+    fake_summarizer: FakeSummarizer,
+    capsys: pytest.CaptureFixture[str],
+    arguments: list[str],
+    error: str,
+) -> None:
+    if error.startswith("A prompt"):
+        transcribed()
+
+    assert main(["summarize", "2026-11-18T13-05-42", *arguments]) == 1
+
+    assert capsys.readouterr().err == f"{error}\n"
+    assert fake_summarizer.summarized == []
+
+
+def test_summarize_refuses_a_recording_without_a_transcript(
+    fake_summarizer: FakeSummarizer, capsys: pytest.CaptureFixture[str]
+) -> None:
+    store.create_recording(START)
+
+    assert main(["summarize", "2026-11-18T13-05-42", "--prompt", "Summarize."]) == 1
+
+    assert capsys.readouterr().err == (
+        "2026-11-18T13-05-42 has no transcript yet: transcribe it first.\n"
+    )
+    assert fake_summarizer.summarized == []
 
 
 def test_settings_agaric_sets_the_space() -> None:

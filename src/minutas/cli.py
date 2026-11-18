@@ -11,7 +11,7 @@ from typing import cast
 
 from keyring.errors import KeyringError
 
-from minutas import agaric, calendar, recorder, settings, store, worker
+from minutas import agaric, calendar, recorder, settings, store, summarizer, worker
 
 
 def now() -> datetime:
@@ -130,6 +130,18 @@ def publish_agaric(args: argparse.Namespace) -> int:
     return 0 if agaric.publish(args.recording_id, now(), page=args.page) else 1
 
 
+def summarize(args: argparse.Namespace) -> int:
+    recording_id = args.recording_id
+    if not store.is_recording(recording_id):
+        return fail(f"No recording {recording_id}.")
+    prompt = args.prompt.strip()
+    if not prompt:
+        return fail("A prompt can't be blank.")
+    if not (store.recording_dir(recording_id) / summarizer.TRANSCRIPT).is_file():
+        return fail(f"{recording_id} has no transcript yet: transcribe it first.")
+    return 0 if summarizer.summarize(recording_id, now(), prompt) else 1
+
+
 def settings_agaric(args: argparse.Namespace) -> int:
     if args.space is None and not args.token_from_stdin and not args.list_spaces:
         return fail("Nothing to do: pass --space, --token-from-stdin or --list-spaces.")
@@ -189,6 +201,13 @@ def build_parser() -> argparse.ArgumentParser:
     history_command = commands.add_parser("history", help="open the history window")
     history_command.add_argument("--recording", metavar="ID", help="open this recording")
     history_command.set_defaults(handler=history)
+
+    summarize_command = commands.add_parser("summarize", help="summarize a recording with Devin")
+    summarize_command.add_argument("recording_id")
+    summarize_command.add_argument(
+        "--prompt", required=True, help="what the summary should cover, as a preset says it"
+    )
+    summarize_command.set_defaults(handler=summarize)
 
     publish = commands.add_parser("publish", help="publish a recording")
     publish_commands = publish.add_subparsers(title="commands", required=True)

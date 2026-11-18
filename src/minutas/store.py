@@ -21,8 +21,10 @@ SEGMENTS = "transcript.json"
 TRANSCRIPT = "transcript.md"
 # The transcriber's key for the mic track's speaker, who has no other name.
 ME = "Me"
+SUMMARY = "summary.md"
 ACTIONS = ("transcribe", "summarize", "publish_agaric", "publish_gitlab")
 RECENT_IN_STATUS = 5
+INTERRUPTED = "interrupted"
 # Where a name can come from, lowest first: a name gives way only to one from as high a source.
 NAME_ORDER = ("default", "summary", "calendar", "typed")
 
@@ -76,6 +78,8 @@ class Run(TypedDict):
     choice: NotRequired[Choice | None]
     # Something to know about a run that succeeded, such as what it left out.
     note: NotRequired[str | None]
+    # What a Summarize run asked Devin, so Retry asks the same.
+    prompt: NotRequired[str]
 
 
 def data_dir() -> Path:
@@ -196,6 +200,45 @@ def written_log(recording_id: str, index: int) -> str | None:
     return log.name if log.is_file() else None
 
 
+def fail_running(recording_id: str, runs: list[Run], action: str, error: str) -> None:
+    for index, run in enumerate(runs):
+        if run["action"] == action and run["status"] == "running":
+            run["status"] = "failed"
+            run["error"] = error
+            run["details"] = written_log(recording_id, index)
+
+
+def start_run(recording_id: str, run: Run) -> tuple[int, list[Run]]:
+    """Appends a running run of a command; returns its index and the log with it.
+
+    A run of the same action still running is one a crash left behind: it fails as interrupted.
+    """
+    with lock():
+        runs = load_runs(recording_id)
+        fail_running(recording_id, runs, run["action"], INTERRUPTED)
+        runs.append(run)
+        save_runs(recording_id, runs)
+    write_status()
+    return len(runs) - 1, runs
+
+
+def end_run(recording_id: str, index: int, run: Run) -> None:
+    with lock():
+        runs = load_runs(recording_id)
+        runs[index] = run
+        save_runs(recording_id, runs)
+    write_status()
+
+
+def fail_left_running(recording_id: str, action: str, error: str) -> None:
+    """Fails the run of a command that died before it could end it."""
+    with lock():
+        runs = load_runs(recording_id)
+        fail_running(recording_id, runs, action, error)
+        save_runs(recording_id, runs)
+    write_status()
+
+
 def set_typed_name(recording_id: str, name: str) -> None:
     """A typed name is kept for good: nothing automatic replaces it."""
     with lock():
@@ -269,6 +312,13 @@ def set_speaker_name(recording_id: str, speaker: str, name: str) -> None:
         recording = load_recording(recording_id)
         speakers = {**recording.get("speakers", {}), speaker: name}
         save_speakers(recording, load_segments(recording_id), speakers)
+
+
+def set_summary_name(recording_id: str, name: str) -> None:
+    with lock():
+        recording = load_recording(recording_id)
+        recording["name"], recording["name_source"] = chosen_name(recording, name, "summary")
+        write_json(recording_dir(recording_id) / "recording.json", recording)
 
 
 def delete_tracks(recording_id: str) -> None:

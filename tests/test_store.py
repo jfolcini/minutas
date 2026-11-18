@@ -145,6 +145,29 @@ def test_an_event_without_a_name_keeps_the_default_name() -> None:
     assert (recording["name"], recording["name_source"]) == ("Meeting", "default")
 
 
+def test_set_summary_name_names_a_recording_that_has_only_the_default_name() -> None:
+    recording_id = make_stopped(START)
+
+    store.set_summary_name(recording_id, " Release plan ")
+
+    recording = store.load_recording(recording_id)
+    assert (recording["name"], recording["name_source"]) == ("Release plan", "summary")
+
+
+@pytest.mark.parametrize("source", ["calendar", "typed"])
+def test_set_summary_name_keeps_a_calendar_or_typed_name(source: str) -> None:
+    recording_id = make_stopped(START)
+    if source == "typed":
+        store.set_typed_name(recording_id, "Weekly sync")
+    else:
+        store.set_calendar_event(recording_id, "Weekly sync", [])
+
+    store.set_summary_name(recording_id, "Release plan")
+
+    recording = store.load_recording(recording_id)
+    assert (recording["name"], recording["name_source"]) == ("Weekly sync", source)
+
+
 def default_recording() -> store.Recording:
     return store.Recording(
         id="2026-11-18T13-05-42",
@@ -222,6 +245,7 @@ def test_set_typed_name_fails_for_a_recording_that_is_gone() -> None:
         lambda: store.set_calendar_event("2026-11-18T13-05-42", "Weekly sync", ["Ana Díaz"]),
         lambda: store.write_transcript("2026-11-18T13-05-42"),
         lambda: store.set_speaker_name("2026-11-18T13-05-42", "Speaker 1", "Ana Díaz"),
+        lambda: store.set_summary_name("2026-11-18T13-05-42", "Release plan"),
     ],
 )
 def test_a_recording_is_read_and_rewritten_inside_the_store_lock(
@@ -560,6 +584,91 @@ def test_save_runs_replaces_the_run_log() -> None:
     store.save_runs("2026-11-18T13-05-42", runs)
 
     assert store.load_runs("2026-11-18T13-05-42") == runs
+
+
+def a_run(action: str, status: str, **changes: object) -> store.Run:
+    run = {
+        "action": action,
+        "status": status,
+        "queued_at": "2026-11-18T13:30:00+00:00",
+        "error": None,
+        "details": None,
+        "output": None,
+    }
+    return cast("store.Run", {**run, **changes})
+
+
+def failed_in_status(recording_id: str) -> object:
+    recent = cast("list[dict[str, object]]", read_status()["recent"])
+    return next(entry for entry in recent if entry["id"] == recording_id)["failed"]
+
+
+def test_start_run_appends_the_run_and_fails_one_of_its_action_a_crash_left_running() -> None:
+    recording_id = make_stopped(START)
+    (store.recording_dir(recording_id) / "run-0.log").write_text("$ devin -p …\n")
+    transcribing = a_run("transcribe", "running")
+    store.save_runs(recording_id, [a_run("summarize", "running"), transcribing])
+    started = a_run("summarize", "running", queued_at="2026-11-18T14:00:00+00:00")
+
+    index, runs = store.start_run(recording_id, started)
+
+    expected = [
+        a_run("summarize", "failed", error="interrupted", details="run-0.log"),
+        transcribing,
+        started,
+    ]
+    assert (index, runs) == (2, expected)
+    assert store.load_runs(recording_id) == expected
+    # Rewritten with the new run's status, which hides the failure before it.
+    assert failed_in_status(recording_id) == []
+
+
+def test_end_run_puts_the_ended_run_in_its_place() -> None:
+    recording_id = make_stopped(START)
+    store.save_runs(recording_id, [a_run("transcribe", "succeeded"), a_run("summarize", "running")])
+
+    store.end_run(recording_id, 1, a_run("summarize", "failed", error="boom"))
+
+    assert store.load_runs(recording_id) == [
+        a_run("transcribe", "succeeded"),
+        a_run("summarize", "failed", error="boom"),
+    ]
+    assert failed_in_status(recording_id) == ["summarize"]
+
+
+def test_fail_left_running_fails_the_run_of_the_action_a_dead_command_left_running() -> None:
+    recording_id = make_stopped(START)
+    (store.recording_dir(recording_id) / "run-1.log").write_text("$ agaric-mcp call …\n")
+    published = a_run("publish_agaric", "succeeded", output="agaric://page/01JPAGE")
+    transcribing = a_run("transcribe", "running")
+    store.save_runs(recording_id, [published, a_run("publish_agaric", "running"), transcribing])
+
+    store.fail_left_running(
+        recording_id, "publish_agaric", "Publish to Agaric stopped: RuntimeError: boom"
+    )
+
+    assert store.load_runs(recording_id) == [
+        published,
+        a_run(
+            "publish_agaric",
+            "failed",
+            error="Publish to Agaric stopped: RuntimeError: boom",
+            details="run-1.log",
+        ),
+        transcribing,
+    ]
+    assert failed_in_status(recording_id) == ["publish_agaric"]
+
+
+def test_fail_left_running_leaves_a_log_with_no_run_of_the_action_running() -> None:
+    recording_id = make_stopped(START)
+    runs = [a_run("publish_agaric", "succeeded"), a_run("transcribe", "running")]
+    store.save_runs(recording_id, runs)
+
+    store.fail_left_running(recording_id, "summarize", "Summarize stopped without saying why")
+
+    assert store.load_runs(recording_id) == runs
+    assert failed_in_status(recording_id) == []
 
 
 def test_set_typed_name_keeps_the_name_for_good() -> None:

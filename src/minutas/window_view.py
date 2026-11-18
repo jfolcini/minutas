@@ -9,9 +9,16 @@ from datetime import datetime
 
 from minutas import store
 
-TRANSCRIBE, PUBLISH = "transcribe", "publish_agaric"
+TRANSCRIBE, SUMMARIZE, PUBLISH = "transcribe", "summarize", "publish_agaric"
+# The actions the window runs as commands, by the title it gives them.
+COMMAND_TITLES = {SUMMARIZE: "Summarize", PUBLISH: "Publish to Agaric"}
 TRACK_TITLES = dict(zip(store.TRACKS, ("Microphone", "Call"), strict=True))
-NAME_SOURCES = {"default": "Default name", "calendar": "Calendar event", "typed": "Typed name"}
+NAME_SOURCES = {
+    "default": "Default name",
+    "summary": "Proposed by the summary",
+    "calendar": "Calendar event",
+    "typed": "Typed name",
+}
 RESULTS = {
     "queued": "Queued",
     "running": "Running",
@@ -23,6 +30,7 @@ IN_PROGRESS = {"queued": "Waiting to transcribe", "running": "Transcribing"}
 NAME_TAKEN = {"name_taken", "rename_taken"}
 STILL_RECORDING = "Still recording"
 NO_AUDIO = "The audio was deleted"
+NO_TRANSCRIPT = "Transcribe first"
 
 
 @dataclass(frozen=True)
@@ -61,6 +69,10 @@ class ActionView:
     # take the button's place.
     renames: bool = False
     taken_by: str | None = None
+    # The label of the menu of presets that starts a run; None for an action without one.
+    menu: str | None = None
+    # The prompt of the newest run, which Retry sends again.
+    prompt: str | None = None
 
 
 @dataclass(frozen=True)
@@ -77,6 +89,7 @@ class RowView:
     # The call's speakers, in the order they first speak, and the names offered for them.
     speakers: tuple[SpeakerView, ...]
     attendees: tuple[str, ...]
+    summarize: ActionView
     publish: ActionView
 
 
@@ -103,20 +116,20 @@ def latest(runs: Sequence[store.Run], action: str) -> tuple[int, store.Run] | No
 
 
 def unrecorded_failure(
-    runs: Sequence[store.Run], stderr: str, *, exited_ok: bool, known: int
+    runs: Sequence[store.Run], action: str, stderr: str, *, exited_ok: bool, known: int
 ) -> str | None:
-    """What to say when the publish command failed and left no failed run to say it.
+    """What to say when the action's command failed and left no failed run to say it.
 
-    `known` is how many runs the recording had when the command started: an older failed
-    publish run says nothing about this one.
+    `known` is how many runs the recording had when the command started: an older failed run
+    of the action says nothing about this one.
     """
-    last = latest(runs, PUBLISH)
+    last = latest(runs, action)
     if exited_ok or (last is not None and last[0] >= known and last[1]["status"] == "failed"):
         return None
     said = [line.strip() for line in stderr.splitlines() if line.strip()]
     if not said:
-        return "Publish to Agaric stopped without saying why"
-    return f"Publish to Agaric stopped: {said[-1]}"
+        return f"{COMMAND_TITLES[action]} stopped without saying why"
+    return f"{COMMAND_TITLES[action]} stopped: {said[-1]}"
 
 
 def last_result(
@@ -164,13 +177,16 @@ def row(
     runs: Sequence[store.Run],
     tracks: Collection[str],
     *,
-    publishing: bool,
+    running: Collection[str],
+    summarizer_missing: str,
 ) -> RowView:
     """The row of a recording.
 
-    tracks: those of its two that hold audio. publishing: the window is running its publish
-    command, whatever the run log says so far.
+    tracks: those of its two that hold audio. running: the actions whose command the window is
+    running, whatever the run log says so far. summarizer_missing: how to install the summarizer
+    the window could not find; empty when it found it.
     """
+    publishing, summarizing = PUBLISH in running, SUMMARIZE in running
     stopped = recording["stopped_at"] is not None
     still_recording = "" if stopped else STILL_RECORDING
     no_audio = still_recording or ("" if tracks else NO_AUDIO)
@@ -184,6 +200,29 @@ def row(
     transcribing = None if transcription is None else IN_PROGRESS.get(transcription[1]["status"])
     if transcription is not None and transcribing is not None:
         transcribe = replace(transcribe, label="Cancel", disabled="", cancels=transcription[0])
+
+    # Started from its menu of presets; its only button is Retry, after a run that did not end well.
+    last_summary = last_result(runs, SUMMARIZE, "Not summarized", "", "")
+    menu = "Summarize" if last_summary.output is None else "Summarize again"
+    summarization = latest(runs, SUMMARIZE)
+    if summarizing:
+        summarize = ActionView(
+            result="Running",
+            label="",
+            menu=menu,
+            disabled="Summarizing",
+            output=last_summary.output,
+        )
+    else:
+        summarize = replace(
+            last_summary,
+            result=" · ".join(filter(None, [last_summary.result, summarizer_missing])),
+            menu=menu,
+            prompt=None if summarization is None else summarization[1].get("prompt"),
+            disabled=still_recording
+            or summarizer_missing
+            or ("" if transcribe.output is not None else NO_TRANSCRIPT),
+        )
 
     last_publish = last_result(runs, PUBLISH, "Not published", "Publish", "Publish again")
     publication = latest(runs, PUBLISH)
@@ -202,7 +241,7 @@ def row(
         name=recording["name"],
         name_source=NAME_SOURCES[recording["name_source"]],
         subtitle=subtitle(recording, transcribing),
-        warning=transcribe.failed or last_publish.failed,
+        warning=transcribe.failed or last_summary.failed or last_publish.failed,
         tracks=tuple(
             TrackView(
                 file=name,
@@ -222,5 +261,6 @@ def row(
             for key, name in recording.get("speakers", {}).items()
         ),
         attendees=tuple(recording.get("attendees", [])),
+        summarize=summarize,
         publish=publish,
     )
