@@ -158,8 +158,8 @@ def recognize(
             decoding.greedy.boosting_tree_alpha = BOOSTING_WEIGHT
         model.change_decoding_strategy(decoding)
     texts: list[str] = []
-    # oneDNN keeps a compiled kernel for every input length it meets, so with it memory grows
-    # with each turn of a new length.
+    # oneDNN keeps a compiled kernel per input length (up to 1024), so memory climbs with every
+    # new turn length; with it off memory stays flat, at no measured cost in speed or text.
     with torch.inference_mode(), torch.backends.mkldnn.flags(enabled=False):
         for turn in turns:
             # Only this turn's audio is in memory, however long the meeting.

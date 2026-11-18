@@ -1,3 +1,4 @@
+import builtins
 import contextlib
 import gc
 import itertools
@@ -7,7 +8,7 @@ import sys
 import tracemalloc
 import types
 import weakref
-from collections.abc import Generator, Iterator
+from collections.abc import Generator, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Self
 
@@ -370,8 +371,6 @@ class FakeSpeechStack:
     # silero_vad
 
     def load_silero_vad(self) -> "FakeSpeechStack":
-        # The real silero_vad does this when it is imported.
-        self.torch_threads = 1
         return self
 
     def __call__(self, window: list[float], rate: int) -> types.SimpleNamespace:
@@ -462,6 +461,21 @@ def stack(monkeypatch: pytest.MonkeyPatch) -> FakeSpeechStack:
         module = types.ModuleType(name)
         vars(module).update(attributes)
         monkeypatch.setitem(sys.modules, name, module)
+    real_import = builtins.__import__
+
+    def importing(
+        name: str,
+        module_globals: Mapping[str, object] | None = None,
+        module_locals: Mapping[str, object] | None = None,
+        fromlist: Sequence[str] = (),
+        level: int = 0,
+    ) -> types.ModuleType:
+        if name == "silero_vad":
+            # As the real one does, on import: load_silero_vad is too late to read torch's count.
+            fake.torch_threads = 1
+        return real_import(name, module_globals, module_locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", importing)
     return fake
 
 
@@ -573,7 +587,7 @@ def test_the_checkpoint_is_mapped_and_gone_before_the_first_turn(
 
 
 def test_memory_follows_the_longest_turn_not_the_length_of_the_meeting(
-    home: Path, stack: FakeSpeechStack, recording: Path, monkeypatch: pytest.MonkeyPatch
+    home: Path, stack: FakeSpeechStack, recording: Path
 ) -> None:
     install_model(home)
     # Ten minutes in which each side speaks four seconds out of every sixteen. The fake audio
@@ -584,7 +598,6 @@ def test_memory_follows_the_longest_turn_not_the_length_of_the_meeting(
         "call.opus": {(start, start + 4): "Sí." for start in range(8, 600, 16)},
     }
     tracemalloc.start()
-    monkeypatch.setattr(stack, "transcriptions", [])
     before, _ = tracemalloc.get_traced_memory()
 
     try:
