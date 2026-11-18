@@ -141,10 +141,14 @@ jobs:
           package-manager-cache: false
 
       # Ubuntu 24.04 ships GNOME Shell 46 and gjs 1.80, the oldest the extension supports.
+      # A mirror that stalls mid-download hung this step until the job timed out;
+      # the timeout and retries make apt fetch the file again instead.
       - name: Install GNOME Shell and gjs
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends gnome-shell gjs dbus-daemon
+          sudo apt-get install -y -q --no-install-recommends \
+            -o Acquire::http::Timeout=30 -o Acquire::Retries=3 \
+            gnome-shell gjs dbus-daemon
 
       - name: Install the Node tools
         run: npm ci
