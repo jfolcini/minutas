@@ -24,8 +24,13 @@ ACTION = "transcribe"
 TRANSCRIPT = "transcript.md"
 INTERRUPTED = "interrupted"
 SPEECH_MISSING = "Speech environment not found; run install.sh"
-# What the worker's unit must see as its caller does: the data, the glossary and the speech Python.
-FORWARDED_ENVIRONMENT = ("XDG_DATA_HOME", "XDG_CONFIG_HOME", "MINUTAS_SPEECH_PYTHON")
+OUT_OF_MEMORY = "Transcription ran out of its memory limit"
+# A runaway transcription is killed at its own limit instead of swapping the desktop to death,
+# and its run fails with OUT_OF_MEMORY. No MemoryHigh: below MemoryMax it throttles the process
+# so it never reaches the kill and the queue stalls behind it.
+MEMORY_LIMITS = ("MemoryMax=6G", "MemorySwapMax=512M")
+# What the worker's unit must see as its caller does: the data and the glossary.
+FORWARDED_ENVIRONMENT = ("XDG_DATA_HOME", "XDG_CONFIG_HOME")
 # A worker that found the queue empty is gone, and one just started holds its lock, within a
 # fraction of a second.
 START_TIMEOUT_SECONDS = 2.0
@@ -56,9 +61,7 @@ def ended(run: store.Run, outcome: Outcome) -> store.Run:
 
 
 def speech_python() -> Path:
-    # MINUTAS_SPEECH_PYTHON lets a live check run a fake transcriber beside the installed one.
-    installed = Path.home() / ".local" / "share" / "minutas" / "speech" / "bin" / "python"
-    return Path(os.environ.get("MINUTAS_SPEECH_PYTHON") or installed)
+    return Path.home() / ".local" / "share" / "minutas" / "speech" / "bin" / "python"
 
 
 def glossary() -> Path:
@@ -84,7 +87,11 @@ def start_command() -> list[str]:
     return [
         *("systemd-run", "--user", f"--unit={UNIT}", "--collect", "--quiet"),
         # Idle CPU and disk priority: a call recorded meanwhile keeps the machine.
-        *("--nice=19", "--property=CPUSchedulingPolicy=idle", "--property=IOSchedulingClass=idle"),
+        *("--property=CPUSchedulingPolicy=idle", "--property=IOSchedulingClass=idle"),
+        *(f"--property={limit}" for limit in MEMORY_LIMITS),
+        # The OOM killer picks the transcriber; by default systemd would then stop the worker too,
+        # failing the run as interrupted and leaving the runs queued behind it waiting.
+        "--property=OOMPolicy=continue",
         *(
             f"--setenv={name}={os.environ[name]}"
             for name in FORWARDED_ENVIRONMENT
@@ -159,7 +166,7 @@ def fail_interrupted() -> None:
                 if run["action"] == ACTION and run["status"] == "running"
             ]
             for index in stale:
-                runs[index] = ended(runs[index], failed(INTERRUPTED))
+                runs[index] = ended(runs[index], interrupted(recording_id, index))
             if stale:
                 store.save_runs(recording_id, runs)
     store.write_status()
@@ -185,6 +192,15 @@ def claim_next(worker_lock: IO[str]) -> tuple[str, int] | None:
     return recording_id, index
 
 
+def run_log(recording_id: str, index: int) -> Path:
+    return store.recording_dir(recording_id) / f"run-{index}.log"
+
+
+def interrupted(recording_id: str, index: int) -> Outcome:
+    log = run_log(recording_id, index)
+    return failed(INTERRUPTED, log.name if log.is_file() else None)
+
+
 def transcribe(recording_id: str, index: int) -> Outcome:
     python = speech_python()
     if not python.is_file():
@@ -196,7 +212,7 @@ def transcribe(recording_id: str, index: int) -> Outcome:
     # The speech environment has no minutas installed; it imports the one running here.
     package_root = str(Path(minutas.__file__).parent.parent)
     python_path = os.pathsep.join(filter(None, [package_root, os.environ.get("PYTHONPATH")]))
-    log = folder / f"run-{index}.log"
+    log = run_log(recording_id, index)
     with log.open("w") as stderr:
         result = subprocess.run(  # noqa: S603 - this module's own argument list
             command,
@@ -208,8 +224,19 @@ def transcribe(recording_id: str, index: int) -> Outcome:
         )
     if result.returncode == 0:
         return Outcome(status="succeeded", error=None, details=log.name, output=TRANSCRIPT)
-    lines = [line.strip() for line in log.read_text(errors="replace").splitlines() if line.strip()]
-    reason = lines[-1] if lines else f"The transcriber exited with status {result.returncode}"
+    # A killed transcriber gave no reason, its last line is only progress; the OOM kill at
+    # MemoryMax is a SIGKILL.
+    if result.returncode == -signal.SIGKILL:
+        return failed(OUT_OF_MEMORY, log.name)
+    if result.returncode < 0:
+        return failed(
+            f"The transcriber was killed by {signal.Signals(-result.returncode).name}", log.name
+        )
+    reason = f"The transcriber exited with status {result.returncode}"
+    # Line by line: a long log never sits in memory whole.
+    with log.open(errors="replace") as lines:
+        for line in lines:
+            reason = line.strip() or reason
     return failed(reason, log.name)
 
 
@@ -232,6 +259,6 @@ def work() -> None:
             try:
                 outcome = transcribe(recording_id, index)
             except Interrupted:
-                set_outcome(recording_id, index, failed(INTERRUPTED))
+                set_outcome(recording_id, index, interrupted(recording_id, index))
                 return
             set_outcome(recording_id, index, outcome)

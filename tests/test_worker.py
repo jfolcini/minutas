@@ -1,9 +1,11 @@
 import fcntl
+import gc
 import json
 import os
 import signal
 import subprocess
 import sys
+import tracemalloc
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
@@ -26,9 +28,11 @@ def start_command(data_home: Path, config_home: Path) -> list[str]:
         "--unit=minutas-transcribe.service",
         "--collect",
         "--quiet",
-        "--nice=19",
         "--property=CPUSchedulingPolicy=idle",
         "--property=IOSchedulingClass=idle",
+        "--property=MemoryMax=6G",
+        "--property=MemorySwapMax=512M",
+        "--property=OOMPolicy=continue",
         f"--setenv=XDG_DATA_HOME={data_home}",
         f"--setenv=XDG_CONFIG_HOME={config_home}",
         "--",
@@ -107,7 +111,6 @@ def system(monkeypatch: pytest.MonkeyPatch) -> FakeSystem:
 def speech(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> FakeSpeechPython:
     fake = FakeSpeechPython(tmp_path / "home" / ".local/share/minutas/speech/bin/python")
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
-    monkeypatch.delenv("MINUTAS_SPEECH_PYTHON", raising=False)
     monkeypatch.delenv("PYTHONPATH", raising=False)
     fake.install()
     return fake
@@ -126,6 +129,13 @@ def sigterm() -> Iterator[None]:
     handler = signal.getsignal(signal.SIGTERM)
     yield
     signal.signal(signal.SIGTERM, handler)
+
+
+@pytest.fixture
+def traced() -> Iterator[None]:
+    tracemalloc.start()
+    yield
+    tracemalloc.stop()
 
 
 @pytest.fixture
@@ -208,16 +218,14 @@ def test_queue_appends_after_earlier_runs(system: FakeSystem) -> None:
 
 
 def test_start_forwards_only_the_environment_that_is_set(
-    system: FakeSystem, monkeypatch: pytest.MonkeyPatch
+    system: FakeSystem, monkeypatch: pytest.MonkeyPatch, xdg_dirs: Path
 ) -> None:
     monkeypatch.delenv("XDG_DATA_HOME")
-    monkeypatch.delenv("XDG_CONFIG_HOME")
-    monkeypatch.setenv("MINUTAS_SPEECH_PYTHON", "/opt/fake-python")
 
     worker.ensure_worker()
 
     assert [arg for arg in system.commands()[0] if arg.startswith("--setenv")] == [
-        "--setenv=MINUTAS_SPEECH_PYTHON=/opt/fake-python"
+        f"--setenv=XDG_CONFIG_HOME={xdg_dirs / 'config'}"
     ]
 
 
@@ -405,11 +413,95 @@ def test_work_records_the_last_stderr_line_as_the_error(system: FakeSystem) -> N
 def test_work_names_the_exit_status_when_the_transcriber_says_nothing(system: FakeSystem) -> None:
     recording_id = recording()
     put_runs(recording_id, [queued_run(START)])
-    system.transcribe = lambda _args, _stderr: -9
+    system.transcribe = lambda _args, _stderr: 3
 
     worker.work()
 
-    assert store.load_runs(recording_id)[0]["error"] == "The transcriber exited with status -9"
+    assert store.load_runs(recording_id)[0]["error"] == "The transcriber exited with status 3"
+
+
+@pytest.mark.parametrize(
+    ("killer", "reason"),
+    [
+        (signal.SIGKILL, "Transcription ran out of its memory limit"),
+        (signal.SIGSEGV, "The transcriber was killed by SIGSEGV"),
+    ],
+)
+@pytest.mark.usefixtures("speech", "sigterm")
+def test_work_says_why_a_killed_transcriber_stopped_and_goes_on(
+    system: FakeSystem, killer: signal.Signals, reason: str
+) -> None:
+    first, second = recording(), recording(START + timedelta(hours=1))
+    put_runs(first, [queued_run(START + timedelta(seconds=60))])
+    put_runs(second, [queued_run(START + timedelta(hours=2))])
+
+    def killed(args: list[str], stderr: TextIO) -> int:
+        if Path(args[3]).name == second:
+            return write_transcript(args, stderr)
+        stderr.write("transcribing turn 3 of 40\n")
+        return -killer
+
+    system.transcribe = killed
+
+    worker.work()
+
+    assert store.load_runs(first) == [
+        {**QUEUED, "status": "failed", "error": reason, "details": "run-0.log"}
+    ]
+    assert [run["status"] for run in store.load_runs(second)] == ["succeeded"]
+
+
+@pytest.mark.usefixtures("speech", "sigterm", "traced")
+def test_work_finds_the_reason_in_a_long_log_without_holding_it(system: FakeSystem) -> None:
+    recording_id = recording()
+    put_runs(recording_id, [queued_run(START)])
+    progress = "transcribing turn 1 of 40\n" * 1000
+
+    def chatty(_: list[str], stderr: TextIO) -> int:
+        stderr.writelines(progress for _chunk in range(100))
+        stderr.write("Out of memory loading the model\n")
+        return 1
+
+    system.transcribe = chatty
+
+    worker.work()
+
+    assert store.load_runs(recording_id)[0]["error"] == "Out of memory loading the model"
+    # Read line by line, the long log never sits in memory whole.
+    assert tracemalloc.get_traced_memory()[1] < 1_000_000
+
+
+@pytest.mark.usefixtures("speech", "sigterm", "traced")
+def test_the_worker_keeps_nothing_per_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    recording_ids = [recording(START + timedelta(hours=hour)) for hour in range(4)]
+    for recording_id in recording_ids:
+        put_runs(recording_id, [queued_run(START) for _ in range(25)])
+    # Two windows after a warm-up: a leak grows in both, a one-off resize of one of the
+    # interpreter's tables in one at most.
+    traced_at = {20: 0, 60: 0, 100: 0}
+    calls = 0
+
+    def failing(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        nonlocal calls
+        calls += 1
+        if calls in traced_at:
+            # Empties the interpreter's free lists, whose blocks tracemalloc counts as in use.
+            gc.collect()
+            traced_at[calls] = tracemalloc.get_traced_memory()[0]
+        cast("TextIO", kwargs["stderr"]).write("transcribing turn 1 of 40\n" * 40 + "No luck\n")
+        return subprocess.CompletedProcess(args, 1)
+
+    monkeypatch.setattr(subprocess, "run", failing)
+    # Only for speed: the store's own tests cover its writes reaching the disk.
+    monkeypatch.setattr(os, "fsync", lambda _fd: None)
+
+    worker.work()
+
+    assert calls == 100
+    for recording_id in recording_ids:
+        assert [run["error"] for run in store.load_runs(recording_id)] == ["No luck"] * 25
+    windows = (traced_at[60] - traced_at[20], traced_at[100] - traced_at[60])
+    assert min(windows) < 5_000
 
 
 @pytest.mark.usefixtures("sigterm")
@@ -430,21 +522,6 @@ def test_work_fails_the_run_without_the_speech_environment(
 
 
 @pytest.mark.usefixtures("speech", "sigterm")
-def test_work_runs_the_speech_python_the_environment_names(
-    system: FakeSystem, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    fake = tmp_path / "fake-transcriber"
-    fake.touch()
-    monkeypatch.setenv("MINUTAS_SPEECH_PYTHON", str(fake))
-    recording_id = recording()
-    put_runs(recording_id, [queued_run(START)])
-
-    worker.work()
-
-    assert system.commands()[0][0] == str(fake)
-
-
-@pytest.mark.usefixtures("speech", "sigterm")
 def test_work_fails_transcriptions_a_previous_worker_left_running(system: FakeSystem) -> None:
     first, second = recording(), recording(START + timedelta(hours=1))
     summarizing = {**QUEUED, "action": "summarize", "status": "running"}
@@ -456,7 +533,14 @@ def test_work_fails_transcriptions_a_previous_worker_left_running(system: FakeSy
             cast("store.Run", summarizing),
         ],
     )
-    put_runs(second, [cast("store.Run", {**QUEUED, "status": "succeeded"})])
+    put_runs(
+        second,
+        [
+            cast("store.Run", {**QUEUED, "status": "succeeded"}),
+            cast("store.Run", {**QUEUED, "status": "running"}),
+        ],
+    )
+    (store.recording_dir(second) / "run-1.log").write_text("transcribing turn 3 of 40\n")
     store.write_status()
 
     worker.work()
@@ -466,7 +550,11 @@ def test_work_fails_transcriptions_a_previous_worker_left_running(system: FakeSy
         {**QUEUED, "status": "failed", "error": "interrupted"},
         summarizing,
     ]
-    assert store.load_runs(second) == [{**QUEUED, "status": "succeeded"}]
+    # What the killed transcriber wrote stays as the details.
+    assert store.load_runs(second) == [
+        {**QUEUED, "status": "succeeded"},
+        {**QUEUED, "status": "failed", "error": "interrupted", "details": "run-1.log"},
+    ]
     assert system.commands() == []
     assert transcribe_status(first) == ("failed", ["transcribe"])
 
@@ -487,8 +575,15 @@ def test_sigterm_fails_the_running_transcription_and_stops_the_worker(system: Fa
     worker.work()
 
     assert store.load_runs(first) == [
-        {**QUEUED, "queued_at": START.isoformat(), "status": "failed", "error": "interrupted"}
+        {
+            **QUEUED,
+            "queued_at": START.isoformat(),
+            "status": "failed",
+            "error": "interrupted",
+            "details": "run-0.log",
+        }
     ]
+    assert (store.recording_dir(first) / "run-0.log").read_text() == "transcribing turn 3 of 40\n"
     assert store.load_runs(second)[0]["status"] == "queued"
     assert system.transcribed() == [first]
     assert transcribe_status(first) == ("failed", ["transcribe"])
