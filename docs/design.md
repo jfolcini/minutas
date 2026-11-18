@@ -38,7 +38,7 @@ The stack is settled: Python, Parakeet v3, pyannote community-1, two recorded tr
 | Agaric | Publish to Agaric runs `agaric-mcp call add_meeting`, with no template; running it again adds the summary and applies a new name | The summary already lists decisions and action items, so a template would repeat them |
 | GitLab | Publish to GitLab asks for a link: an issue link gets a comment, a project link a new issue with only a title and body; it posts the summary and links the uploaded transcript and audio | The link alone says where and how to post; labels and assignees are set in GitLab |
 | GitLab login | [`glab`](https://docs.gitlab.com/cli/api/), logged in once per server; 1.91 or newer, installed by install.sh from the snap | Already handles gitlab.com and self-hosted servers; no token handling in the tool |
-| Audio kept | The two tracks as Ogg Opus, 16 kHz mono at 32 kbps each (about 30 MB an hour), with the transcript and outputs, until the recording is deleted; no lossless copy | At that rate Opus barely changes what the speech models hear, and 16 kHz is all they take; tracks small enough to keep for good can always be re-transcribed with a better model, and nothing needs a cleanup |
+| Audio kept | The two tracks as Ogg Opus, 16 kHz mono at 32 kbps each (about 30 MB an hour), with the transcript and outputs, until the recording is deleted; no lossless copy | At that rate Opus barely changes what the speech models hear, and 16 kHz is all they take; tracks small enough to keep for good can always be re-transcribed with a better model; age and size limits come later ([#18](https://github.com/jfolcini/minutas/issues/18)) |
 | Audio files | Per recording, for its two tracks: Play, Save a copy, Open folder, Delete now | Manage disk and hand a file to someone without leaving the window |
 | Existing tools | Inspiration only, no fork | None fits; several have a piece worth borrowing |
 | Voice memory | Later, nice to have | Calendar attendees cover naming at first |
@@ -271,7 +271,7 @@ The scorer comes first, so every later step is measured; the tool is usable end 
 - [ ] **M6:** Summarize: built-in presets (General, Standup, 1:1, Stakeholder call), saved presets, Custom with Save as preset, deleting saved presets, Devin CLI, `summary.md`, the proposed page name from its `Title:` line; Publish to Agaric adds the summary and renames the page when its automatic name changed
 - [ ] **M7:** Publish to GitLab through `glab api`: comment or new issue (title and body only), transcript and audio uploads, Retry carrying on from the failed step, the output link
 - [ ] **M8:** GNOME extension: record and stop, the consent reminder on Record, recent recordings with a mark on failed runs, Open history, notifications for a ready transcript or a failed run; `install.sh` complete, with the glab and extension steps, and `minutas update`
-- [ ] **Later:** voice memory; fine-tuning on Rioplatense speech if the test set shows a gap; Claude and Codex summarizers; publishing to GitHub; macOS and Windows
+- [ ] **Later:** age and size limits on kept audio ([#18](https://github.com/jfolcini/minutas/issues/18)); voice memory; fine-tuning on Rioplatense speech if the test set shows a gap; Claude and Codex summarizers; publishing to GitHub; macOS and Windows
 
 ## Open questions
 
