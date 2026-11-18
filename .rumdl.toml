@@ -1,0 +1,16 @@
+# Markdown lint (rumdl, a markdownlint port). Same rule choices as Agaric's
+# markdownlint config.
+
+[global]
+disable = [
+    "MD013", # line length: prose is one line per paragraph
+    "MD041", # first line need not be a heading (templates, CLAUDE.md)
+    "MD060", # table column alignment
+]
+exclude = [".venv"]
+
+[MD024]
+siblings-only = true
+
+[MD033]
+allowed-elements = ["br", "sub", "sup", "kbd", "details", "summary", "p", "img", "a"]

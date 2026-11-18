@@ -1,0 +1,6 @@
+[files]
+extend-exclude = ["uv.lock"]
+
+[default.extend-words]
+# GObject introspection package prefix (`gir1.2-gtk-4.0`).
+gir = "gir"

@@ -1,0 +1,10 @@
+# Link checker for the Markdown docs (CI's `lint` job). Rate limits and
+# bot walls answer with these codes while the page itself is fine.
+accept = ["200..=299", "403", "429", "500", "502", "503", "504"]
+max_retries = 5
+retry_wait_time = 2
+timeout = 30
+exclude = [
+    "^http://localhost(:\\d+)?(/|$)",
+    "^http://127\\.0\\.0\\.1(:\\d+)?(/|$)",
+]

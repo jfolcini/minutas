@@ -1,0 +1,24 @@
+name: CI
+
+# Pull requests run here; a push to main is the post-merge check.
+on:
+  push:
+    branches: [main]
+    tags-ignore: ['**']
+  pull_request:
+    branches: [main]
+
+# A PR cancels its superseded run; main shares one group without cancel, so the
+# newest main commit's run covers every merge before it.
+concurrency:
+  group: ${{ github.ref == 'refs/heads/main' && 'ci-main' || format('ci-{0}', github.ref) }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  # Lint (the prek suite) and tests (pytest with the coverage floor). The
+  # required context on main is `validate / validate-all`.
+  validate:
+    uses: ./.github/workflows/_validate.yml

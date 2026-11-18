@@ -1,0 +1,3 @@
+# gitleaks configuration: the upstream default rule set, nothing removed.
+[extend]
+useDefault = true
