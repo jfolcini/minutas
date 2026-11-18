@@ -251,11 +251,7 @@ def start_run(recording_id: str, queued_at: str) -> tuple[int, PublishRun | None
     """
     with store.lock():
         runs = store.load_runs(recording_id)
-        for index, run in enumerate(runs):
-            if run["action"] == ACTION and run["status"] == "running":
-                run["status"] = "failed"
-                run["error"] = INTERRUPTED
-                run["details"] = existing_log(recording_id, index)
+        fail_running(recording_id, runs, INTERRUPTED)
         succeeded = [r for r in runs if r["action"] == ACTION and r["status"] == "succeeded"]
         runs.append(
             store.Run(
@@ -270,6 +266,23 @@ def start_run(recording_id: str, queued_at: str) -> tuple[int, PublishRun | None
         store.save_runs(recording_id, runs)
     store.write_status()
     return len(runs) - 1, cast("PublishRun", succeeded[-1]) if succeeded else None
+
+
+def fail_running(recording_id: str, runs: list[store.Run], error: str) -> None:
+    for index, run in enumerate(runs):
+        if run["action"] == ACTION and run["status"] == "running":
+            run["status"] = "failed"
+            run["error"] = error
+            run["details"] = existing_log(recording_id, index)
+
+
+def fail_left_running(recording_id: str, error: str) -> None:
+    """Fails the run of a publisher that died before it could end it."""
+    with store.lock():
+        runs = store.load_runs(recording_id)
+        fail_running(recording_id, runs, error)
+        store.save_runs(recording_id, runs)
+    store.write_status()
 
 
 def end_run(recording_id: str, index: int, run: PublishRun) -> None:

@@ -20,7 +20,7 @@ gi.require_version("Adw", "1")
 gi.require_version("Gtk", "4.0")
 from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402 - after the versions are chosen
 
-from minutas import store, window_view, worker  # noqa: E402
+from minutas import agaric, store, window_view, worker  # noqa: E402
 from minutas.window_view import PUBLISH, TRANSCRIBE, ActionView, RowView  # noqa: E402
 
 APP_ID = "io.github.jfolcini.Minutas"
@@ -223,10 +223,9 @@ class HistoryWindow(Adw.ApplicationWindow):
                 title="No recordings yet", description="Record a meeting from the top bar."
             )
         )
+        self.viewport = Gtk.Viewport(child=Adw.Clamp(child=self.list))
         self.toasts = Adw.ToastOverlay(
-            child=Gtk.ScrolledWindow(
-                child=Adw.Clamp(child=self.list), hscrollbar_policy=Gtk.PolicyType.NEVER
-            )
+            child=Gtk.ScrolledWindow(child=self.viewport, hscrollbar_policy=Gtk.PolicyType.NEVER)
         )
         page = Adw.ToolbarView(content=self.toasts)
         page.add_top_bar(Adw.HeaderBar())
@@ -270,6 +269,7 @@ class HistoryWindow(Adw.ApplicationWindow):
         row = self.rows.get(recording_id)
         if row is not None:
             row.set_expanded(True)
+            self.viewport.scroll_to(row, None)
 
     def expanded(self, row: RecordingRow, _property: object) -> None:
         recording_id = row.view.recording_id
@@ -435,6 +435,8 @@ class HistoryWindow(Adw.ApplicationWindow):
             store.load_runs(recording_id), stderr or "", exited_ok=command.get_successful()
         )
         if problem is not None:
+            # One that died after starting its run left it running: it fails, and says why.
+            agaric.fail_left_running(recording_id, problem)
             self.say(problem)
         self.refresh()
 

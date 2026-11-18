@@ -143,6 +143,10 @@ beartype_packages = "minutas"
 source_paths = ["src/minutas/"]
 # mutmut's trampolines skew coverage and runtime type checks; the gates run elsewhere.
 pytest_add_cli_args = ["--no-cov", "-o", "beartype_packages="]
+# Each mutant's tests in a process that imported nothing before its fork: GLib's threads, which
+# the window's tests wait on, do not survive a fork from one that loaded GTK, so every one fails.
+process_isolation = "forkserver"
+forkserver_warmup = "none"
 
 [tool.deptry]
 known_first_party = ["minutas"]
@@ -184,7 +188,7 @@ type = "layers"
 layers = [
     "minutas.cli",
     # The window draws what window_view works out, and reaches the rest of the program only
-    # through the worker and the store; it runs the publisher as a command.
+    # through the worker, the store and the publisher's run log; it runs the publisher as a command.
     "minutas.window",
     "(minutas.recorder) | (minutas.worker) | (minutas.agaric) | (minutas.window_view)",
     "minutas.settings",

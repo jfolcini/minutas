@@ -16,7 +16,7 @@ import pytest
 gi = pytest.importorskip("gi", exc_type=ImportError)
 gi.require_version("Adw", "1")
 gi.require_version("Gtk", "4.0")
-from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk  # noqa: E402
+from gi.repository import Adw, Gdk, Gio, GLib, GObject, Graphene, Gtk  # noqa: E402
 
 from minutas import store, window, worker  # noqa: E402
 
@@ -97,12 +97,8 @@ def wait_until(happened: Callable[[], bool]) -> None:
     assert happened()
 
 
-def open_dialog(shown: window.HistoryWindow) -> Adw.Dialog:
-    """The dialog a press opened, once it is on screen.
-
-    A person presses nothing they cannot see yet, and libadwaita never finishes closing a dialog
-    that was answered before it was drawn.
-    """
+def draw(shown: window.HistoryWindow) -> None:
+    """Runs the main loop until the window has drawn a few frames, laid out anew."""
     frames: list[Gdk.FrameClock] = []
 
     def drawn(_widget: Gtk.Widget, clock: Gdk.FrameClock) -> bool:
@@ -111,6 +107,15 @@ def open_dialog(shown: window.HistoryWindow) -> Adw.Dialog:
 
     shown.add_tick_callback(drawn)
     wait_until(lambda: len(frames) == 3)
+
+
+def open_dialog(shown: window.HistoryWindow) -> Adw.Dialog:
+    """The dialog a press opened, once it is on screen.
+
+    A person presses nothing they cannot see yet, and libadwaita never finishes closing a dialog
+    that was answered before it was drawn.
+    """
+    draw(shown)
     dialog = shown.get_visible_dialog()
     assert dialog is not None
     return dialog
@@ -905,6 +910,25 @@ def test_a_publish_command_that_dies_without_a_run_is_reported(
     assert buttons(row)["Publish"].get_sensitive() is True
 
 
+def test_a_publish_command_that_dies_mid_run_fails_its_run(
+    history: Callable[[], window.HistoryWindow], publish: FakePublish
+) -> None:
+    recording([run("publish_agaric", "succeeded", output="agaric://page/01HX")])
+    traceback = "Traceback (most recent call last):\n  ...\nRuntimeError: boom\n"
+    publish.will(run("publish_agaric", "running"), exit_status=1, stderr=traceback)
+    shown = history()
+    row = expand(shown)
+
+    press(row, "Publish again")
+    wait_until(lambda: not shown.publishing)
+
+    reason = "Publish to Agaric stopped: RuntimeError: boom"
+    assert store.load_runs(FIRST)[-1] == run("publish_agaric", "failed", error=reason)
+    assert ("Publish to Agaric", f"Failed: {reason}") in lines(row)
+    assert list(buttons(shown.details[FIRST].publish.row)) == ["Open in Agaric", "Retry"]
+    assert row.warning.get_visible() is True
+
+
 def test_the_window_follows_what_other_processes_do(
     history: Callable[[], window.HistoryWindow],
 ) -> None:
@@ -947,6 +971,24 @@ def test_reveal_expands_the_recording_and_ignores_one_that_is_gone(
     shown.reveal("2026-11-18T15-05-42")
 
     assert [row.get_expanded() for row in shown.rows.values()] == [False, True]
+
+
+def test_reveal_scrolls_to_a_recording_far_down_the_list(
+    history: Callable[[], window.HistoryWindow],
+) -> None:
+    for days in range(20):
+        recording(started=START - timedelta(days=days))
+    oldest = "2026-10-30T13-05-42"
+    shown = history()
+    draw(shown)
+
+    shown.reveal(oldest)
+    draw(shown)
+
+    # Its own line in view: what it expanded to is laid out only after the scroll.
+    found, top = shown.rows[oldest].compute_point(shown.viewport, Graphene.Point())
+    assert found is True
+    assert 0 <= top.y < shown.viewport.get_height()
 
 
 def finalized(widgets: list[Gtk.Widget]) -> list[bool]:

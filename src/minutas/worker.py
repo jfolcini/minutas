@@ -225,7 +225,8 @@ def cancel(recording_id: str, index: int) -> None:
         store.save_runs(recording_id, runs)
         if status == "running":
             # Still inside the lock, where the worker cannot have moved on to another run. A unit
-            # that is gone has nothing to stop.
+            # that is gone has nothing to stop. A transcriber in the moment between the claim and
+            # its start is missed: it runs to the end, and set_outcome keeps the cancel.
             subprocess.run(STOP_TRANSCRIBER, capture_output=True, check=False)  # noqa: S603
     store.write_status()
 

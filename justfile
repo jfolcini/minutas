@@ -82,7 +82,7 @@ cov-diff:
 
 # Mutation testing, report only; PATTERN is a mutant glob (`just mutate 'minutas.store*'`).
 mutate PATTERN="":
-    uv run mutmut run {{ PATTERN }}
+    uv run mutmut run --max-children 4 {{ PATTERN }}
     uv run mutmut results
 
 # Browse the surviving mutants of the last `just mutate`.
