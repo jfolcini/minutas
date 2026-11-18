@@ -341,3 +341,18 @@ def test_save_runs_replaces_the_run_log() -> None:
     store.save_runs("2026-11-18T13-05-42", runs)
 
     assert store.load_runs("2026-11-18T13-05-42") == runs
+
+
+def test_set_typed_name_keeps_the_name_for_good() -> None:
+    recording_id = make_stopped(START)
+
+    store.set_typed_name(recording_id, "Weekly sync")
+
+    assert json.loads((store.recording_dir(recording_id) / "recording.json").read_text()) == {
+        "id": recording_id,
+        "started_at": "2026-11-18T13:05:42+00:00",
+        "stopped_at": "2026-11-18T13:06:42+00:00",
+        "incomplete": False,
+        "name": "Weekly sync",
+        "name_source": "typed",
+    }

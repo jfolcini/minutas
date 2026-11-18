@@ -1,3 +1,4 @@
+import io
 import json
 import os
 import subprocess
@@ -8,8 +9,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 import pytest
+from keyring.errors import KeyringLocked
 
-from minutas import cli, recorder, store, worker
+from minutas import agaric, cli, recorder, settings, store, worker
 from minutas.cli import main
 
 if TYPE_CHECKING:
@@ -504,3 +506,157 @@ def test_history_passes_on_gio_failure(fake_gio: FakeGio) -> None:
     fake_gio.returncode = 2
 
     assert main(["history"]) == 2
+
+
+class FakePublisher:
+    """Stands in for the agaric module: no agaric-mcp, GStreamer or keyring."""
+
+    def __init__(self) -> None:
+        self.succeeds = True
+        # Each publish: the recording, when, the page, and the recording's name at that moment.
+        self.published: list[tuple[str, datetime, str | None, str]] = []
+        self.spaces: list[tuple[str, str]] = []
+        self.error: agaric.AgaricError | None = None
+
+    def publish(self, recording_id: str, published: datetime, *, page: str | None = None) -> bool:
+        name = store.load_recording(recording_id)["name"]
+        self.published.append((recording_id, published, page, name))
+        return self.succeeds
+
+    def list_spaces(self) -> list[tuple[str, str]]:
+        if self.error is not None:
+            raise self.error
+        return self.spaces
+
+
+@pytest.fixture
+def fake_publisher(monkeypatch: pytest.MonkeyPatch) -> FakePublisher:
+    fake = FakePublisher()
+    monkeypatch.setattr(agaric, "publish", fake.publish)
+    monkeypatch.setattr(agaric, "list_spaces", fake.list_spaces)
+    monkeypatch.setattr(cli, "now", lambda: START + timedelta(hours=1))
+    return fake
+
+
+@pytest.mark.parametrize(("succeeds", "code"), [(True, 0), (False, 1)])
+def test_publish_agaric_publishes_the_recording(
+    fake_publisher: FakePublisher, *, succeeds: bool, code: int
+) -> None:
+    store.create_recording(START)
+    fake_publisher.succeeds = succeeds
+
+    assert main(["publish", "agaric", "2026-11-18T13-05-42"]) == code
+
+    assert fake_publisher.published == [
+        ("2026-11-18T13-05-42", START + timedelta(hours=1), None, "Meeting")
+    ]
+
+
+def test_publish_agaric_to_a_page(fake_publisher: FakePublisher) -> None:
+    store.create_recording(START)
+
+    assert main(["publish", "agaric", "2026-11-18T13-05-42", "--page", "01JPAGE"]) == 0
+
+    assert fake_publisher.published[0][2] == "01JPAGE"
+
+
+def test_publish_agaric_with_a_name_types_it_first(fake_publisher: FakePublisher) -> None:
+    store.create_recording(START)
+
+    assert main(["publish", "agaric", "2026-11-18T13-05-42", "--name", " Weekly sync "]) == 0
+
+    assert fake_publisher.published[0][3] == "Weekly sync"
+    assert store.load_recording("2026-11-18T13-05-42")["name"] == "Weekly sync"
+
+
+def test_publish_agaric_refuses_a_blank_name(
+    fake_publisher: FakePublisher, capsys: pytest.CaptureFixture[str]
+) -> None:
+    store.create_recording(START)
+
+    assert main(["publish", "agaric", "2026-11-18T13-05-42", "--name", "  "]) == 1
+
+    assert capsys.readouterr().err == "A name can't be blank.\n"
+    assert fake_publisher.published == []
+    assert store.load_recording("2026-11-18T13-05-42")["name"] == "Meeting"
+
+
+def test_publish_agaric_refuses_an_unknown_recording(
+    fake_publisher: FakePublisher, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["publish", "agaric", "2026-11-18T13-05-42"]) == 1
+
+    assert capsys.readouterr().err == "No recording 2026-11-18T13-05-42.\n"
+    assert fake_publisher.published == []
+
+
+def test_settings_agaric_sets_the_space() -> None:
+    assert main(["settings", "agaric", "--space", "01HZWORK"]) == 0
+
+    assert settings.agaric_space_id() == "01HZWORK"
+
+
+def test_settings_agaric_reads_the_token_from_stdin(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "stdin", io.StringIO(" agt_1 \n"))
+
+    assert main(["settings", "agaric", "--token-from-stdin"]) == 0
+
+    assert settings.agaric_token() == "agt_1"
+
+
+def test_settings_agaric_says_why_the_keyring_refused_the_token(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def locked(_token: str) -> None:
+        reason = "dismissed"
+        raise KeyringLocked(reason)  # what dismissing the unlock prompt raises
+
+    monkeypatch.setattr(sys, "stdin", io.StringIO("agt_1\n"))
+    monkeypatch.setattr(settings, "set_agaric_token", locked)
+
+    assert main(["settings", "agaric", "--token-from-stdin"]) == 1
+
+    assert capsys.readouterr().err == (
+        "Could not store the Agaric agent token in the keyring: dismissed\n"
+    )
+
+
+def test_settings_agaric_refuses_an_empty_token(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(sys, "stdin", io.StringIO("\n"))
+
+    assert main(["settings", "agaric", "--token-from-stdin"]) == 1
+
+    assert capsys.readouterr().err == "No token on stdin.\n"
+    assert settings.agaric_token() is None
+
+
+def test_settings_agaric_lists_the_spaces(
+    fake_publisher: FakePublisher, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fake_publisher.spaces = [("01HZPERSONAL", "Personal"), ("01HZWORK", "Work")]
+
+    assert main(["settings", "agaric", "--list-spaces"]) == 0
+
+    assert capsys.readouterr().out == "01HZPERSONAL\tPersonal\n01HZWORK\tWork\n"
+
+
+def test_settings_agaric_reports_why_spaces_cannot_be_listed(
+    fake_publisher: FakePublisher, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fake_publisher.error = agaric.AgaricError(agaric.NOT_RUNNING)
+
+    assert main(["settings", "agaric", "--list-spaces"]) == 1
+
+    assert capsys.readouterr().err == f"{agaric.NOT_RUNNING}\n"
+
+
+def test_settings_agaric_without_an_option_says_what_it_takes(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert main(["settings", "agaric"]) == 1
+
+    assert capsys.readouterr().err == (
+        "Nothing to do: pass --space, --token-from-stdin or --list-spaces.\n"
+    )
