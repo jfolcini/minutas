@@ -16,6 +16,7 @@ from minutas.cli import main
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from types import ModuleType
 
 START = datetime(2026, 11, 18, 13, 5, 42, tzinfo=UTC)
 
@@ -445,52 +446,53 @@ def test_worker_runs_the_queue(fake_worker: FakeWorker) -> None:
     assert fake_worker.works == 1
 
 
-class FakeGio:
-    def __init__(self) -> None:
-        self.returncode = 0
-        self.calls: list[list[str]] = []
+class FakeWindow:
+    """Stands in for the window module, which needs GTK: it opens nothing."""
 
-    def __call__(self, args: list[str], **_: object) -> subprocess.CompletedProcess[str]:
-        self.calls.append(args)
-        return subprocess.CompletedProcess(args, self.returncode)
+    def __init__(self) -> None:
+        self.exit_status = 0
+        self.opened: list[str | None] = []
+
+    def run(self, recording_id: str | None) -> int:
+        self.opened.append(recording_id)
+        return self.exit_status
 
 
 @pytest.fixture
-def fake_gio(monkeypatch: pytest.MonkeyPatch) -> FakeGio:
-    fake = FakeGio()
-    monkeypatch.setattr(subprocess, "run", fake)
+def fake_window(monkeypatch: pytest.MonkeyPatch) -> FakeWindow:
+    fake = FakeWindow()
+    monkeypatch.setitem(sys.modules, "minutas.window", cast("ModuleType", fake))
     return fake
 
 
-def test_history_opens_the_recordings_folder(fake_gio: FakeGio) -> None:
+def test_history_opens_the_window(fake_window: FakeWindow) -> None:
     assert main(["history"]) == 0
 
-    assert fake_gio.calls == [["gio", "open", str(store.recordings_dir())]]
-    assert store.recordings_dir().is_dir()
+    assert fake_window.opened == [None]
 
 
-def test_history_opens_one_recordings_folder(fake_gio: FakeGio) -> None:
+def test_history_opens_the_window_on_a_recording(fake_window: FakeWindow) -> None:
     store.create_recording(START)
 
     assert main(["history", "--recording", "2026-11-18T13-05-42"]) == 0
 
-    assert fake_gio.calls == [["gio", "open", str(store.recording_dir("2026-11-18T13-05-42"))]]
+    assert fake_window.opened == ["2026-11-18T13-05-42"]
 
 
 @pytest.mark.parametrize("recording_id", ["2026-11-18T13-05-43", "..", "."])
 def test_history_refuses_an_unknown_recording(
-    fake_gio: FakeGio, capsys: pytest.CaptureFixture[str], recording_id: str
+    fake_window: FakeWindow, capsys: pytest.CaptureFixture[str], recording_id: str
 ) -> None:
     store.create_recording(START)
 
     assert main(["history", "--recording", recording_id]) == 1
 
     assert capsys.readouterr().err == f"No recording {recording_id}.\n"
-    assert fake_gio.calls == []
+    assert fake_window.opened == []
 
 
 def test_history_refuses_a_folder_outside_the_recordings(
-    fake_gio: FakeGio, capsys: pytest.CaptureFixture[str], tmp_path: Path
+    fake_window: FakeWindow, capsys: pytest.CaptureFixture[str], tmp_path: Path
 ) -> None:
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
@@ -499,11 +501,11 @@ def test_history_refuses_a_folder_outside_the_recordings(
     assert main(["history", "--recording", str(elsewhere)]) == 1
 
     assert capsys.readouterr().err == f"No recording {elsewhere}.\n"
-    assert fake_gio.calls == []
+    assert fake_window.opened == []
 
 
-def test_history_passes_on_gio_failure(fake_gio: FakeGio) -> None:
-    fake_gio.returncode = 2
+def test_history_passes_on_the_windows_exit_status(fake_window: FakeWindow) -> None:
+    fake_window.exit_status = 2
 
     assert main(["history"]) == 2
 

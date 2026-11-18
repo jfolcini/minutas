@@ -23,6 +23,10 @@ UNIT = "minutas-transcribe.service"
 ACTION = "transcribe"
 TRANSCRIPT = "transcript.md"
 INTERRUPTED = "interrupted"
+# Sent to every process of the unit: it ends the transcriber, which takes the signal's default
+# action, and leaves the worker, which handles it and goes on with the queue.
+CANCEL_SIGNAL = signal.SIGUSR1
+STOP_TRANSCRIBER = ["systemctl", "--user", "kill", f"--signal={CANCEL_SIGNAL.name}", UNIT]
 SPEECH_MISSING = "Speech environment not found; run install.sh"
 OUT_OF_MEMORY = "Transcription ran out of its memory limit"
 # A runaway transcription is killed at its own limit instead of swapping the desktop to death,
@@ -120,8 +124,10 @@ def ensure_worker() -> None:
 def set_outcome(recording_id: str, index: int, outcome: Outcome) -> None:
     with store.lock():
         runs = store.load_runs(recording_id)
-        runs[index] = ended(runs[index], outcome)
-        store.save_runs(recording_id, runs)
+        # Cancel got there first and stopped the transcriber: how that exited is not the outcome.
+        if runs[index]["status"] != "cancelled":
+            runs[index] = ended(runs[index], outcome)
+            store.save_runs(recording_id, runs)
     store.write_status()
 
 
@@ -196,9 +202,32 @@ def run_log(recording_id: str, index: int) -> Path:
     return store.recording_dir(recording_id) / f"run-{index}.log"
 
 
-def interrupted(recording_id: str, index: int) -> Outcome:
+def written_log(recording_id: str, index: int) -> str | None:
     log = run_log(recording_id, index)
-    return failed(INTERRUPTED, log.name if log.is_file() else None)
+    return log.name if log.is_file() else None
+
+
+def interrupted(recording_id: str, index: int) -> Outcome:
+    return failed(INTERRUPTED, written_log(recording_id, index))
+
+
+def cancel(recording_id: str, index: int) -> None:
+    """Cancels a Transcribe run that is queued or running; one that has ended keeps its outcome."""
+    with store.lock():
+        runs = store.load_runs(recording_id)
+        status = runs[index]["status"]
+        if status not in {"queued", "running"}:
+            return
+        cancelled = Outcome(
+            status="cancelled", error=None, details=written_log(recording_id, index), output=None
+        )
+        runs[index] = ended(runs[index], cancelled)
+        store.save_runs(recording_id, runs)
+        if status == "running":
+            # Still inside the lock, where the worker cannot have moved on to another run. A unit
+            # that is gone has nothing to stop.
+            subprocess.run(STOP_TRANSCRIBER, capture_output=True, check=False)  # noqa: S603
+    store.write_status()
 
 
 def transcribe(recording_id: str, index: int) -> Outcome:
@@ -244,6 +273,10 @@ def interrupt(_signal: int, _frame: FrameType | None) -> None:
     raise Interrupted
 
 
+def outlive(_signal: int, _frame: FrameType | None) -> None:
+    """Handled, not ignored: a signal the worker ignored its transcriber would ignore too."""
+
+
 def work() -> None:
     """Transcribes queued runs until none is left.
 
@@ -251,6 +284,7 @@ def work() -> None:
     interrupted, as one left running by a crash does at the next start.
     """
     signal.signal(signal.SIGTERM, interrupt)
+    signal.signal(CANCEL_SIGNAL, outlive)
     with open_worker_lock() as worker_lock:
         fcntl.flock(worker_lock, fcntl.LOCK_EX)
         fail_interrupted()

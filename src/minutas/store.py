@@ -8,7 +8,7 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import TypedDict, cast
+from typing import NotRequired, TypedDict, cast
 
 RECORDING_ID_FORMAT = "%Y-%m-%dT%H-%M-%S"
 TRACKS = ("mic.opus", "call.opus")
@@ -22,6 +22,19 @@ class Recording(TypedDict):
     stopped_at: str | None
     incomplete: bool
     name: str
+    # Where the name came from: "default" or "typed".
+    name_source: str
+
+
+class Choice(TypedDict):
+    """What a failed run asks before it can go on.
+
+    "name_taken": another page holds the name, and page_id says which. "rename_taken": the typed
+    name could not be applied to this recording's page, because another holds it.
+    """
+
+    kind: str
+    page_id: NotRequired[str]
 
 
 class Run(TypedDict):
@@ -33,6 +46,9 @@ class Run(TypedDict):
     details: str | None
     # A file in the recording's folder, or a link.
     output: str | None
+    choice: NotRequired[Choice | None]
+    # Something to know about a run that succeeded, such as what it left out.
+    note: NotRequired[str | None]
 
 
 def data_dir() -> Path:
@@ -81,6 +97,7 @@ def create_recording(started: datetime) -> Recording:
         stopped_at=None,
         incomplete=False,
         name="Meeting",
+        name_source="default",
     )
     folder = recording_dir(recording["id"])
     folder.parent.mkdir(parents=True, exist_ok=True)
@@ -91,9 +108,9 @@ def create_recording(started: datetime) -> Recording:
 
 
 def load_recording(recording_id: str) -> Recording:
-    return cast(
-        "Recording", json.loads((recording_dir(recording_id) / "recording.json").read_text())
-    )
+    saved = json.loads((recording_dir(recording_id) / "recording.json").read_text())
+    # A recording made before names had a source holds the default name.
+    return {"name_source": "default", **saved}
 
 
 def load_runs(recording_id: str) -> list[Run]:
@@ -131,17 +148,27 @@ def discard_if_silent(recording_id: str) -> None:
 
 
 def mark_stopped(recording_id: str, stopped: datetime, *, incomplete: bool) -> None:
-    recording = load_recording(recording_id)
-    recording["stopped_at"] = stopped.isoformat(timespec="seconds")
-    recording["incomplete"] = incomplete
-    write_json(recording_dir(recording_id) / "recording.json", recording)
+    # Under the lock, so a name typed at the same moment is not written over, nor writes over this.
+    with lock():
+        recording = load_recording(recording_id)
+        recording["stopped_at"] = stopped.isoformat(timespec="seconds")
+        recording["incomplete"] = incomplete
+        write_json(recording_dir(recording_id) / "recording.json", recording)
 
 
 def set_typed_name(recording_id: str, name: str) -> None:
     """A typed name is kept for good: nothing automatic replaces it."""
-    path = recording_dir(recording_id) / "recording.json"
-    recording = cast("dict[str, object]", json.loads(path.read_text()))
-    write_json(path, {**recording, "name": name, "name_source": "typed"})
+    with lock():
+        recording = load_recording(recording_id)
+        recording["name"] = name
+        recording["name_source"] = "typed"
+        write_json(recording_dir(recording_id) / "recording.json", recording)
+
+
+def delete_tracks(recording_id: str) -> None:
+    """Removes the audio; the recording, its transcript and its run log stay."""
+    for name in TRACKS:
+        (recording_dir(recording_id) / name).unlink(missing_ok=True)
 
 
 def open_recording() -> Recording | None:

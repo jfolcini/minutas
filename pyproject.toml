@@ -44,6 +44,7 @@ dev = [
     "mutmut>=3.8.1",
     "pip-audit>=2.10.1",
     "prek>=0.5.11",
+    "pygobject-stubs>=2.20.0",
     "pytest>=9.2.0",
     "pytest-beartype>=0.3.0",
     "pytest-cov>=7.1.0",
@@ -68,6 +69,9 @@ required-version = ">=0.11.32"
 # pyannote brings these in; naming them here is what makes [tool.uv.sources] take their CPU
 # builds from the PyTorch index along with torch.
 constraint-dependencies = ["torchaudio>=2.11.1", "torchcodec>=0.17.0"]
+# pygobject-stubs depends on PyGObject, which builds only against GTK's development headers; the
+# window runs on Ubuntu's own (python3-gi), and so do its tests (tests/conftest.py).
+exclude-dependencies = ["pygobject"]
 
 [[tool.uv.index]]
 name = "pytorch-cpu"
@@ -153,6 +157,9 @@ soundfile = "soundfile"
 torch = "torch"
 
 [tool.deptry.per_rule_ignores]
+# PyGObject is Ubuntu's own (python3-gi, an install.sh system package): the window runs on the
+# system Python, and PyPI's builds only against GTK's development headers.
+DEP001 = ["gi"]
 # Speaker detection (M5) imports pyannote; install.sh already fetches its model.
 DEP002 = ["pyannote-audio"]
 
@@ -176,7 +183,10 @@ name = "layers"
 type = "layers"
 layers = [
     "minutas.cli",
-    "(minutas.recorder) | (minutas.worker) | (minutas.agaric)",
+    # The window draws what window_view works out, and reaches the rest of the program only
+    # through the worker and the store; it runs the publisher as a command.
+    "minutas.window",
+    "(minutas.recorder) | (minutas.worker) | (minutas.agaric) | (minutas.window_view)",
     "minutas.settings",
     "minutas.store",
 ]

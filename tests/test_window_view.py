@@ -1,0 +1,569 @@
+from dataclasses import replace
+from typing import cast
+
+import pytest
+from hypothesis import given
+from hypothesis import strategies as st
+
+from minutas import store
+from minutas.window_view import (
+    ActionView,
+    RowView,
+    TrackView,
+    clean_name,
+    duration,
+    row,
+    unrecorded_failure,
+)
+
+STATUSES = ("queued", "running", "succeeded", "failed", "cancelled")
+SHOWN_ACTIONS = ("transcribe", "publish_agaric")
+
+
+def recording(**changes: object) -> store.Recording:
+    stopped = {
+        "id": "2026-11-18T13-05-42",
+        "started_at": "2026-11-18T13:05:42+01:00",
+        "stopped_at": "2026-11-18T13:36:16+01:00",
+        "incomplete": False,
+        "name": "Meeting",
+        "name_source": "default",
+    }
+    return cast("store.Recording", {**stopped, **changes})
+
+
+def run(action: str, status: str, **changes: object) -> store.Run:
+    ended = {
+        "action": action,
+        "status": status,
+        "queued_at": "2026-11-18T13:36:16+01:00",
+        "error": None,
+        "details": None,
+        "output": None,
+    }
+    return cast("store.Run", {**ended, **changes})
+
+
+def action(result: str, label: str, **changes: object) -> ActionView:
+    return replace(ActionView(result=result, label=label), **changes)
+
+
+def shown(
+    runs: list[store.Run],
+    changes: dict[str, object] | None = None,
+    *,
+    tracks: tuple[str, ...] = store.TRACKS,
+    publishing: bool = False,
+) -> RowView:
+    return row(recording(**(changes or {})), runs, tracks, publishing=publishing)
+
+
+def test_a_stopped_recording_shows_its_name_its_tracks_and_what_can_run() -> None:
+    assert shown([]) == RowView(
+        recording_id="2026-11-18T13-05-42",
+        name="Meeting",
+        name_source="Default name",
+        subtitle="2026-11-18 13:05 · 30 min",
+        warning=False,
+        tracks=(
+            TrackView(file="mic.opus", title="Microphone", subtitle="", available=True),
+            TrackView(file="call.opus", title="Call", subtitle="", available=True),
+        ),
+        delete_disabled="",
+        transcribe=action("Not run yet", "Transcribe"),
+        publish=action("Not published", "Publish"),
+    )
+
+
+def test_a_typed_name_says_so() -> None:
+    view = shown([], {"name": "Weekly sync", "name_source": "typed"})
+
+    assert (view.name, view.name_source) == ("Weekly sync", "Typed name")
+
+
+def test_a_recording_in_progress_offers_nothing_but_its_name() -> None:
+    view = shown([], {"stopped_at": None})
+
+    assert view.subtitle == "2026-11-18 13:05 · Recording"
+    assert view.tracks == (
+        TrackView(file="mic.opus", title="Microphone", subtitle="Recording", available=False),
+        TrackView(file="call.opus", title="Call", subtitle="Recording", available=False),
+    )
+    assert view.delete_disabled == "Still recording"
+    assert view.transcribe == action(
+        "Starts when the recording stops", "Transcribe", disabled="Still recording"
+    )
+    assert view.publish == action("Not published", "Publish", disabled="Still recording")
+
+
+@pytest.mark.parametrize(
+    ("changes", "runs", "subtitle"),
+    [
+        ({"incomplete": True}, [], "2026-11-18 13:05 · 30 min · Incomplete"),
+        ({}, [run("transcribe", "queued")], "2026-11-18 13:05 · 30 min · Waiting to transcribe"),
+        ({}, [run("transcribe", "running")], "2026-11-18 13:05 · 30 min · Transcribing"),
+        ({}, [run("transcribe", "succeeded")], "2026-11-18 13:05 · 30 min"),
+        (
+            {"incomplete": True},
+            [run("transcribe", "running")],
+            "2026-11-18 13:05 · 30 min · Incomplete · Transcribing",
+        ),
+        # The time is the recording's own, whatever zone the window runs in.
+        (
+            {"started_at": "2026-11-18T23:59:00-03:00", "stopped_at": "2026-11-19T00:00:05-03:00"},
+            [],
+            "2026-11-18 23:59 · 1 min",
+        ),
+    ],
+)
+def test_the_subtitle_says_when_how_long_and_what_is_going_on(
+    changes: dict[str, object], runs: list[store.Run], subtitle: str
+) -> None:
+    assert shown(runs, changes).subtitle == subtitle
+
+
+@pytest.mark.parametrize(
+    ("seconds", "text"),
+    [
+        (0, "0 s"),
+        (59, "59 s"),
+        (60, "1 min"),
+        (1834, "30 min"),
+        (3599, "59 min"),
+        (3600, "1 h 00 min"),
+        (3900, "1 h 05 min"),
+        (36000, "10 h 00 min"),
+    ],
+)
+def test_duration_reads_in_seconds_minutes_or_hours(seconds: int, text: str) -> None:
+    assert duration(seconds) == text
+
+
+@given(st.integers(min_value=0, max_value=100 * 3600))
+def test_duration_never_overstates_and_is_exact_to_its_unit(seconds: int) -> None:
+    number = {"s": 1, "min": 60, "h": 3600}
+    words = duration(seconds).split()
+    said = sum(
+        int(count) * number[unit] for count, unit in zip(words[::2], words[1::2], strict=True)
+    )
+
+    assert said <= seconds < said + (1 if seconds < 60 else 60)
+
+
+@pytest.mark.parametrize(
+    ("runs", "expected"),
+    [
+        (
+            [run("transcribe", "queued")],
+            action("Queued", "Cancel", cancels=0),
+        ),
+        (
+            [run("transcribe", "failed", error="interrupted"), run("transcribe", "running")],
+            action("Running", "Cancel", cancels=1),
+        ),
+        (
+            [run("transcribe", "succeeded", details="run-0.log", output="transcript.md")],
+            action("Succeeded", "Run again", output="transcript.md"),
+        ),
+        (
+            [run("transcribe", "failed", error="Out of memory", details="run-0.log")],
+            action("Failed: Out of memory", "Retry", failed=True, details="run-0.log"),
+        ),
+        (
+            [run("transcribe", "failed", error="Speech environment not found; run install.sh")],
+            action("Failed: Speech environment not found; run install.sh", "Retry", failed=True),
+        ),
+        (
+            [run("transcribe", "cancelled", details="run-0.log")],
+            action("Cancelled", "Retry"),
+        ),
+        # The transcript of an earlier success is still there after a run that did not make one.
+        (
+            [
+                run("transcribe", "succeeded", output="transcript.md"),
+                run("publish_agaric", "succeeded", output="agaric://page/01HX"),
+                run("transcribe", "failed", error="interrupted", details="run-2.log"),
+            ],
+            action(
+                "Failed: interrupted",
+                "Retry",
+                failed=True,
+                details="run-2.log",
+                output="transcript.md",
+            ),
+        ),
+    ],
+)
+def test_transcribe_shows_its_last_result_and_the_next_step(
+    runs: list[store.Run], expected: ActionView
+) -> None:
+    assert shown(runs).transcribe == expected
+
+
+@pytest.mark.parametrize(
+    ("status", "label"),
+    [(None, "Transcribe"), ("succeeded", "Run again"), ("failed", "Retry"), ("cancelled", "Retry")],
+)
+def test_transcribing_needs_the_audio(status: str | None, label: str) -> None:
+    runs = [] if status is None else [run("transcribe", status, error="Out of memory")]
+
+    view = shown(runs, tracks=())
+
+    assert (view.transcribe.label, view.transcribe.disabled) == (label, "The audio was deleted")
+    assert view.tracks == (
+        TrackView(file="mic.opus", title="Microphone", subtitle="Deleted", available=False),
+        TrackView(file="call.opus", title="Call", subtitle="Deleted", available=False),
+    )
+    assert view.delete_disabled == "The audio was deleted"
+
+
+def test_one_track_is_enough_to_transcribe_and_to_delete() -> None:
+    view = shown([], tracks=("call.opus",))
+
+    assert view.transcribe.disabled == ""
+    assert [track.available for track in view.tracks] == [False, True]
+    assert view.delete_disabled == ""
+
+
+@pytest.mark.parametrize("status", ["queued", "running"])
+def test_the_audio_stays_while_it_is_being_transcribed(status: str) -> None:
+    view = shown([run("transcribe", status)])
+
+    assert view.delete_disabled == "Cancel the transcription first"
+    assert view.transcribe.disabled == ""
+
+
+@pytest.mark.parametrize(
+    ("runs", "expected"),
+    [
+        ([run("publish_agaric", "running")], action("Running", "Publish")),
+        (
+            [
+                run(
+                    "publish_agaric",
+                    "succeeded",
+                    output="agaric://page/01HX",
+                    note="Published without the audio: its tracks were deleted",
+                )
+            ],
+            action(
+                "Succeeded · Published without the audio: its tracks were deleted",
+                "Publish again",
+                output="agaric://page/01HX",
+            ),
+        ),
+        (
+            [run("publish_agaric", "succeeded", output="agaric://page/01HX", note=None)],
+            action("Succeeded", "Publish again", output="agaric://page/01HX"),
+        ),
+        (
+            [run("publish_agaric", "succeeded", output="agaric://page/01HX")],
+            action("Succeeded", "Publish again", output="agaric://page/01HX"),
+        ),
+        (
+            [
+                run(
+                    "publish_agaric",
+                    "failed",
+                    error="Agaric isn't running: start it and press Retry",
+                    details="run-0.log",
+                )
+            ],
+            action(
+                "Failed: Agaric isn't running: start it and press Retry",
+                "Retry",
+                failed=True,
+                details="run-0.log",
+            ),
+        ),
+        ([run("publish_agaric", "cancelled")], action("Cancelled", "Retry")),
+        # The link is to the page of the newest success.
+        (
+            [
+                run("publish_agaric", "succeeded", output="agaric://page/01HX"),
+                run("publish_agaric", "succeeded", output="agaric://page/01HY"),
+            ],
+            action("Succeeded", "Publish again", output="agaric://page/01HY"),
+        ),
+        (
+            [
+                run("publish_agaric", "succeeded", output="agaric://page/01HX"),
+                run("publish_agaric", "failed", error="The agent token was revoked"),
+            ],
+            action(
+                "Failed: The agent token was revoked",
+                "Retry",
+                failed=True,
+                output="agaric://page/01HX",
+            ),
+        ),
+    ],
+)
+def test_publish_shows_its_last_result_and_the_next_step(
+    runs: list[store.Run], expected: ActionView
+) -> None:
+    assert shown(runs).publish == expected
+
+
+def test_publishing_needs_no_audio() -> None:
+    assert shown([], tracks=()).publish == action("Not published", "Publish")
+
+
+TAKEN = run(
+    "publish_agaric",
+    "failed",
+    error="Agaric already has a page named Meeting 2026-11-18",
+    choice={"kind": "name_taken", "page_id": "01HXPAGE"},
+)
+
+
+def test_a_taken_name_asks_which_page() -> None:
+    assert shown([TAKEN]).publish == action(
+        "Failed: Agaric already has a page named Meeting 2026-11-18",
+        "Retry",
+        failed=True,
+        taken_by="01HXPAGE",
+        renames=True,
+    )
+
+
+def test_a_typed_name_agaric_refused_asks_only_for_another() -> None:
+    refused = run(
+        "publish_agaric",
+        "failed",
+        error="Agaric already has a page named Weekly sync 2026-11-18",
+        choice={"kind": "rename_taken"},
+    )
+
+    assert shown([refused]).publish == action(
+        "Failed: Agaric already has a page named Weekly sync 2026-11-18",
+        "Retry",
+        failed=True,
+        renames=True,
+    )
+
+
+def test_a_question_the_window_does_not_know_leaves_retry() -> None:
+    asked = run("publish_agaric", "failed", error="No", choice={"kind": "pick_space"})
+
+    assert shown([asked]).publish == action("Failed: No", "Retry", failed=True)
+
+
+@pytest.mark.parametrize(
+    "later",
+    [
+        run("publish_agaric", "running"),
+        run("publish_agaric", "succeeded", output="agaric://page/01HXPAGE"),
+        run("publish_agaric", "failed", error="Agaric isn't running", choice=None),
+    ],
+)
+def test_the_question_goes_with_the_run_that_asked_it(later: store.Run) -> None:
+    publish = shown([TAKEN, later]).publish
+
+    assert (publish.taken_by, publish.renames) == (None, False)
+
+
+def test_while_the_window_publishes_nothing_else_can_be_pressed() -> None:
+    assert shown([TAKEN], publishing=True).publish == action(
+        "Running", "Publish", disabled="Publishing"
+    )
+    assert shown([run("publish_agaric", "running")], publishing=True).publish == action(
+        "Running", "Publish", disabled="Publishing"
+    )
+    # The page published before can still be opened meanwhile.
+    published = run("publish_agaric", "succeeded", output="agaric://page/01HX")
+    assert shown([published], publishing=True).publish == action(
+        "Running", "Publish", disabled="Publishing", output="agaric://page/01HX"
+    )
+
+
+@pytest.mark.parametrize(
+    ("runs", "warning"),
+    [
+        ([], False),
+        ([run("transcribe", "failed")], True),
+        ([run("publish_agaric", "failed")], True),
+        ([run("transcribe", "failed"), run("transcribe", "queued")], False),
+        ([run("transcribe", "cancelled"), run("publish_agaric", "succeeded")], False),
+        ([run("transcribe", "succeeded"), run("publish_agaric", "failed")], True),
+    ],
+)
+def test_a_warning_marks_a_recording_whose_last_run_of_an_action_failed(
+    runs: list[store.Run], *, warning: bool
+) -> None:
+    assert shown(runs).warning is warning
+
+
+@pytest.mark.parametrize(
+    ("typed", "name"),
+    [
+        ("Weekly sync", "Weekly sync"),
+        ("  Weekly sync \n", "Weekly sync"),
+        ("Weekly\tsync  with\nAna", "Weekly sync with Ana"),
+        ("", None),
+        (" \t\n", None),
+    ],
+)
+def test_clean_name_is_one_line_or_nothing(typed: str, name: str | None) -> None:
+    assert clean_name(typed) == name
+
+
+@given(st.text())
+def test_a_clean_name_has_no_stray_space_and_cleans_to_itself(typed: str) -> None:
+    name = clean_name(typed)
+
+    if name is None:
+        assert typed.split() == []
+    else:
+        assert name == " ".join(typed.split())
+        assert clean_name(name) == name
+
+
+@pytest.mark.parametrize(
+    ("exited_ok", "runs", "stderr", "message"),
+    [
+        (True, [run("publish_agaric", "succeeded")], "", None),
+        (False, [run("publish_agaric", "failed", error="Agaric isn't running")], "", None),
+        (
+            False,
+            [],
+            "usage: minutas [-h]\nminutas: error: invalid choice: 'publish'\n",
+            "Publish to Agaric stopped: minutas: error: invalid choice: 'publish'",
+        ),
+        (
+            False,
+            [run("publish_agaric", "running")],
+            "Traceback (most recent call last):\nKeyError: 'page'\n\n",
+            "Publish to Agaric stopped: KeyError: 'page'",
+        ),
+        (
+            False,
+            [run("transcribe", "failed"), run("publish_agaric", "succeeded")],
+            "",
+            "Publish to Agaric stopped without saying why",
+        ),
+    ],
+)
+def test_a_publish_command_that_died_without_a_failed_run_is_reported(
+    *, exited_ok: bool, runs: list[store.Run], stderr: str, message: str | None
+) -> None:
+    assert unrecorded_failure(runs, stderr, exited_ok=exited_ok) == message
+
+
+def a_run() -> st.SearchStrategy[store.Run]:
+    return st.builds(
+        lambda action, status, error, details, output, choice: run(
+            action,
+            status,
+            error=error if status == "failed" else None,
+            details=details,
+            output=output if status == "succeeded" else None,
+            choice=choice if status == "failed" else None,
+        ),
+        st.sampled_from(store.ACTIONS),
+        st.sampled_from(STATUSES),
+        st.text(min_size=1, max_size=20),
+        st.none() | st.just("run.log"),
+        st.sampled_from(["transcript.md", "agaric://page/01HX", "agaric://page/01HY"]),
+        st.sampled_from(
+            [
+                None,
+                {"kind": "name_taken", "page_id": "01HX"},
+                {"kind": "name_taken", "page_id": "01HY"},
+                {"kind": "rename_taken"},
+            ]
+        ),
+    )
+
+
+def a_row() -> st.SearchStrategy[tuple[store.Recording, list[store.Run], tuple[str, ...], bool]]:
+    return st.tuples(
+        st.builds(
+            lambda stopped, incomplete: recording(
+                stopped_at="2026-11-18T13:36:16+01:00" if stopped else None, incomplete=incomplete
+            ),
+            st.booleans(),
+            st.booleans(),
+        ),
+        st.lists(a_run(), max_size=8),
+        st.sets(st.sampled_from(store.TRACKS)).map(lambda names: tuple(sorted(names))),
+        st.booleans(),
+    )
+
+
+def latest(runs: list[store.Run], action: str) -> tuple[int, store.Run] | None:
+    of_action = [(index, run) for index, run in enumerate(runs) if run["action"] == action]
+    return of_action[-1] if of_action else None
+
+
+@given(a_row())
+def test_every_row_keeps_the_rules(
+    case: tuple[store.Recording, list[store.Run], tuple[str, ...], bool],
+) -> None:
+    a_recording, runs, tracks, publishing = case
+    stopped = a_recording["stopped_at"] is not None
+    transcription, publication = latest(runs, "transcribe"), latest(runs, "publish_agaric")
+
+    view = row(a_recording, runs, tracks, publishing=publishing)
+
+    # Cancel is for the latest Transcribe run, while it is queued or running, and only then.
+    transcribing = transcription is not None and transcription[1]["status"] in {"queued", "running"}
+    assert (view.transcribe.label == "Cancel") is transcribing
+    assert view.transcribe.cancels == (
+        transcription[0] if transcribing and transcription is not None else None
+    )
+    assert view.publish.cancels is None
+    # Nothing starts a transcription without audio, or during the recording; nothing deletes
+    # audio that is missing, being recorded, or being transcribed.
+    # Cancel can always be pressed.
+    assert (view.transcribe.disabled == "") is (transcribing or (stopped and tracks != ()))
+    assert (view.delete_disabled == "") is (stopped and tracks != () and not transcribing)
+    assert [track.file for track in view.tracks if track.available] == (
+        [name for name in store.TRACKS if name in tracks] if stopped else []
+    )
+    # A failure is shown, with its reason, exactly when the latest run of the action failed.
+    for shown_action, last in ((view.transcribe, transcription), (view.publish, publication)):
+        failed = last is not None and last[1]["status"] == "failed"
+        if not (publishing and shown_action is view.publish):
+            assert shown_action.failed is failed
+            if failed and last is not None:
+                assert shown_action.result == f"Failed: {last[1]['error']}"
+                assert shown_action.details == last[1]["details"]
+            else:
+                assert shown_action.details is None
+    assert view.warning is any(
+        last is not None and last[1]["status"] == "failed" for last in (transcription, publication)
+    )
+    # The link is the newest output the action ever produced.
+    for shown_action, name in ((view.transcribe, "transcribe"), (view.publish, "publish_agaric")):
+        outputs = [r["output"] for r in runs if r["action"] == name and r["status"] == "succeeded"]
+        assert shown_action.output == (outputs[-1] if outputs else None)
+    # Rename, and Use that page when the run names one, answer the latest publish run, and
+    # never while one is running.
+    choice = None if publication is None else publication[1].get("choice")
+    asked = None if publishing or not stopped else choice
+    assert view.publish.renames is (asked is not None)
+    assert view.publish.taken_by == (None if asked is None else asked.get("page_id"))
+    assert (view.publish.disabled == "") is (stopped and not publishing)
+
+
+@given(a_row(), st.lists(a_run(), max_size=4))
+def test_runs_of_other_actions_change_nothing_in_a_row(
+    case: tuple[store.Recording, list[store.Run], tuple[str, ...], bool], others: list[store.Run]
+) -> None:
+    a_recording, runs, tracks, publishing = case
+    shown_runs = [r for r in runs if r["action"] in SHOWN_ACTIONS]
+    other_runs = [r for r in others if r["action"] not in SHOWN_ACTIONS]
+
+    with_others = row(a_recording, other_runs + shown_runs, tracks, publishing=publishing)
+    without = row(a_recording, shown_runs, tracks, publishing=publishing)
+
+    # Only the place in the log moves: the run Cancel stops is that many entries further on.
+    cancels = without.transcribe.cancels
+    moved = replace(
+        without,
+        transcribe=replace(
+            without.transcribe, cancels=None if cancels is None else cancels + len(other_runs)
+        ),
+    )
+    assert with_others == moved
