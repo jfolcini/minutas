@@ -100,6 +100,8 @@ def test_start_launches_one_pipeline_for_both_tracks_in_a_user_unit(
             "--quiet",
             "--property=KillSignal=SIGINT",
             "--property=TimeoutStopSec=5",
+            "--property=MemoryMax=256M",
+            "--property=MemorySwapMax=0",
             "--property=ExecStopPost=/venv/bin/python -m minutas record stopped",
             f"--setenv=XDG_DATA_HOME={xdg_dirs / 'data'}",
             f"--working-directory={folder}",

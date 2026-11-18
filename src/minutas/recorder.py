@@ -17,6 +17,10 @@ UNIT = "minutas-recorder.service"
 # 16 kHz mono is what every speech model downstream takes, so no bits go above that band.
 CAPTURE_CAPS = "audio/x-raw,rate=16000,channels=1"
 MIC_TRACK, CALL_TRACK = store.TRACKS
+# A runaway pipeline is killed at its limit instead of swapping the desktop to death; the tracks
+# keep what it wrote and the recording is marked incomplete. Neither MemoryHigh nor swap: both
+# would stall capture instead.
+MEMORY_LIMITS = ("MemoryMax=256M", "MemorySwapMax=0")
 # A working recorder fills both tracks within a fraction of a second; a broken one dies as fast.
 CAPTURE_TIMEOUT_SECONDS = 2.0
 POLL_SECONDS = 0.05
@@ -74,6 +78,7 @@ def start(
             # gst-launch -e turns SIGINT into end-of-stream, which closes both files properly.
             "--property=KillSignal=SIGINT",
             "--property=TimeoutStopSec=5",
+            *(f"--property={limit}" for limit in MEMORY_LIMITS),
             f"--property=ExecStopPost={shlex.join(on_exit)}",
             *([f"--setenv=XDG_DATA_HOME={data_home}"] if data_home is not None else []),
             f"--working-directory={folder}",
