@@ -26,12 +26,16 @@ def record_start(_: argparse.Namespace) -> int:
     if recorder.is_running():
         return fail("Already recording.")
     store.close_abandoned()
-    recording = store.create_recording(now(), echo_cancel=False)
+    try:
+        recording = store.create_recording(now())
+    except FileExistsError:
+        # Recording ids are to the second; the existing recording stays as it is.
+        return fail("A recording started this same second; try again.")
     on_exit = [sys.executable, "-m", "minutas", "record", "stopped", recording["id"]]
     try:
         recorder.start(store.recording_dir(recording["id"]), on_exit=on_exit)
     except recorder.RecorderError as error:
-        store.discard_recording(recording["id"])
+        store.discard_if_silent(recording["id"])
         store.write_status()
         return fail(f"Could not start the recorder: {error}")
     store.write_status()
@@ -54,7 +58,8 @@ def record_stop(_: argparse.Namespace) -> int:
 
 
 def record_stopped(args: argparse.Namespace) -> int:
-    # Anything but a clean exit after Stop means the recorder died: what it wrote is kept.
+    # systemd reports success for a clean exit, which closes both files: after Stop, or when the
+    # session ends. Anything else means the recorder died: what it wrote is kept.
     incomplete = os.environ.get("SERVICE_RESULT") != "success"
     store.mark_stopped(args.recording_id, now(), incomplete=incomplete)
     store.write_status()
@@ -65,7 +70,7 @@ def history(args: argparse.Namespace) -> int:
     folder = store.recordings_dir()
     if args.recording is not None:
         folder = store.recording_dir(args.recording)
-        if not (folder / "recording.json").is_file():
+        if folder.parent != store.recordings_dir() or not (folder / "recording.json").is_file():
             return fail(f"No recording {args.recording}.")
     folder.mkdir(parents=True, exist_ok=True)
     # gio is GLib's own tool, found on PATH like every desktop command; no shell is involved.

@@ -7,11 +7,19 @@ both tracks, so they share a clock and stay aligned.
 import os
 import shlex
 import subprocess
+import time
+from collections.abc import Callable
 from pathlib import Path
+
+from minutas import store
 
 UNIT = "minutas-recorder.service"
 # 16 kHz mono is what every speech model downstream takes, so no bits go above that band.
 CAPTURE_CAPS = "audio/x-raw,rate=16000,channels=1"
+MIC_TRACK, CALL_TRACK = store.TRACKS
+# A working recorder fills both tracks within a fraction of a second; a broken one dies as fast.
+CAPTURE_TIMEOUT_SECONDS = 2.0
+POLL_SECONDS = 0.05
 
 
 class RecorderError(Exception):
@@ -40,10 +48,23 @@ def track_branch(source: list[str], file_name: str) -> list[str]:
     ]
 
 
-def start(folder: Path, *, on_exit: list[str]) -> None:
-    """Starts recording into folder; on_exit runs when the recorder stops for any reason.
+def capturing(folder: Path) -> bool:
+    # filesink creates both files before the sources connect, so only bytes prove capture.
+    return all(store.has_audio(folder / name) for name in store.TRACKS)
 
-    systemd passes on_exit the outcome in SERVICE_RESULT.
+
+def start(
+    folder: Path,
+    *,
+    on_exit: list[str],
+    clock: Callable[[], float] = time.monotonic,
+    wait: Callable[[float], None] = time.sleep,
+) -> None:
+    """Starts recording into folder and returns once both tracks hold audio.
+
+    on_exit runs when the recorder stops for any reason; systemd passes it the outcome in
+    SERVICE_RESULT. A recorder that dies or captures nothing raises RecorderError, once it has
+    stopped and its on_exit has run.
     """
     # The exit command must find the same data folder as the caller.
     data_home = os.environ.get("XDG_DATA_HOME")
@@ -58,10 +79,20 @@ def start(folder: Path, *, on_exit: list[str]) -> None:
             f"--working-directory={folder}",
             *("--", "gst-launch-1.0", "-e"),
             # Relative locations: gst-launch re-splits its arguments on spaces.
-            *track_branch(["pulsesrc"], "mic.opus"),
-            *track_branch(["pulsesrc", "device=@DEFAULT_MONITOR@"], "call.opus"),
+            *track_branch(["pulsesrc"], MIC_TRACK),
+            *track_branch(["pulsesrc", "device=@DEFAULT_MONITOR@"], CALL_TRACK),
         ]
     )
+    # systemd-run returns once the process is forked, before GStreamer has opened anything.
+    deadline = clock() + CAPTURE_TIMEOUT_SECONDS
+    while not capturing(folder):
+        if clock() >= deadline or not is_running():
+            # Stop waits for on_exit too, so the caller finds the folder settled; on a unit that
+            # is already gone it fails, which changes nothing.
+            run(["systemctl", "--user", "stop", UNIT])
+            reason = f"no audio reached its tracks; journalctl --user -u {UNIT} says why"
+            raise RecorderError(reason)
+        wait(POLL_SECONDS)
 
 
 def is_running() -> bool:

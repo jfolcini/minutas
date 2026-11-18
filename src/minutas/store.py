@@ -19,17 +19,11 @@ class Recording(TypedDict):
     stopped_at: str | None
     incomplete: bool
     name: str
-    name_source: str
-    echo_cancel: bool
 
 
 class Run(TypedDict):
     action: str
     status: str
-    started_at: str
-    ended_at: str | None
-    error: str | None
-    output: str | None
 
 
 def data_dir() -> Path:
@@ -57,15 +51,13 @@ def write_json(path: Path, value: object) -> None:
     Path(tmp.name).replace(path)
 
 
-def create_recording(started: datetime, *, echo_cancel: bool) -> Recording:
+def create_recording(started: datetime) -> Recording:
     recording = Recording(
         id=started.strftime(RECORDING_ID_FORMAT),
         started_at=started.isoformat(timespec="seconds"),
         stopped_at=None,
         incomplete=False,
         name="Meeting",
-        name_source="default",
-        echo_cancel=echo_cancel,
     )
     folder = recording_dir(recording["id"])
     folder.parent.mkdir(parents=True, exist_ok=True)
@@ -91,11 +83,18 @@ def load_recordings() -> list[Recording]:
     return [load_recording(path.parent.name) for path in folders]
 
 
-def discard_recording(recording_id: str) -> None:
-    """Removes a recording that captured nothing; rmdir refuses if any audio landed in it."""
+def has_audio(track: Path) -> bool:
+    return track.is_file() and track.stat().st_size > 0
+
+
+def discard_if_silent(recording_id: str) -> None:
+    """Removes a recording whose tracks hold no audio; one that captured anything is kept."""
     folder = recording_dir(recording_id)
-    (folder / "recording.json").unlink()
-    (folder / "runs.json").unlink()
+    tracks = [folder / name for name in TRACKS]
+    if any(has_audio(track) for track in tracks):
+        return
+    for path in [*tracks, folder / "recording.json", folder / "runs.json"]:
+        path.unlink(missing_ok=True)
     folder.rmdir()
 
 
@@ -127,14 +126,10 @@ def close_abandoned() -> None:
     mark_stopped(recording["id"], stopped, incomplete=True)
 
 
-def latest_statuses(runs: list[Run]) -> dict[str, str]:
-    return {run["action"]: run["status"] for run in runs}
-
-
 def recent_entry(recording: Recording) -> dict[str, object]:
     started = datetime.fromisoformat(recording["started_at"])
     stopped = datetime.fromisoformat(recording["stopped_at"] or recording["started_at"])
-    latest = latest_statuses(load_runs(recording["id"]))
+    latest = {run["action"]: run["status"] for run in load_runs(recording["id"])}
     return {
         "id": recording["id"],
         "name": recording["name"],

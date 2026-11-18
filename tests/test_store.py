@@ -12,7 +12,7 @@ START = datetime(2026, 11, 18, 13, 5, 42, tzinfo=UTC)
 
 
 def make_stopped(started: datetime, *, seconds: int = 60, incomplete: bool = False) -> str:
-    recording = store.create_recording(started, echo_cancel=False)
+    recording = store.create_recording(started)
     store.mark_stopped(recording["id"], started + timedelta(seconds=seconds), incomplete=incomplete)
     return recording["id"]
 
@@ -43,7 +43,7 @@ def test_data_dir_defaults_to_local_share(
 
 
 def test_create_recording_writes_metadata_and_empty_run_log() -> None:
-    recording = store.create_recording(START, echo_cancel=False)
+    recording = store.create_recording(START)
 
     folder = store.data_dir() / "recordings" / "2026-11-18T13-05-42"
     assert recording["id"] == "2026-11-18T13-05-42"
@@ -53,39 +53,49 @@ def test_create_recording_writes_metadata_and_empty_run_log() -> None:
         "stopped_at": None,
         "incomplete": False,
         "name": "Meeting",
-        "name_source": "default",
-        "echo_cancel": False,
     }
     assert json.loads((folder / "runs.json").read_text()) == []
 
 
 def test_create_recording_never_overwrites_an_existing_one() -> None:
-    store.create_recording(START, echo_cancel=False)
+    store.create_recording(START)
     store.mark_stopped("2026-11-18T13-05-42", START + timedelta(seconds=5), incomplete=False)
 
     with pytest.raises(FileExistsError):
-        store.create_recording(START, echo_cancel=False)
+        store.create_recording(START)
 
     assert store.load_recording("2026-11-18T13-05-42")["stopped_at"] == "2026-11-18T13:05:47+00:00"
 
 
-def test_discard_recording_removes_a_recording_without_audio() -> None:
-    store.create_recording(START, echo_cancel=False)
+@pytest.mark.parametrize("empty_tracks", [(), ("mic.opus",), ("mic.opus", "call.opus")])
+def test_discard_if_silent_removes_a_recording_without_audio(empty_tracks: tuple[str, ...]) -> None:
+    store.create_recording(START)
+    for name in empty_tracks:
+        (store.recording_dir("2026-11-18T13-05-42") / name).touch()
 
-    store.discard_recording("2026-11-18T13-05-42")
+    store.discard_if_silent("2026-11-18T13-05-42")
 
-    assert not store.recording_dir("2026-11-18T13-05-42").exists()
+    assert list(store.recordings_dir().iterdir()) == []
 
 
-def test_discard_recording_keeps_captured_audio() -> None:
-    store.create_recording(START, echo_cancel=False)
-    track = store.recording_dir("2026-11-18T13-05-42") / "mic.opus"
-    track.write_bytes(b"OggS")
+@pytest.mark.parametrize("track", ["mic.opus", "call.opus"])
+def test_discard_if_silent_keeps_a_recording_with_audio(track: str) -> None:
+    store.create_recording(START)
+    folder = store.recording_dir("2026-11-18T13-05-42")
+    for name in store.TRACKS:
+        (folder / name).touch()
+    (folder / track).write_bytes(b"OggS")
 
-    with pytest.raises(OSError, match="not empty"):
-        store.discard_recording("2026-11-18T13-05-42")
+    store.discard_if_silent("2026-11-18T13-05-42")
 
-    assert track.read_bytes() == b"OggS"
+    assert [path.name for path in store.recordings_dir().iterdir()] == ["2026-11-18T13-05-42"]
+    assert sorted(path.name for path in folder.iterdir()) == [
+        "call.opus",
+        "mic.opus",
+        "recording.json",
+        "runs.json",
+    ]
+    assert (folder / track).read_bytes() == b"OggS"
 
 
 def test_mark_stopped_records_stop_time_and_completeness() -> None:
@@ -98,7 +108,7 @@ def test_mark_stopped_records_stop_time_and_completeness() -> None:
 
 def test_open_recording_is_the_one_not_stopped() -> None:
     make_stopped(START)
-    store.create_recording(START + timedelta(hours=1), echo_cancel=False)
+    store.create_recording(START + timedelta(hours=1))
 
     open_recording = store.open_recording()
 
@@ -113,7 +123,7 @@ def test_open_recording_is_none_when_all_stopped() -> None:
 
 
 def test_close_abandoned_stops_at_the_last_audio_written() -> None:
-    store.create_recording(START, echo_cancel=False)
+    store.create_recording(START)
     folder = store.recording_dir("2026-11-18T13-05-42")
     for name, seconds in [("mic.opus", 120), ("call.opus", 125)]:
         (folder / name).write_bytes(b"OggS")
@@ -128,7 +138,7 @@ def test_close_abandoned_stops_at_the_last_audio_written() -> None:
 
 
 def test_close_abandoned_without_audio_stops_at_the_start() -> None:
-    store.create_recording(START, echo_cancel=False)
+    store.create_recording(START)
 
     store.close_abandoned()
 
@@ -156,7 +166,7 @@ def test_status_with_nothing_recorded() -> None:
 def test_status_lists_the_active_recording_and_five_newest_stopped() -> None:
     for hour in range(6):
         make_stopped(START + timedelta(hours=hour), seconds=1834 + hour)
-    store.create_recording(START + timedelta(hours=7), echo_cancel=False)
+    store.create_recording(START + timedelta(hours=7))
 
     store.write_status()
 

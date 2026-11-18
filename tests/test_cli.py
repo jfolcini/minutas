@@ -5,12 +5,15 @@ import sys
 from datetime import UTC, datetime, timedelta
 from importlib.metadata import version
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 import pytest
 
-from minutas import recorder, store
+from minutas import cli, recorder, store
 from minutas.cli import main
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 START = datetime(2026, 11, 18, 13, 5, 42, tzinfo=UTC)
 
@@ -21,11 +24,13 @@ class FakeRecorder:
     def __init__(self) -> None:
         self.running = False
         self.error: recorder.RecorderError | None = None
+        self.on_failed_start: Callable[[Path], None] = lambda _: None
         self.started: list[tuple[Path, list[str]]] = []
         self.stops = 0
 
     def start(self, folder: Path, *, on_exit: list[str]) -> None:
         if self.error is not None:
+            self.on_failed_start(folder)
             raise self.error
         self.started.append((folder, on_exit))
 
@@ -53,7 +58,7 @@ def read_status() -> dict[str, object]:
 
 def abandoned_recording() -> str:
     """A recording still open whose recorder is gone, its audio last written 30 s in."""
-    recording = store.create_recording(START, echo_cancel=False)
+    recording = store.create_recording(START)
     track = store.recording_dir(recording["id"]) / "mic.opus"
     track.write_bytes(b"OggS")
     written = (START + timedelta(seconds=30)).timestamp()
@@ -156,6 +161,71 @@ def test_record_start_failure_leaves_no_recording(
     assert read_status() == {"version": 1, "recording": None, "recent": []}
 
 
+def died_at_once(folder: Path) -> None:
+    """What a recorder that dies on start leaves: empty tracks, closed by its exit command."""
+    for name in store.TRACKS:
+        (folder / name).touch()
+    store.mark_stopped(folder.name, START, incomplete=True)
+    store.write_status()
+
+
+def test_record_start_removes_what_a_recorder_that_died_at_once_left(
+    fake_recorder: FakeRecorder, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fake_recorder.error = recorder.RecorderError("no audio reached its tracks")
+    fake_recorder.on_failed_start = died_at_once
+
+    assert main(["record", "start"]) == 1
+
+    assert capsys.readouterr() == (
+        "",
+        "Could not start the recorder: no audio reached its tracks\n",
+    )
+    assert list(store.recordings_dir().iterdir()) == []
+    assert read_status() == {"version": 1, "recording": None, "recent": []}
+
+
+def test_record_start_keeps_audio_a_failed_start_captured(
+    fake_recorder: FakeRecorder, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def died_after_some_audio(folder: Path) -> None:
+        died_at_once(folder)
+        (folder / "mic.opus").write_bytes(b"OggS")
+
+    fake_recorder.error = recorder.RecorderError("no audio reached its tracks")
+    fake_recorder.on_failed_start = died_after_some_audio
+    monkeypatch.setattr(cli, "now", lambda: START)
+
+    assert main(["record", "start"]) == 1
+
+    assert capsys.readouterr().err == "Could not start the recorder: no audio reached its tracks\n"
+    assert [path.name for path in store.recordings_dir().iterdir()] == ["2026-11-18T13-05-42"]
+    assert (store.recording_dir("2026-11-18T13-05-42") / "mic.opus").read_bytes() == b"OggS"
+    status = read_status()
+    assert status["recording"] is None
+    recent = status["recent"]
+    assert isinstance(recent, list)
+    assert [(entry["id"], entry["incomplete"]) for entry in recent] == [
+        ("2026-11-18T13-05-42", True)
+    ]
+
+
+def test_record_start_in_the_second_of_another_recording_refuses(
+    fake_recorder: FakeRecorder, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recording = store.create_recording(START)
+    store.mark_stopped(recording["id"], START, incomplete=False)
+    before = (store.recording_dir(recording["id"]) / "recording.json").read_text()
+    monkeypatch.setattr(cli, "now", lambda: START)
+
+    assert main(["record", "start"]) == 1
+
+    assert capsys.readouterr() == ("", "A recording started this same second; try again.\n")
+    assert fake_recorder.started == []
+    assert (store.recording_dir(recording["id"]) / "recording.json").read_text() == before
+    assert sorted(p.name for p in store.recordings_dir().iterdir()) == [recording["id"]]
+
+
 def test_record_stop_stops_the_recorder(fake_recorder: FakeRecorder) -> None:
     fake_recorder.running = True
 
@@ -201,20 +271,18 @@ def test_record_stop_closes_a_recording_whose_recorder_died() -> None:
 def test_record_stopped_marks_the_recording_by_how_the_recorder_ended(
     monkeypatch: pytest.MonkeyPatch, service_result: str | None, *, incomplete: bool
 ) -> None:
-    recording = store.create_recording(START, echo_cancel=False)
+    recording = store.create_recording(START)
     if service_result is None:
         monkeypatch.delenv("SERVICE_RESULT", raising=False)
     else:
         monkeypatch.setenv("SERVICE_RESULT", service_result)
-    before = datetime.now(UTC)
+    monkeypatch.setattr(cli, "now", lambda: START + timedelta(seconds=90))
 
     assert main(["record", "stopped", recording["id"]]) == 0
 
     stopped = store.load_recording(recording["id"])
     assert stopped["incomplete"] is incomplete
-    assert stopped["stopped_at"] is not None
-    stopped_at = datetime.fromisoformat(stopped["stopped_at"])
-    assert before.replace(microsecond=0) <= stopped_at <= datetime.now(UTC)
+    assert stopped["stopped_at"] == "2026-11-18T13:07:12+00:00"
     status = read_status()
     assert status["recording"] is None
     recent = status["recent"]
@@ -247,7 +315,7 @@ def test_history_opens_the_recordings_folder(fake_gio: FakeGio) -> None:
 
 
 def test_history_opens_one_recordings_folder(fake_gio: FakeGio) -> None:
-    store.create_recording(START, echo_cancel=False)
+    store.create_recording(START)
 
     assert main(["history", "--recording", "2026-11-18T13-05-42"]) == 0
 
@@ -258,11 +326,24 @@ def test_history_opens_one_recordings_folder(fake_gio: FakeGio) -> None:
 def test_history_refuses_an_unknown_recording(
     fake_gio: FakeGio, capsys: pytest.CaptureFixture[str], recording_id: str
 ) -> None:
-    store.create_recording(START, echo_cancel=False)
+    store.create_recording(START)
 
     assert main(["history", "--recording", recording_id]) == 1
 
     assert capsys.readouterr().err == f"No recording {recording_id}.\n"
+    assert fake_gio.calls == []
+
+
+def test_history_refuses_a_folder_outside_the_recordings(
+    fake_gio: FakeGio, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "recording.json").write_text("{}")
+
+    assert main(["history", "--recording", str(elsewhere)]) == 1
+
+    assert capsys.readouterr().err == f"No recording {elsewhere}.\n"
     assert fake_gio.calls == []
 
 
