@@ -861,3 +861,207 @@ def test_a_recording_with_only_my_voice_lists_no_speakers() -> None:
 
     assert store.load_recording(recording_id).get("speakers") == {}
     assert read_transcript(recording_id) == "[00:00:01] **Me:** Hola.\n"
+
+
+GB = 10**9
+TRANSCRIBED = [a_run("transcribe", "succeeded", output="transcript.md")]
+
+
+def kept(
+    name: str,
+    days_old: float,
+    size: int = GB,
+    runs: list[store.Run] = TRANSCRIBED,
+    *,
+    stopped: bool = True,
+) -> tuple[store.Recording, list[store.Run], int]:
+    """A recording as the limits see it: its runs, and the bytes its tracks take."""
+    started = START - timedelta(days=days_old)
+    recording = store.Recording(
+        id=name,
+        started_at=started.isoformat(),
+        stopped_at=(started + timedelta(hours=1)).isoformat() if stopped else None,
+        incomplete=False,
+        name="Meeting",
+        name_source="default",
+    )
+    return recording, runs, size
+
+
+@pytest.mark.parametrize(
+    ("recordings", "age_limit_days", "size_limit_gb", "gone"),
+    [
+        # Past the age limit; to the second at it, still kept.
+        ([kept("old", 31), kept("young", 29), kept("at", 30)], 30, None, ["old"]),
+        # Over the size limit the oldest go until the rest fit, however young: size wins.
+        ([kept("c", 1, 2 * GB), kept("a", 3, 2 * GB), kept("b", 2, 2 * GB)], 30, 5, ["a"]),
+        ([kept("a", 3, 2 * GB), kept("b", 2, 2 * GB), kept("c", 1, 2 * GB)], 30, 3, ["a", "b"]),
+        # Right at the size limit, they fit.
+        ([kept("a", 2, GB // 2), kept("b", 1, GB // 2)], None, 1, []),
+        # Tracks that can't go count towards the size all the same, and may keep it over.
+        ([kept("untranscribed", 2, 4 * GB, []), kept("b", 1, 2 * GB)], None, 5, ["b"]),
+        ([kept("active", 0, 6 * GB, [], stopped=False), kept("b", 1)], None, 5, ["b"]),
+        # Never during the recording, transcribed or not.
+        ([kept("active", 40, runs=TRANSCRIBED, stopped=False)], 30, 1, []),
+        # Never before the latest transcription succeeded.
+        ([kept("retried", 40, runs=[*TRANSCRIBED, a_run("transcribe", "failed")])], 30, 1, []),
+        ([kept("queued", 40, runs=[*TRANSCRIBED, a_run("transcribe", "queued")])], 30, 1, []),
+        # Nothing left to delete.
+        ([kept("deleted", 40, 0)], 30, 1, []),
+        # Both limits off.
+        ([kept("ancient", 400, 10 * GB)], None, None, []),
+    ],
+)
+def test_audio_over_limits_examples(
+    recordings: list[tuple[store.Recording, list[store.Run], int]],
+    age_limit_days: int | None,
+    size_limit_gb: int | None,
+    gone: list[str],
+) -> None:
+    assert store.audio_over_limits(recordings, START, age_limit_days, size_limit_gb) == gone
+
+
+STATUSES = ("queued", "running", "succeeded", "failed", "cancelled")
+some_kept = st.lists(
+    st.tuples(
+        st.integers(min_value=0, max_value=24 * 90),
+        # In half GB, so that the tracks often meet a limit exactly.
+        st.integers(min_value=0, max_value=6).map(lambda halves: halves * GB // 2),
+        # Often transcribed, the only audio that may go.
+        st.just([("transcribe", "succeeded")])
+        | st.lists(
+            st.tuples(st.sampled_from(store.ACTIONS), st.sampled_from(STATUSES)), max_size=4
+        ),
+        st.booleans(),
+    ),
+    unique_by=lambda one: one[0],
+    max_size=8,
+).map(
+    lambda many: [
+        kept(f"{hours}h", hours / 24, size, [a_run(*run) for run in runs], stopped=stopped)
+        for hours, size, runs, stopped in many
+    ]
+)
+
+
+@given(
+    recordings=some_kept,
+    age_limit_days=st.none() | st.integers(min_value=1, max_value=60),
+    size_limit_gb=st.none() | st.integers(min_value=1, max_value=10),
+)
+def test_audio_goes_only_once_transcribed_by_age_then_oldest_first_by_size(
+    recordings: list[tuple[store.Recording, list[store.Run], int]],
+    age_limit_days: int | None,
+    size_limit_gb: int | None,
+) -> None:
+    gone = store.audio_over_limits(recordings, START, age_limit_days, size_limit_gb)
+
+    sizes = {recording["id"]: size for recording, _, size in recordings}
+    oldest_first = sorted(recordings, key=lambda one: datetime.fromisoformat(one[0]["started_at"]))
+    may_go = [
+        recording["id"]
+        for recording, runs, size in oldest_first
+        if size > 0
+        and recording["stopped_at"] is not None
+        and [run["status"] for run in runs if run["action"] == "transcribe"][-1:] == ["succeeded"]
+    ]
+    # Only a stopped recording whose latest transcription succeeded, oldest first, and once.
+    assert gone == [recording_id for recording_id in may_go if recording_id in gone]
+    # Every one of them past the age limit goes, first.
+    too_old = [
+        recording_id
+        for recording, _, _ in oldest_first
+        if (recording_id := recording["id"]) in may_go
+        and age_limit_days is not None
+        and START - datetime.fromisoformat(recording["started_at"]) > timedelta(days=age_limit_days)
+    ]
+    assert gone[: len(too_old)] == too_old
+    # Then the oldest of the rest, just as many as the size limit needs: no more, and no fewer
+    # unless none is left.
+    for_size = gone[len(too_old) :]
+    rest = [recording_id for recording_id in may_go if recording_id not in too_old]
+    assert for_size == rest[: len(for_size)]
+    left = sum(sizes.values()) - sum(sizes[recording_id] for recording_id in gone)
+    if size_limit_gb is None:
+        assert for_size == []
+    else:
+        assert left <= size_limit_gb * GB or for_size == rest
+        assert for_size == [] or left + sizes[for_size[-1]] > size_limit_gb * GB
+
+
+def with_tracks(started: datetime, size: int, runs: list[store.Run]) -> str:
+    """A stopped recording, transcribed or not, whose tracks take size bytes, without the disk."""
+    recording_id = make_stopped(started)
+    folder = store.recording_dir(recording_id)
+    for name in store.TRACKS:
+        with (folder / name).open("wb") as track:
+            track.truncate(size // 2)
+    (folder / "transcript.md").write_text("[00:00:01] **Me:** Hola.\n")
+    store.save_runs(recording_id, runs)
+    return recording_id
+
+
+def test_delete_audio_over_limits_takes_only_the_tracks_as_delete_now_does() -> None:
+    old = with_tracks(START - timedelta(days=31), GB, TRANSCRIBED)
+    young = with_tracks(START - timedelta(days=1), GB, TRANSCRIBED)
+    untranscribed = with_tracks(START - timedelta(days=40), GB, [])
+
+    store.delete_audio_over_limits(START, 30, 5)
+
+    assert sorted(path.name for path in store.recording_dir(old).iterdir()) == [
+        "recording.json",
+        "runs.json",
+        "transcript.md",
+    ]
+    assert store.load_runs(old) == TRANSCRIBED
+    assert (store.audio_size(young), store.audio_size(untranscribed)) == (GB, GB)
+
+
+def test_delete_audio_over_limits_takes_the_oldest_until_all_fit_and_never_the_active_one() -> None:
+    oldest = with_tracks(START - timedelta(days=3), 2 * GB, TRANSCRIBED)
+    older = with_tracks(START - timedelta(days=2), 2 * GB, TRANSCRIBED)
+    newer = with_tracks(START - timedelta(days=1), 2 * GB, TRANSCRIBED)
+    active = store.create_recording(START)["id"]
+    with (store.recording_dir(active) / "mic.opus").open("wb") as track:
+        track.truncate(GB)
+
+    store.delete_audio_over_limits(START, None, 4)
+
+    assert [store.audio_size(one) for one in (oldest, older, newer, active)] == [0, 0, 2 * GB, GB]
+
+
+def test_delete_audio_over_limits_reads_the_runs_and_deletes_inside_the_store_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with_tracks(START - timedelta(days=31), GB, TRANSCRIBED)
+    held: list[tuple[str, bool]] = []
+    load_runs, delete_tracks = store.load_runs, store.delete_tracks
+
+    def reading(recording_id: str) -> list[store.Run]:
+        held.append(("load_runs", store_lock_held()))
+        return load_runs(recording_id)
+
+    def deleting(recording_id: str) -> None:
+        held.append(("delete_tracks", store_lock_held()))
+        delete_tracks(recording_id)
+
+    monkeypatch.setattr(store, "load_runs", reading)
+    monkeypatch.setattr(store, "delete_tracks", deleting)
+
+    store.delete_audio_over_limits(START, 30, None)
+
+    assert held == [("load_runs", True), ("delete_tracks", True)]
+
+
+def test_audio_size_is_what_both_tracks_take_and_nothing_once_deleted() -> None:
+    recording_id = make_stopped(START)
+    folder = store.recording_dir(recording_id)
+    (folder / "mic.opus").write_bytes(b"OggS")
+    (folder / "call.opus").write_bytes(b"OggS call")
+    (folder / "transcript.md").write_text("[00:00:01] **Me:** Hola.\n")
+
+    assert store.audio_size(recording_id) == 13
+
+    store.delete_tracks(recording_id)
+
+    assert store.audio_size(recording_id) == 0

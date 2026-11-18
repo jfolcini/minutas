@@ -463,6 +463,24 @@ def test_record_stopped_reports_a_worker_that_will_not_start(
     assert recent_transcribe() == [("failed", ["transcribe"])]
 
 
+@pytest.mark.usefixtures("fake_worker")
+def test_record_stopped_deletes_the_audio_past_the_age_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    month_ago = START - timedelta(days=30)
+    transcribed = with_audio(store.create_recording(month_ago)["id"])
+    store.mark_stopped(transcribed, month_ago + timedelta(hours=1), incomplete=False)
+    runs = [{**queued(month_ago.isoformat()), "status": "succeeded"}]
+    (store.recording_dir(transcribed) / "runs.json").write_text(json.dumps(runs))
+    recording_id = with_audio(store.create_recording(START)["id"])
+    monkeypatch.setattr(cli, "now", lambda: START + timedelta(seconds=90))
+
+    assert main(["record", "stopped", recording_id]) == 0
+
+    # The defaults: 30 days. The one that just stopped waits for its transcription.
+    assert (store.holds_audio(transcribed), store.holds_audio(recording_id)) == (False, True)
+
+
 def test_transcribe_queues_a_run_for_a_recording(
     fake_worker: FakeWorker, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -900,3 +900,50 @@ def test_every_row_keeps_the_rules(case: Row) -> None:
             None if gitlab_publication is None else gitlab_publication[1].get("link")
         )
     assert (view.transcribe.menu, view.publish.menu, view.publish_gitlab.menu) == (None,) * 3
+
+
+def test_the_audio_files_say_until_when_the_age_limit_keeps_them() -> None:
+    view = row(
+        recording(),
+        [run("transcribe", "succeeded", output="transcript.md")],
+        store.TRACKS,
+        running=(),
+        missing_tools={},
+        age_limit_days=30,
+    )
+
+    # In the recording's own time zone, as its start is.
+    assert view.kept_until == "Kept until 2026-12-18 13:05"
+
+
+@given(
+    case=a_row(),
+    age_limit_days=st.none() | st.integers(min_value=1, max_value=400),
+    transcribed_last=st.booleans(),
+)
+def test_a_row_says_when_the_age_limit_deletes_its_audio_only_when_it_may(
+    case: Row, age_limit_days: int | None, *, transcribed_last: bool
+) -> None:
+    a_recording, runs, tracks, running, missing_tools = case
+    if transcribed_last:
+        runs = [*runs, run("transcribe", "succeeded", output="transcript.md")]
+    transcription = latest(runs, "transcribe")
+
+    view = row(
+        a_recording,
+        runs,
+        tracks,
+        running=running,
+        missing_tools=missing_tools,
+        age_limit_days=age_limit_days,
+    )
+
+    # Audio is never deleted before it has been transcribed, nor while it is being recorded.
+    may_go = (
+        age_limit_days is not None
+        and tracks != ()
+        and a_recording["stopped_at"] is not None
+        and transcription is not None
+        and transcription[1]["status"] == "succeeded"
+    )
+    assert (view.kept_until != "") is may_go

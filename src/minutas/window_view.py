@@ -100,6 +100,8 @@ class RowView:
     summarize: ActionView
     publish: ActionView
     publish_gitlab: ActionView
+    # When the age limit deletes the tracks; empty when it never will.
+    kept_until: str = ""
 
 
 def duration(seconds: int) -> str:
@@ -181,20 +183,22 @@ def subtitle(recording: store.Recording, transcribing: str | None) -> str:
     return " · ".join(part for part in said if part is not None)
 
 
-def row(
+def row(  # noqa: PLR0913 - each is a separate input to the row; all after tracks go by name
     recording: store.Recording,
     runs: Sequence[store.Run],
     tracks: Collection[str],
     *,
     running: Collection[str],
     missing_tools: Mapping[str, str],
+    age_limit_days: int | None = None,
 ) -> RowView:
     """The row of a recording.
 
     tracks: those of its two that hold audio. running: the actions whose command the window is
     running, whatever the run log says so far. missing_tools: by action, why the tool it runs
     is missing or too old, and how to install one that will do; empty or left out when the
-    window found one.
+    window found one. age_limit_days: how long kept audio is kept; None when that is not
+    limited.
     """
     summarizer_missing = missing_tools.get(SUMMARIZE, "")
     glab_problem = missing_tools.get(PUBLISH_GITLAB, "")
@@ -269,6 +273,11 @@ def row(
             or ("" if last_summary.output is not None else NO_SUMMARY),
         )
 
+    kept_until = ""
+    if age_limit_days is not None and tracks and store.may_lose_audio(recording, runs):
+        until = store.audio_kept_until(recording, age_limit_days)
+        kept_until = f"Kept until {until:%Y-%m-%d %H:%M}"
+
     return RowView(
         recording_id=recording["id"],
         name=recording["name"],
@@ -300,4 +309,5 @@ def row(
         summarize=summarize,
         publish=publish,
         publish_gitlab=publish_gitlab,
+        kept_until=kept_until,
     )
