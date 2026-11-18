@@ -930,3 +930,153 @@ def test_settings_agaric_without_an_option_says_what_it_takes(
     assert capsys.readouterr().err == (
         "Nothing to do: pass --space, --token-from-stdin or --list-spaces.\n"
     )
+
+
+class Releases:
+    """A Minutas repository with release tags, and the clone install.sh ran from."""
+
+    def __init__(self, root: Path) -> None:
+        self.origin = root / "origin"
+        self.clone = root / "clone"
+        self.link = root / "home" / ".local" / "share" / "minutas" / "app" / "repository"
+        # Each release's install.sh adds a line here.
+        self.installed = root / "installed.log"
+
+    @staticmethod
+    def git(folder: Path, *args: str) -> str:
+        return subprocess.run(  # noqa: S603 - the test's own command
+            ["git", "-C", str(folder), *args],  # noqa: S607 - git from the PATH
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+
+    def release(self, tag: str, install_sh: str | None = None) -> None:
+        script = self.origin / "install.sh"
+        script.write_text(install_sh or f'#!/bin/sh\necho {tag} >>"{self.installed}"\n')
+        script.chmod(0o755)
+        self.git(self.origin, "add", "install.sh")
+        self.git(self.origin, "commit", "--quiet", "--message", tag)
+        self.git(self.origin, "tag", "--annotate", "--message", tag, tag)
+
+    def checked_out(self) -> str:
+        return self.git(self.clone, "rev-parse", "HEAD")
+
+    def commit(self, tag: str) -> str:
+        return self.git(self.origin, "rev-parse", f"{tag}^{{commit}}")
+
+
+@pytest.fixture
+def releases(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Releases:
+    """The clone is at v0.9.0; v0.10.0 came out after it was cloned, so only a fetch finds it.
+
+    As text, v0.1.0 sorts first and v0.9.0 last; as versions, v0.10.0 is the newest.
+    """
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    # The pre-push hook runs the suite with GIT_DIR and the like naming this repository: left in,
+    # they turn every git command here on it.
+    for name in [name for name in os.environ if name.startswith("GIT_")]:
+        monkeypatch.delenv(name)
+    # Nothing of this machine's git configuration: no signing, no hooks.
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    for role in ("AUTHOR", "COMMITTER"):
+        monkeypatch.setenv(f"GIT_{role}_NAME", "Test")
+        monkeypatch.setenv(f"GIT_{role}_EMAIL", "test@example.org")
+    releases = Releases(tmp_path)
+    releases.origin.mkdir()
+    releases.git(releases.origin, "init", "--quiet", "--initial-branch", "main")
+    releases.release("v0.1.0")
+    releases.release("v0.9.0")
+    releases.git(tmp_path, "clone", "--quiet", str(releases.origin), str(releases.clone))
+    releases.git(releases.clone, "checkout", "--quiet", "v0.9.0")
+    releases.link.parent.mkdir(parents=True)
+    releases.link.symlink_to(releases.clone)
+    releases.release("v0.10.0")
+    return releases
+
+
+def test_update_moves_to_the_latest_release_and_runs_its_install_sh(
+    releases: Releases, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["update"]) == 0
+
+    assert capsys.readouterr().out == "Updating to v0.10.0.\n"
+    assert releases.checked_out() == releases.commit("v0.10.0")
+    assert releases.installed.read_text() == "v0.10.0\n"
+
+
+def test_update_on_the_latest_release_says_so_and_runs_install_sh_again(
+    releases: Releases, capsys: pytest.CaptureFixture[str]
+) -> None:
+    main(["update"])
+    capsys.readouterr()
+
+    assert main(["update"]) == 0
+
+    assert capsys.readouterr().out == "Already on the latest release, v0.10.0.\n"
+    assert releases.checked_out() == releases.commit("v0.10.0")
+    assert releases.installed.read_text() == "v0.10.0\nv0.10.0\n"
+
+
+def test_update_without_install_sh_having_run_says_to_run_it(
+    releases: Releases, capsys: pytest.CaptureFixture[str]
+) -> None:
+    releases.link.unlink()
+
+    assert main(["update"]) == 1
+
+    assert capsys.readouterr().err == (
+        f"No clone of Minutas at {releases.link}: run install.sh from your clone first.\n"
+    )
+
+
+def test_update_reports_why_the_fetch_failed(
+    releases: Releases, capsys: pytest.CaptureFixture[str]
+) -> None:
+    before = releases.checked_out()
+    releases.origin.rename(releases.origin.with_name("moved"))
+
+    assert main(["update"]) == 1
+
+    error = capsys.readouterr().err
+    assert error.startswith("Could not fetch the releases: fatal: ")
+    assert str(releases.origin) in error
+    assert releases.checked_out() == before
+    assert not releases.installed.exists()
+
+
+def test_update_without_a_release_says_so(
+    releases: Releases, capsys: pytest.CaptureFixture[str]
+) -> None:
+    releases.git(releases.origin, "tag", "--delete", "v0.1.0", "v0.9.0", "v0.10.0")
+    releases.git(releases.clone, "tag", "--delete", "v0.1.0", "v0.9.0")
+
+    assert main(["update"]) == 1
+
+    assert capsys.readouterr().err == "No release to update to yet.\n"
+
+
+def test_update_reports_why_the_checkout_failed(
+    releases: Releases, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (releases.clone / "install.sh").write_text("#!/bin/sh\n# a local change\n")
+
+    assert main(["update"]) == 1
+
+    assert capsys.readouterr().err.startswith(
+        "Could not check out v0.10.0: error: Your local changes to the following files would be "
+        "overwritten by checkout:"
+    )
+    assert releases.checked_out() == releases.commit("v0.9.0")
+    assert not releases.installed.exists()
+
+
+def test_update_after_a_failed_install_sh_runs_it_again(releases: Releases) -> None:
+    failing = f'#!/bin/sh\necho v0.11.0 >>"{releases.installed}"\nexit 3\n'
+    releases.release("v0.11.0", install_sh=failing)
+
+    assert main(["update"]) == 3
+    assert main(["update"]) == 3
+
+    assert releases.installed.read_text() == "v0.11.0\nv0.11.0\n"

@@ -4,7 +4,7 @@ Minutas records a work meeting on GNOME, transcribes it with who said what, and 
 
 **Status:** early development. Nothing is usable yet; the build order is in [docs/design.md § Milestones](docs/design.md#milestones).
 
-**Install** on Ubuntu 24.04 or later: clone the repository and run `./install.sh`; to update, pull and run it again.
+**Install** on Ubuntu 24.04 or later: clone the repository and run `./install.sh`; to update to the latest release, run `minutas update`.
 
 ## Documentation
 

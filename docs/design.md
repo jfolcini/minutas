@@ -37,7 +37,7 @@ The stack is settled: Python, Parakeet v3, pyannote community-1, two recorded tr
 | Taken name | Publish to Agaric stops and asks: Use that page or Rename | Two meetings with one name on one day are rare, and only I know whether they're the same one |
 | Agaric | Publish to Agaric runs `agaric-mcp call add_meeting`, with no template; running it again adds the summary and applies a new name | The summary already lists decisions and action items, so a template would repeat them |
 | GitLab | Publish to GitLab asks for a link: an issue link gets a comment, a project link a new issue with only a title and body; it posts the summary and links the uploaded transcript and audio | The link alone says where and how to post; labels and assignees are set in GitLab |
-| GitLab login | [`glab`](https://docs.gitlab.com/cli/api/), logged in once per server; 1.91 or newer, installed by install.sh from the snap | Already handles gitlab.com and self-hosted servers; no token handling in the tool |
+| GitLab login | [`glab`](https://docs.gitlab.com/cli/api/), logged in once per server; 1.91 or newer, which install.sh only checks for, and the history window keeps Publish to GitLab off until it's there | Already handles gitlab.com and self-hosted servers; no token handling in the tool |
 | Audio kept | The two tracks as Ogg Opus, 16 kHz mono at 32 kbps each (about 30 MB an hour), with the transcript and outputs, until the recording is deleted; no lossless copy | At that rate Opus barely changes what the speech models hear, and 16 kHz is all they take; tracks small enough to keep for good can always be re-transcribed with a better model; age and size limits come later ([#18](https://github.com/jfolcini/minutas/issues/18)) |
 | Audio files | Per recording, for its two tracks: Play, Save a copy, Open folder, Delete now | Manage disk and hand a file to someone without leaving the window |
 | Existing tools | Inspiration only, no fork | None fits; several have a piece worth borrowing |
@@ -166,21 +166,22 @@ Minutas lives in a GitHub repository. `install.sh` installs and updates it: it c
 
 | Step | What it puts in place | Skipped when |
 | --- | --- | --- |
-| System packages | `python3-gi`, `gir1.2-gtk-4.0`, `gir1.2-adw-1`, `gir1.2-ecal-2.0`, `gir1.2-edataserver-1.2`, GStreamer's base and good plugins and `gst-launch-1.0` (Opus, Ogg, and capture through PipeWire's PulseAudio server), `gio`, `secret-tool` and `curl`, through `apt` | All are installed |
-| glab | GitLab's [`glab` snap](https://snapcraft.io/glab), installed or refreshed | `glab` 1.91 or newer is on the PATH |
+| System packages | `python3-gi`, `gir1.2-gtk-4.0`, `gir1.2-adw-1`, GTK's GStreamer media backend for Play, `gir1.2-ecal-2.0`, `gir1.2-edataserver-1.2`, GStreamer's base and good plugins and `gst-launch-1.0` (Opus, Ogg, and capture through PipeWire's PulseAudio server), `gio`, `secret-tool` and `curl`, through `apt` | All are installed |
 | uv | `uv` at the version pinned in the repository, in `~/.local/bin` | That version is there |
 | Speech environment | Parakeet through NeMo, pyannote.audio, Silero VAD and CPU-only PyTorch, synced from `uv.lock` into `~/.local/share/minutas/speech` with a uv-managed Python | `uv.lock` didn't change |
-| App | The history window and helper in `~/.local/share/minutas/app`, the `minutas` command in `~/.local/bin`, a desktop file | Files are identical |
-| GNOME extension | `~/.local/share/gnome-shell/extensions/minutas@jfolcini.github.io/`, enabled with `gnome-extensions enable` | Files are identical and it's enabled |
+| App | The program in `~/.local/share/minutas/app`, a virtual environment on Ubuntu's Python with its system packages, holding the package and its dependencies from `uv.lock`; the `minutas` command in `~/.local/bin`; a desktop file for the history window | Files are identical |
+| GNOME extension | `~/.local/share/gnome-shell/extensions/minutas@jfolcini.github.io/`, enabled in GNOME Shell's `enabled-extensions` setting: `gnome-extensions enable` asks the running Shell, which refuses an extension it found no files for at login | Files are identical and it's enabled |
 | Hugging Face token | Asked once, after you accept pyannote's conditions on Hugging Face; kept in the GNOME keyring | The keyring has it |
 | Models | Parakeet v3 and pyannote community-1 at the revisions pinned in the repository, in `~/.cache/minutas/models` | Those revisions are there |
+| agaric-mcp | Nothing; prints how to get the bridge that ships with Agaric 0.25 or newer, which Publish to Agaric's `call` needs | The `agaric-mcp` on the PATH has `call` |
+| glab | Nothing; names an older one it found and points to GitLab's own `.deb` of 1.91 or newer, which replaces Ubuntu's in place (the snap can't read `~/.local/share`, where the recordings are) | `glab` 1.91 or newer is on the PATH |
 | Devin CLI | Nothing; prints how to install it | It's on the PATH |
 
 - **Output:** every step prints `ok` when nothing needed doing, or what it installed or updated; a second run in a row prints `ok` for all of them.
 - **No needless downloads:** the tool versions, `uv.lock` and the model revisions are pinned in the repository, so a release that doesn't change them downloads nothing; uv's and Hugging Face's caches keep files between runs, and an interrupted model download starts that file again without leaving the partial one behind.
 - **Failures:** a failed step stops the script with what went wrong and what to do; running it again carries on from there.
-- **sudo:** asked only when `apt` or `snap` actually has something to install.
-- **Updating:** `minutas update` fetches the repository's tags, checks out the latest release tag and re-runs `install.sh`; on the latest tag it says so and changes nothing.
+- **sudo:** asked only when `apt` actually has something to install.
+- **Updating:** `minutas update` fetches the repository's tags, checks out the latest release tag and re-runs `install.sh`; on the latest tag it says so, and `install.sh` finishes an update that stopped partway or prints `ok` for every step. It updates the clone `install.sh` last ran from, which the App step links at `~/.local/share/minutas/app/repository`; release tags are `v<version>`, and the highest version is the latest.
 - **Two Pythons:** the window and the calendar use Ubuntu's Python, for its PyGObject bindings; the speech stack uses its own uv-managed Python, so it works on Ubuntu 24.04 and later whatever Python each release ships.
 - **Log out once:** GNOME on Wayland loads a new or changed extension only at the next login, so the script says when that's needed.
 - **Tested:** CI runs `install.sh` twice on Ubuntu 24.04, without the models; the second run must print `ok` for every step. `MINUTAS_SKIP_MODELS=1` leaves out the Hugging Face token and model steps there.
