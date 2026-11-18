@@ -76,6 +76,15 @@ def set_audio_limits(age_limit_days: int | None, size_limit_gb: int | None) -> N
     save({"audio_age_limit_days": age_limit_days, "audio_size_limit_gb": size_limit_gb})
 
 
+def summary_model() -> str | None:
+    """The model Summarize asks Devin for; None for Devin's own default."""
+    return cast("str | None", load().get("summary_model"))
+
+
+def set_summary_model(model: str | None) -> None:
+    save({"summary_model": model})
+
+
 def agaric_token() -> str | None:
     return keyring.get_password(KEYRING_SERVICE, AGARIC_KEYRING_USERNAME)
 

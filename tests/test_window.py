@@ -1661,6 +1661,51 @@ def test_audio_limits_change_nothing_when_cancelled(
     assert store.holds_audio(ten_days_old) is True
 
 
+def model_dialog(shown: window.HistoryWindow) -> tuple[Adw.AlertDialog, Gtk.Entry]:
+    press(shown, "Summary model")
+    dialog = open_dialog(shown)
+    assert isinstance(dialog, Adw.AlertDialog)
+    [entry] = [widget for widget in descendants(dialog) if isinstance(widget, Gtk.Entry)]
+    return dialog, entry
+
+
+def test_the_summary_model_is_saved_without_the_space_around_it_and_cleared_when_emptied(
+    history: Callable[[], window.HistoryWindow],
+) -> None:
+    shown = history()
+
+    dialog, entry = model_dialog(shown)
+
+    assert (dialog.get_heading(), dialog.get_body(), entry.get_text()) == (
+        "Summary model",
+        '"devin models" lists the models your account can use. Empty is Devin\'s default.',
+        "",
+    )
+    entry.set_text("  swe-2-high ")
+    press(dialog, "Save")
+    assert settings.summary_model() == "swe-2-high"
+
+    dialog, entry = model_dialog(shown)
+
+    assert entry.get_text() == "swe-2-high"
+    entry.set_text("  ")
+    press(dialog, "Save")
+    assert settings.summary_model() is None
+
+
+def test_the_summary_model_stays_when_cancelled(
+    history: Callable[[], window.HistoryWindow],
+) -> None:
+    settings.set_summary_model("swe-2-high")
+    shown = history()
+
+    dialog, entry = model_dialog(shown)
+    entry.set_text("opus")
+    press(dialog, "Cancel")
+
+    assert settings.summary_model() == "swe-2-high"
+
+
 def test_the_window_follows_what_other_processes_do(
     history: Callable[[], window.HistoryWindow],
 ) -> None:

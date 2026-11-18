@@ -30,7 +30,7 @@ The stack is settled: Python, Parakeet v3, pyannote community-1, two recorded tr
 | Failures | Every run ends succeeded, failed or cancelled; a failed run shows why and the fix, with a Retry button; nothing retries on its own | A blind retry can post twice or hide a real problem |
 | Interface | Top-bar menu (record, stop, recent recordings, Open history) plus a history window | The window runs outside GNOME Shell, so a bug can't freeze the desktop |
 | Calendar | Nextcloud through GNOME Online Accounts and Evolution Data Server | GNOME holds the login and expands repeating meetings |
-| Summary | Devin CLI (`devin -p`), always written in English, saved as `summary.md` | The Devin account used is cleared for meeting content; one language for every summary |
+| Summary | Devin CLI (`devin -p`), always written in English, saved as `summary.md`; the model is a Minutas setting, unset meaning Devin's default | The Devin account used is cleared for meeting content; one language for every summary; Devin runs without my own Devin config, so the model is set in Minutas |
 | Summary prompts | Built-in presets General, Standup, 1:1 and Stakeholder call, which can't be deleted; Custom is typed at run time and savable as a preset; saved presets can be deleted | One click for regular meetings, free text for the rest |
 | Page name | The calendar event's name, else the name the summary proposes, else "Meeting"; Agaric adds the date. A name typed in the history window always wins | A recurring meeting keeps one name; the summary names meetings that had no event |
 | Renaming | Publish to Agaric renames the page when its automatic name changed; a typed name is never replaced | Publishing before summarizing still ends with a good name; Agaric links by id, so links survive |
@@ -214,7 +214,7 @@ Every recording is a row, newest first; expanding it shows its speakers, its aud
 - **Deleting:** asks first; the history entry and its outputs stay. Without the tracks, Run again is disabled, and publishing leaves the audio out and says so.
 - **Audio limits:** delete tracks as Delete now does, but only once the latest transcription has succeeded and never the recording in progress; they run when a recording stops, when the window opens and when they are saved, with no timer of their own.
 - **Links:** open in the default app: `summary.md` in the text editor, `agaric://` links in Agaric, GitLab links in the browser.
-- **Settings:** presets, the Agaric space and agent token (kept in the GNOME keyring through Python's keyring package), the glossary, the echo-cancelled mic switch, whether `glab` is logged in, and the audio limits with how much audio is kept against them.
+- **Settings:** presets, the Agaric space and agent token (kept in the GNOME keyring through Python's keyring package), the glossary, the echo-cancelled mic switch, whether `glab` is logged in, the audio limits with how much audio is kept against them, and the summary model.
 - **Top-bar menu:** record and stop, the last few recordings, and Open history.
 
 ## When an action fails

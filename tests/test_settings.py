@@ -112,3 +112,20 @@ def test_set_audio_limits_keeps_them_with_the_other_settings_and_none_turns_one_
 
     assert settings.audio_limits() == limits
     assert settings.agaric_space_id() == "01HZWORK"
+
+
+def test_no_summary_model_is_set_until_one_is() -> None:
+    assert settings.summary_model() is None
+
+
+def test_set_summary_model_keeps_it_with_the_other_settings_and_none_clears_it() -> None:
+    settings.set_agaric_space_id("01HZWORK")
+
+    settings.set_summary_model("swe-2-high")
+
+    assert settings.summary_model() == "swe-2-high"
+
+    settings.set_summary_model(None)
+
+    assert settings.summary_model() is None
+    assert settings.agaric_space_id() == "01HZWORK"

@@ -339,6 +339,17 @@ def test_the_log_holds_the_command_and_everything_devin_said(devin: FakeDevin) -
     assert log == f"$ {command}\npartial\nError: boom\nexit status 1\n"
 
 
+def test_devin_is_asked_for_the_summary_model_as_an_argument_of_its_own(
+    devin: FakeDevin,
+) -> None:
+    recording_id = recording()
+    settings.set_summary_model("claude opus")
+
+    assert summarizer.summarize(recording_id, SUMMARIZED, PROMPT) is True
+
+    assert devin.calls[0].args[-2:] == ["--model", "claude opus"]
+
+
 def test_sigterm_fails_the_run_as_interrupted_and_removes_the_prompt(devin: FakeDevin) -> None:
     recording_id = recording()
     before = signal.getsignal(signal.SIGTERM)

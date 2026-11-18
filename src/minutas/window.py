@@ -46,6 +46,9 @@ AUDIO_LIMITS_NOTE = (
     "when a recording stops and when this window opens. The transcripts and everything published "
     "stay."
 )
+SUMMARY_MODEL_NOTE = (
+    '"devin models" lists the models your account can use. Empty is Devin\'s default.'
+)
 
 
 def now() -> datetime:
@@ -373,6 +376,7 @@ class HistoryWindow(Adw.ApplicationWindow):
         )
         header = Adw.HeaderBar()
         header.pack_end(button("Audio limits", self.edit_audio_limits))
+        header.pack_end(button("Summary model", self.edit_summary_model))
         page = Adw.ToolbarView(content=self.toasts)
         page.add_top_bar(header)
         self.set_content(page)
@@ -579,6 +583,26 @@ class HistoryWindow(Adw.ApplicationWindow):
         if dialog.choose_finish(result) == "save":
             settings.set_audio_limits(chosen_limit(*age), chosen_limit(*size))
             self.delete_audio_over_limits()
+
+    def edit_summary_model(self, _button: Gtk.Button) -> None:
+        entry = Gtk.Entry(text=settings.summary_model() or "", activates_default=True)
+        dialog = Adw.AlertDialog(
+            heading="Summary model",
+            body=SUMMARY_MODEL_NOTE,
+            extra_child=entry,
+            default_response="save",
+            close_response="cancel",
+        )
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("save", "Save")
+        dialog.set_response_appearance("save", Adw.ResponseAppearance.SUGGESTED)
+        dialog.choose(self, None, self.summary_model_chosen, entry)
+
+    def summary_model_chosen(
+        self, dialog: Adw.AlertDialog, result: Gio.AsyncResult, entry: Gtk.Entry
+    ) -> None:
+        if dialog.choose_finish(result) == "save":
+            settings.set_summary_model(entry.get_text().strip() or None)
 
     def next_step(self, _button: Gtk.Button, recording_id: str, action: str) -> None:
         shown = self.shown(recording_id, action)
