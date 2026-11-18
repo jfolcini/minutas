@@ -30,6 +30,8 @@ jobs:
     timeout-minutes: 30
     env:
       MINUTAS_SKIP_MODELS: '1'
+      # The runner has no session bus for dconf, so GNOME's settings go to a file instead.
+      GSETTINGS_BACKEND: keyfile
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -38,6 +40,16 @@ jobs:
       # install.sh installs what is missing; refreshing the package index is the system's job.
       - name: Refresh the package index
         run: sudo apt-get update
+
+      # What the desktop brings: GNOME Shell's settings, which the extension step enables it in,
+      # and the tools installed by hand: Agaric's bridge, glab, and the Devin CLI.
+      - name: Stand in for the desktop
+        run: |
+          sudo apt-get install -y gnome-shell-common
+          printf '#!/bin/sh\necho "call <tool> <json>"\n' | sudo tee /usr/local/bin/agaric-mcp >/dev/null
+          printf '#!/bin/sh\necho "glab 1.91.0"\n' | sudo tee /usr/local/bin/glab >/dev/null
+          printf '#!/bin/sh\n' | sudo tee /usr/local/bin/devin >/dev/null
+          sudo chmod +x /usr/local/bin/agaric-mcp /usr/local/bin/glab /usr/local/bin/devin
 
       - name: First run
         run: ./install.sh

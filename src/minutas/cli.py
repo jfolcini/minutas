@@ -3,10 +3,12 @@
 import argparse
 import json
 import os
+import subprocess
 import sys
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from importlib.metadata import version
+from pathlib import Path
 from typing import cast
 
 from keyring.errors import KeyringError
@@ -69,6 +71,47 @@ def repair(_: argparse.Namespace) -> int:
     except worker.WorkerError as error:
         return fail(f"Could not start transcribing: {error}")
     return 0
+
+
+def installed_clone() -> Path:
+    # install.sh links the clone it ran from here.
+    return Path.home() / ".local" / "share" / "minutas" / "app" / "repository"
+
+
+def git(clone: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(  # noqa: S603 - this module's own argument list
+        ["git", "-C", str(clone), *args],  # noqa: S607 - git from the PATH, like any command
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def update(_: argparse.Namespace) -> int:
+    clone = installed_clone()
+    if not (clone / "install.sh").is_file():
+        return fail(f"No clone of Minutas at {clone}: run install.sh from your clone first.")
+    fetched = git(clone, "fetch", "--quiet", "--tags")
+    if fetched.returncode != 0:
+        return fail(f"Could not fetch the releases: {fetched.stderr.strip()}")
+    # Release tags are v<version>; sorted as versions, v0.10.0 comes after v0.9.0.
+    releases = git(clone, "tag", "--list", "--sort=-version:refname", "v*").stdout.split()
+    if not releases:
+        return fail("No release to update to yet.")
+    latest = releases[0]
+    on_latest = (
+        git(clone, "rev-parse", "HEAD").stdout == git(clone, "rev-parse", f"{latest}^{{}}").stdout
+    )
+    checked_out = git(clone, "checkout", "--quiet", latest)
+    if checked_out.returncode != 0:
+        return fail(f"Could not check out {latest}: {checked_out.stderr.strip()}")
+    sys.stdout.write(
+        f"Already on the latest release, {latest}.\n" if on_latest else f"Updating to {latest}.\n"
+    )
+    # Before install.sh writes its own lines. It runs on the latest release too: a failed run
+    # carries on from where it stopped, and an install that is whole prints ok for every step.
+    sys.stdout.flush()
+    return subprocess.run([clone / "install.sh"], check=False).returncode  # noqa: S603
 
 
 def queue_transcription(recording_id: str) -> int:
@@ -202,6 +245,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="close a recording whose recorder is gone and resume the queued transcriptions"
         " (the extension runs this at login)",
     ).set_defaults(handler=repair)
+    commands.add_parser(
+        "update", help="move to the latest release and run its install.sh"
+    ).set_defaults(handler=update)
 
     transcribe_command = commands.add_parser("transcribe", help="transcribe a recording again")
     transcribe_command.add_argument("recording_id")
