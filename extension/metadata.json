@@ -2,6 +2,6 @@
   "uuid": "minutas@jfolcini.github.io",
   "name": "Minutas",
   "description": "Record work meetings from the top bar and follow their transcripts.",
-  "shell-version": ["46", "47", "48", "49", "50"],
+  "shell-version": ["46", "47", "48", "49", "50", "51"],
   "url": "https://github.com/jfolcini/minutas"
 }

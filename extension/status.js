@@ -47,7 +47,7 @@ const localStart = startedAt => `${startedAt.slice(0, 10)} ${startedAt.slice(11,
 const describe = recording => `${recording.name}, ${localStart(recording.started_at)}`;
 
 // Only recordings the previous snapshot knew about can announce something, so the first
-// snapshot after enable, and an old one moving back into the list, stay quiet.
+// snapshot after the Shell starts, and an old one moving back into the list, stay quiet.
 export function notificationsFor(previous, current) {
     const notifications = [];
     for (const recording of current.recent) {

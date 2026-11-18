@@ -190,14 +190,14 @@ sleep 1
 expect_log "history --recording $id2"
 expect_log "history"
 
-echo "== disable removes everything; enable announces nothing old"
+echo "== disable removes everything; enable announces only what changed meanwhile (the lock screen)"
 gnome-extensions disable "$UUID"
 expect "$B === undefined" "'true'"
 expect "Main.messageTray.getSources().filter(s => s.title === 'Minutas').length" "'0'"
+write_status "{\"version\":1,\"recording\":null,\"recent\":[$(recent "$id2" Standup "$now" 3 true '"succeeded"' '[]'),$meeting]}"
 gnome-extensions enable "$UUID"
 expect "$MENU" '["Record","---","Standup · '
-sleep 1
-expect "$NOTES" "'[]'"
+expect "$NOTES" "'[\"Transcript ready | Standup, ${now:0:10} ${now:11:5}\"]'"
 
 echo "== shell log"
 if grep -E 'JS ERROR|JS WARNING' "$OUT/shell.log"; then fail "JS errors in $OUT/shell.log"; else echo "  ok: no JS errors"; fi

@@ -27,7 +27,9 @@ const RECORDING_STYLE = 'screen-recording-indicator';
 export default class MinutasExtension extends Extension {
     enable() {
         this._cancellable = new Gio.Cancellable();
-        this._status = EMPTY_STATUS;
+        // Kept across disable: the Shell disables extensions while the screen is locked, and
+        // what happened meanwhile (a transcript, a failed run) is announced after unlocking.
+        this._status ??= EMPTY_STATUS;
         this._statusReads = 0;
         this._timerId = null;
         this._source = null;
@@ -68,7 +70,6 @@ export default class MinutasExtension extends Extension {
         this._cancellable = null;
         this._monitor = null;
         this._statusFile = null;
-        this._status = null;
         this._button = null;
         this._elapsedLabel = null;
         this._recordItem = null;
