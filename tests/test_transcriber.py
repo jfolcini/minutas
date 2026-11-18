@@ -1,6 +1,7 @@
 import builtins
 import contextlib
 import gc
+import io
 import itertools
 import json
 import multiprocessing
@@ -8,6 +9,7 @@ import os
 import pickle
 import subprocess
 import sys
+import tarfile
 import tracemalloc
 import types
 import weakref
@@ -45,6 +47,8 @@ PARAKEET = "nvidia/parakeet-tdt-0.6b-v3"
 PYANNOTE = "pyannote/speaker-diarization-community-1"
 PARAKEET_NOT_FOUND = f"{PARAKEET} not found in ~/.cache/minutas/models; run install.sh"
 PYANNOTE_NOT_FOUND = f"{PYANNOTE} not found in ~/.cache/minutas/models; run install.sh"
+# Parakeet's archive in miniature: the files NeMo loads it from.
+CHECKPOINT = {"model_config.yaml": b"config", "model_weights.ckpt": b"weights"}
 
 
 def me(start: float, end: float) -> Turn:
@@ -340,12 +344,22 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return tmp_path
 
 
+def pack(files: Mapping[str, bytes]) -> bytes:
+    archive = io.BytesIO()
+    with tarfile.open(fileobj=archive, mode="w") as tar:
+        for name, data in files.items():
+            member = tarfile.TarInfo(f"./{name}")
+            member.size = len(data)
+            tar.addfile(member, io.BytesIO(data))
+    return archive.getvalue()
+
+
 def install_models(home: Path, revisions: str | None = None) -> tuple[Path, Path]:
     """Parakeet's weights and pyannote's pipeline, as install.sh leaves them."""
     models = home / ".cache" / "minutas" / "models"
     parakeet = models / "models--nvidia--parakeet-tdt-0.6b-v3" / "snapshots" / REVISION
     parakeet.mkdir(parents=True)
-    (parakeet / "parakeet-tdt-0.6b-v3.nemo").write_bytes(b"weights")
+    (parakeet / "parakeet-tdt-0.6b-v3.nemo").write_bytes(pack(CHECKPOINT))
     pyannote = models / "models--pyannote--speaker-diarization-community-1/snapshots/3533c8cf"
     pyannote.mkdir(parents=True)
     (pyannote / "config.yaml").write_bytes(b"pipeline")
@@ -590,7 +604,7 @@ class FakeSpeechStack:
         self.apart = False
         self.diarizations: list[dict[str, object]] = []
         self.whole_reads: list[tuple[str, str]] = []
-        self.restored: list[tuple[str, str]] = []
+        self.restored: list[tuple[Path, str, dict[str, bytes]]] = []
         self.apart_when_parakeet_loads: bool | None = None
         self.traced_when_parakeet_loads = 0
         self.load_config = types.SimpleNamespace(mmap=False)
@@ -704,8 +718,20 @@ class FakeSpeechStack:
 
     # NeMo
 
-    def restore_from(self, path: str, *, map_location: str) -> "FakeSpeechStack":
-        self.restored.append((path, map_location))
+    def restore_from(
+        self,
+        path: str,
+        *,
+        map_location: str,
+        save_restore_connector: types.SimpleNamespace | None = None,
+    ) -> "FakeSpeechStack":
+        # As NeMo does: the files of the unpacked folder its connector names, if it is there;
+        # without one, the archive, unpacked into a temporary folder.
+        unpacked = Path(
+            path if save_restore_connector is None else save_restore_connector.model_extracted_dir
+        )
+        files = {file.name: file.read_bytes() for file in unpacked.glob("*")}
+        self.restored.append((unpacked, map_location, files))
         self.apart_when_parakeet_loads = self.apart
         if tracemalloc.is_tracing():
             self.traced_when_parakeet_loads, _ = tracemalloc.get_traced_memory()
@@ -780,6 +806,11 @@ def stack(monkeypatch: pytest.MonkeyPatch) -> FakeSpeechStack:
         "nemo.collections.asr.models": {
             "ASRModel": types.SimpleNamespace(restore_from=fake.restore_from)
         },
+        "nemo.core": {},
+        "nemo.core.connectors": {},
+        "nemo.core.connectors.save_restore_connector": {
+            "SaveRestoreConnector": types.SimpleNamespace
+        },
         "omegaconf": {"open_dict": contextlib.nullcontext},
     }
     for name, attributes in modules.items():
@@ -827,8 +858,40 @@ def test_main_writes_who_said_what_in_time_order(
 
     assert transcript(recording) == SEGMENTS
     assert stack.pipelines == [pipeline]
-    assert stack.restored == [(str(weights), "cpu")]
+    # Beside the archive, in its revision's snapshot: a new revision is unpacked anew.
+    assert stack.restored == [(weights.parent / "parakeet-tdt-0.6b-v3", "cpu", CHECKPOINT)]
     assert stack.decoding_changes == []
+
+
+def test_later_transcriptions_load_the_unpacked_folder_as_it_is(
+    home: Path, stack: FakeSpeechStack, recording: Path
+) -> None:
+    weights, _ = install_models(home)
+    main([str(recording)])
+    unpacked = weights.parent / "parakeet-tdt-0.6b-v3"
+    # A folder already there is loaded as it is, never unpacked over.
+    (unpacked / "model_config.yaml").write_bytes(b"changed")
+
+    assert main([str(recording)]) == 0
+
+    assert stack.restored[1] == (unpacked, "cpu", {**CHECKPOINT, "model_config.yaml": b"changed"})
+
+
+def test_an_unpack_that_fails_half_way_leaves_nothing_behind(
+    home: Path, stack: FakeSpeechStack, recording: Path
+) -> None:
+    weights, _ = install_models(home)
+    # Its second file would land outside the folder: the unpack stops there, the first one out.
+    weights.write_bytes(pack({"model_config.yaml": b"config", "../model_weights.ckpt": b"w"}))
+    with pytest.raises(tarfile.OutsideDestinationError):
+        main([str(recording)])
+    # On a disk that filled, what it left would keep it full.
+    assert [path.name for path in weights.parent.iterdir()] == [weights.name]
+    weights.write_bytes(pack(CHECKPOINT))
+
+    assert main([str(recording)]) == 0
+
+    assert stack.restored == [(weights.parent / "parakeet-tdt-0.6b-v3", "cpu", CHECKPOINT)]
 
 
 def test_speech_is_found_window_by_window_in_pieces_within_the_turn_limit(

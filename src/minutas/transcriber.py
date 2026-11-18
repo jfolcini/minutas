@@ -27,7 +27,9 @@ import itertools
 import json
 import multiprocessing
 import os
+import shutil
 import sys
+import tarfile
 import tempfile
 from collections.abc import Callable, Iterable, Sequence, Sized
 from concurrent.futures import ProcessPoolExecutor
@@ -175,6 +177,27 @@ def model_file(repository: str, file: str) -> Path:
     raise TranscriberError(msg)
 
 
+def unpacked(archive: Path) -> Path:
+    """The archive's folder beside it, in its revision's snapshot, unpacked the first time.
+
+    Given the archive itself, NeMo unpacks the whole model to disk again on every load.
+    """
+    folder = archive.with_suffix("")
+    if not folder.is_dir():
+        # Renamed once whole, so an unpack stopped half-way leaves no folder that looks done;
+        # the next one writes every file again over what it left.
+        partial = folder.with_name(f"{folder.name}.partial")
+        try:
+            with tarfile.open(archive) as tar:
+                tar.extractall(partial, filter="data")
+        except BaseException:
+            # On a disk that filled, what it left would keep it full for the next recording.
+            shutil.rmtree(partial, ignore_errors=True)
+            raise
+        partial.rename(folder)
+    return folder
+
+
 def write_transcript(folder: Path, transcript: Sequence[Segment]) -> None:
     # A rename, so a transcriber stopped half-way leaves the previous transcript or none.
     with tempfile.NamedTemporaryFile(
@@ -272,11 +295,17 @@ def recognize(
     import soundfile
     import torch.utils.serialization
     from nemo.collections.asr.models import ASRModel
+    from nemo.core.connectors.save_restore_connector import SaveRestoreConnector
     from omegaconf import open_dict
 
+    checkpoint = unpacked(weights)
+    connector = SaveRestoreConnector()
+    connector.model_extracted_dir = str(checkpoint)
     # Read into memory, the checkpoint would sit beside the model it fills: twice the model.
     torch.utils.serialization.config.load.mmap = True
-    model = ASRModel.restore_from(str(weights), map_location="cpu")
+    model = ASRModel.restore_from(
+        str(checkpoint), map_location="cpu", save_restore_connector=connector
+    )
     # NeMo leaves the checkpoint in a reference cycle.
     gc.collect()
     if words:
