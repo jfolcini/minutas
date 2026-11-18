@@ -128,6 +128,8 @@ def record_stopped(args: argparse.Namespace) -> int:
     incomplete = os.environ.get("SERVICE_RESULT") != "success"
     stopped = now()
     store.mark_stopped(args.recording_id, stopped, incomplete=incomplete)
+    # Kept audio is bounded where that costs nothing, and before status.json tells the window.
+    store.delete_audio_over_limits(stopped, *settings.audio_limits())
     store.write_status()
     # A recorder that captured nothing leaves a recording that record start discards.
     if not store.holds_audio(args.recording_id):

@@ -11,6 +11,9 @@ from minutas import store
 
 KEYRING_SERVICE = "minutas"
 AGARIC_KEYRING_USERNAME = "agaric"
+# Kept audio is bounded until a limit is turned off, which saves it as None.
+AUDIO_AGE_LIMIT_DAYS = 30
+AUDIO_SIZE_LIMIT_GB = 5
 
 
 def settings_path() -> Path:
@@ -49,6 +52,28 @@ def delete_preset(name: str) -> None:
     presets = saved_presets()
     presets.pop(name, None)
     save({"presets": presets})
+
+
+def audio_limit(saved: dict[str, object], key: str, default: int) -> int | None:
+    # Only a hand edit saves anything but a whole number of at least one, and 0 taken at its
+    # word would delete every transcribed track.
+    value = saved.get(key, default)
+    if value is None or (type(value) is int and value >= 1):
+        return value
+    return default
+
+
+def audio_limits() -> tuple[int | None, int | None]:
+    """The age limit in days and the size limit in GB of kept audio; None when turned off."""
+    saved = load()
+    return (
+        audio_limit(saved, "audio_age_limit_days", AUDIO_AGE_LIMIT_DAYS),
+        audio_limit(saved, "audio_size_limit_gb", AUDIO_SIZE_LIMIT_GB),
+    )
+
+
+def set_audio_limits(age_limit_days: int | None, size_limit_gb: int | None) -> None:
+    save({"audio_age_limit_days": age_limit_days, "audio_size_limit_gb": size_limit_gb})
 
 
 def agaric_token() -> str | None:

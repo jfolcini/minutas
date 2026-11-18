@@ -38,7 +38,7 @@ The stack is settled: Python, Parakeet v3, pyannote community-1, two recorded tr
 | Agaric | Publish to Agaric runs `agaric-mcp call add_meeting`, with no template; running it again adds the summary and applies a new name | The summary already lists decisions and action items, so a template would repeat them |
 | GitLab | Publish to GitLab asks for a link: an issue link gets a comment, a project link a new issue with only a title and body; it posts the summary and links the uploaded transcript and audio | The link alone says where and how to post; labels and assignees are set in GitLab |
 | GitLab login | [`glab`](https://docs.gitlab.com/cli/api/), logged in once per server; 1.91 or newer, which install.sh only checks for, and the history window keeps Publish to GitLab off until it's there | Already handles gitlab.com and self-hosted servers; no token handling in the tool |
-| Audio kept | The two tracks as Ogg Opus, 16 kHz mono at 32 kbps each (about 30 MB an hour), with the transcript and outputs, until the recording is deleted; no lossless copy | At that rate Opus barely changes what the speech models hear, and 16 kHz is all they take; tracks small enough to keep for good can always be re-transcribed with a better model; age and size limits come later ([#18](https://github.com/jfolcini/minutas/issues/18)) |
+| Audio kept | The two tracks as Ogg Opus, 16 kHz mono at 32 kbps each (about 30 MB an hour), with the transcript and outputs, until Delete now or a limit takes them: 30 days old, or 5 GB for all the tracks together, past which the oldest go whatever their age; each limit can be turned off; no lossless copy | At that rate Opus barely changes what the speech models hear, and 16 kHz is all they take; tracks kept for weeks can still be re-transcribed with a better model, and the limits keep the disk bounded ([#18](https://github.com/jfolcini/minutas/issues/18)) |
 | Audio files | Per recording, for its two tracks: Play, Save a copy, Open folder, Delete now | Manage disk and hand a file to someone without leaving the window |
 | Existing tools | Inspiration only, no fork | None fits; several have a piece worth borrowing |
 | Voice memory | Later, nice to have | Calendar attendees cover naming at first |
@@ -210,10 +210,11 @@ Every recording is a row, newest first; expanding it shows its speakers, its aud
 - **Failed runs:** show the reason and the fix, with Retry and Details; see *When an action fails* below.
 - **Summarize:** the menu lists built-in presets, saved presets, then Custom; Custom opens a text box with Save as preset. Saved presets can be deleted from the menu's Delete a preset, built-in ones can't. Without the Devin CLI on the PATH, Summarize is disabled and says how to install it.
 - **Publish to GitLab:** enabled once a summary exists; its dialog asks for the link, starting from the last run's, and says before posting whether it will get a comment or a new issue. Without `glab` 1.91 or newer on the PATH, it is disabled and recommends GitLab's own `.deb`: the snap can't read the recordings.
-- **Audio files:** the mic and call tracks, each with Play and Save a copy; Delete now removes both, and Open folder opens the recording's folder.
+- **Audio files:** the mic and call tracks, each with Play and Save a copy; Delete now removes both, Open folder opens the recording's folder, and the row says when the age limit will delete them.
 - **Deleting:** asks first; the history entry and its outputs stay. Without the tracks, Run again is disabled, and publishing leaves the audio out and says so.
+- **Audio limits:** delete tracks as Delete now does, but only once the latest transcription has succeeded and never the recording in progress; they run when a recording stops, when the window opens and when they are saved, with no timer of their own.
 - **Links:** open in the default app: `summary.md` in the text editor, `agaric://` links in Agaric, GitLab links in the browser.
-- **Settings:** presets, the Agaric space and agent token (kept in the GNOME keyring through Python's keyring package), the glossary, the echo-cancelled mic switch, and whether `glab` is logged in.
+- **Settings:** presets, the Agaric space and agent token (kept in the GNOME keyring through Python's keyring package), the glossary, the echo-cancelled mic switch, whether `glab` is logged in, and the audio limits with how much audio is kept against them.
 - **Top-bar menu:** record and stop, the last few recordings, and Open history.
 
 ## When an action fails
@@ -301,7 +302,7 @@ The scorer comes first, so every later step is measured; the tool is usable end 
 - [ ] **M6:** Summarize: built-in presets (General, Standup, 1:1, Stakeholder call), saved presets, Custom with Save as preset, deleting saved presets, Devin CLI, `summary.md`, the proposed page name from its `Title:` line; Publish to Agaric adds the summary and renames the page when its automatic name changed
 - [ ] **M7:** Publish to GitLab through `glab api`: comment or new issue (title and body only), transcript and audio uploads, Retry carrying on from the failed step, the output link
 - [ ] **M8:** GNOME extension: record and stop, the consent reminder on Record, recent recordings with a mark on failed runs, Open history, notifications for a ready transcript or a failed run; `install.sh` complete, with the glab and extension steps, and `minutas update`
-- [ ] **Later:** age and size limits on kept audio ([#18](https://github.com/jfolcini/minutas/issues/18)); voice memory; fine-tuning on Rioplatense speech if the test set shows a gap; Claude and Codex summarizers; publishing to GitHub; macOS and Windows
+- [ ] **Later:** voice memory; fine-tuning on Rioplatense speech if the test set shows a gap; Claude and Codex summarizers; publishing to GitHub; macOS and Windows
 
 ## Open questions
 

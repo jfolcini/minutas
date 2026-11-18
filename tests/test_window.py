@@ -25,6 +25,7 @@ pytestmark = pytest.mark.usefixtures("no_handler_raised")
 
 START = datetime(2026, 11, 18, 13, 5, 42, tzinfo=UTC)
 FIRST = "2026-11-18T13-05-42"
+GB = 10**9
 SUBTITLE = "2026-11-18 13:05 · 30 min"
 KILL = ["systemctl", "--user", "kill", "--signal=SIGUSR1", "minutas-transcribe.service"]
 DISMISSED = GLib.Error(
@@ -322,6 +323,13 @@ def devin_installed(
 def glab_installed(monkeypatch: pytest.MonkeyPatch) -> None:
     """A glab that can publish, never run: the window offers Publish to GitLab only then."""
     monkeypatch.setattr(gitlab, "glab_problem", lambda: "")
+
+
+@pytest.fixture(autouse=True)
+def window_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A day after the recordings start: the age limit, on by default, deletes no test's audio
+    whenever the tests run."""
+    monkeypatch.setattr(window, "now", lambda: START + timedelta(days=1))
 
 
 class FakePublish:
@@ -1540,6 +1548,117 @@ def test_a_summarize_command_that_dies_mid_run_fails_its_run(
     assert reason in texts(shown)
     assert ("Summarize", f"Failed: {reason}") in lines(row)
     assert row.warning.get_visible() is True
+
+
+def with_size(recording_id: str, size: int) -> str:
+    """Its tracks take size bytes, without the disk."""
+    for name in store.TRACKS:
+        with (store.recording_dir(recording_id) / name).open("wb") as track:
+            track.truncate(size // 2)
+    return recording_id
+
+
+def limits(dialog: Adw.Dialog) -> dict[str, tuple[Adw.ExpanderRow, Adw.SpinRow]]:
+    """Each limit's switch and value, by the limit's title."""
+    return {
+        expander.get_title(): (expander, value)
+        for expander in descendants(dialog)
+        if isinstance(expander, Adw.ExpanderRow)
+        for value in descendants(expander)
+        if isinstance(value, Adw.SpinRow)
+    }
+
+
+def test_opening_the_window_deletes_the_audio_over_the_limits(
+    history: Callable[[], window.HistoryWindow],
+) -> None:
+    old = recording([TRANSCRIBED], started=START - timedelta(days=30))
+    recording([TRANSCRIBED])
+    untranscribed = recording(started=START - timedelta(days=40))
+
+    shown = history()
+
+    assert [store.holds_audio(one) for one in (old, FIRST, untranscribed)] == [False, True, True]
+    # As after Delete now; and the age limit says when it takes what is left.
+    assert lines(expand(shown, old))[2:6] == [
+        ("Microphone", "Deleted"),
+        ("Call", "Deleted"),
+        ("Audio files", ""),
+        ("Transcribe", "Succeeded"),
+    ]
+    assert lines(expand(shown))[4] == ("Audio files", "Kept until 2026-12-18 13:05")
+    assert lines(expand(shown, untranscribed))[4] == ("Audio files", "")
+
+
+@pytest.mark.parametrize(
+    ("saved", "said", "shown_limits"),
+    [
+        (None, " of 5 GB", {"Age limit": (True, 30.0), "Size limit": (True, 5.0)}),
+        ((None, 2), " of 2 GB", {"Age limit": (False, 30.0), "Size limit": (True, 2.0)}),
+        ((7, None), "", {"Age limit": (True, 7.0), "Size limit": (False, 5.0)}),
+    ],
+)
+def test_audio_limits_show_the_kept_audio_against_the_limits(
+    history: Callable[[], window.HistoryWindow],
+    saved: tuple[int | None, int | None] | None,
+    said: str,
+    shown_limits: dict[str, tuple[bool, float]],
+) -> None:
+    if saved is not None:
+        settings.set_audio_limits(*saved)
+    with_size(recording(), GB // 2)
+    with_size(recording(started=START + timedelta(hours=1)), GB)
+    # Audio the limits can't delete counts all the same.
+    with_size(store.create_recording(START + timedelta(hours=2))["id"], GB)
+    shown = history()
+
+    press(shown, "Audio limits")
+    dialog = open_dialog(shown)
+
+    assert isinstance(dialog, Adw.AlertDialog)
+    assert dialog.get_heading() == "Audio limits"
+    kept = GLib.format_size(5 * GB // 2)
+    assert dialog.get_body() == f"Kept audio: {kept}{said}.\n\n{window.AUDIO_LIMITS_NOTE}"
+    assert {
+        title: (expander.get_enable_expansion(), value.get_value())
+        for title, (expander, value) in limits(dialog).items()
+    } == shown_limits
+    press(dialog, "Cancel")
+
+
+def test_saved_audio_limits_take_what_is_over_them_at_once(
+    history: Callable[[], window.HistoryWindow],
+) -> None:
+    ten_days_old = recording([TRANSCRIBED], started=START - timedelta(days=9))
+    recording([TRANSCRIBED])
+    shown = history()
+
+    press(shown, "Audio limits")
+    dialog = open_dialog(shown)
+    age, size = limits(dialog)["Age limit"], limits(dialog)["Size limit"]
+    age[1].set_value(7)
+    size[0].set_enable_expansion(False)
+    press(dialog, "Save")
+
+    assert settings.audio_limits() == (7, None)
+    assert (store.holds_audio(ten_days_old), store.holds_audio(FIRST)) == (False, True)
+    assert lines(expand(shown, ten_days_old))[2] == ("Microphone", "Deleted")
+    assert lines(expand(shown))[4] == ("Audio files", "Kept until 2026-11-25 13:05")
+
+
+def test_audio_limits_change_nothing_when_cancelled(
+    history: Callable[[], window.HistoryWindow],
+) -> None:
+    ten_days_old = recording([TRANSCRIBED], started=START - timedelta(days=9))
+    shown = history()
+
+    press(shown, "Audio limits")
+    dialog = open_dialog(shown)
+    limits(dialog)["Age limit"][1].set_value(7)
+    press(dialog, "Cancel")
+
+    assert settings.audio_limits() == (30, 5)
+    assert store.holds_audio(ten_days_old) is True
 
 
 def test_the_window_follows_what_other_processes_do(

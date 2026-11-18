@@ -9,9 +9,9 @@ import fcntl
 import json
 import os
 import tempfile
-from collections.abc import Generator, Iterable, Mapping
+from collections.abc import Generator, Iterable, Mapping, Sequence
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import NotRequired, TypedDict, cast
 
@@ -327,6 +327,63 @@ def delete_tracks(recording_id: str) -> None:
     """Removes the audio; the recording, its transcript and its run log stay."""
     for name in TRACKS:
         (recording_dir(recording_id) / name).unlink(missing_ok=True)
+
+
+def audio_size(recording_id: str) -> int:
+    """The bytes its tracks take."""
+    folder = recording_dir(recording_id)
+    return sum((folder / name).stat().st_size for name in TRACKS if (folder / name).is_file())
+
+
+def may_lose_audio(recording: Recording, runs: Sequence[Run]) -> bool:
+    """Whether a limit may delete its tracks: a recording is never lost before it has been
+    transcribed, so only a stopped one whose latest transcription succeeded."""
+    transcriptions = [run["status"] for run in runs if run["action"] == "transcribe"]
+    return recording["stopped_at"] is not None and transcriptions[-1:] == ["succeeded"]
+
+
+def audio_kept_until(recording: Recording, age_limit_days: int) -> datetime:
+    return datetime.fromisoformat(recording["started_at"]) + timedelta(days=age_limit_days)
+
+
+def audio_over_limits(
+    recordings: Sequence[tuple[Recording, Sequence[Run], int]],
+    now: datetime,
+    age_limit_days: int | None,
+    size_limit_gb: int | None,
+) -> list[str]:
+    """The recordings whose tracks go, oldest first, from each one's runs and tracks' bytes.
+
+    Those past the age limit go; then, while all the tracks together pass the size limit, the
+    oldest of the rest go too, however young: size wins. None turns a limit off.
+    """
+    total = sum(size for _, _, size in recordings)
+    gone: list[str] = []
+    for recording, runs, size in sorted(
+        recordings, key=lambda kept: datetime.fromisoformat(kept[0]["started_at"])
+    ):
+        if size == 0 or not may_lose_audio(recording, runs):
+            continue
+        # The age limit takes the oldest first too, so its recordings come before any other.
+        too_old = age_limit_days is not None and now > audio_kept_until(recording, age_limit_days)
+        too_big = size_limit_gb is not None and total > size_limit_gb * 10**9
+        if too_old or too_big:
+            gone.append(recording["id"])
+            total -= size
+    return gone
+
+
+def delete_audio_over_limits(
+    now: datetime, age_limit_days: int | None, size_limit_gb: int | None
+) -> None:
+    """Deletes the tracks of the recordings audio_over_limits picks, as Delete now does."""
+    # Inside the lock, where no transcription can be queued between the choice and the delete.
+    with lock():
+        # By runs.json, which a recording gets only after its recording.json.
+        ids = [path.parent.name for path in recordings_dir().glob("*/runs.json")]
+        recordings = [(load_recording(i), load_runs(i), audio_size(i)) for i in ids]
+        for recording_id in audio_over_limits(recordings, now, age_limit_days, size_limit_gb):
+            delete_tracks(recording_id)
 
 
 def open_recording() -> Recording | None:

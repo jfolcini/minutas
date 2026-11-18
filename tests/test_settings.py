@@ -86,3 +86,29 @@ def test_deleting_a_preset_that_is_gone_changes_nothing() -> None:
     settings.delete_preset("Retro")
 
     assert settings.saved_presets() == {"Planning": "List the plans."}
+
+
+def test_kept_audio_is_bounded_to_30_days_and_5_gb_until_changed() -> None:
+    assert settings.audio_limits() == (30, 5)
+
+
+# Only a hand edit writes these; 0 taken at its word would delete every transcribed track.
+@pytest.mark.parametrize("value", [0, -1, "5", 2.5, True, [5]])
+def test_a_hand_edited_limit_that_is_no_whole_number_of_at_least_one_is_the_default(
+    value: object,
+) -> None:
+    settings.save({"audio_age_limit_days": value, "audio_size_limit_gb": value})
+
+    assert settings.audio_limits() == (30, 5)
+
+
+@pytest.mark.parametrize("limits", [(7, None), (None, 2), (None, None), (90, 20)])
+def test_set_audio_limits_keeps_them_with_the_other_settings_and_none_turns_one_off(
+    limits: tuple[int | None, int | None],
+) -> None:
+    settings.set_agaric_space_id("01HZWORK")
+
+    settings.set_audio_limits(*limits)
+
+    assert settings.audio_limits() == limits
+    assert settings.agaric_space_id() == "01HZWORK"

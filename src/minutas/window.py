@@ -41,6 +41,15 @@ DELETE_WARNING = (
 CUSTOM_NAME = "Custom name…"
 ASK_LINK = "Paste an issue link to comment on it, or a project link to open a new issue"
 NOT_A_LINK = "Not a GitLab issue or project link"
+AUDIO_LIMITS_NOTE = (
+    "Audio over a limit is deleted, oldest first, once it has been transcribed: when you save, "
+    "when a recording stops and when this window opens. The transcripts and everything published "
+    "stay."
+)
+
+
+def now() -> datetime:
+    return datetime.now(UTC).astimezone()
 
 
 def load_views(running: Mapping[str, Collection[str]]) -> list[RowView]:
@@ -52,6 +61,7 @@ def load_views(running: Mapping[str, Collection[str]]) -> list[RowView]:
         SUMMARIZE: "" if found else summarizer.DEVIN_MISSING,
         PUBLISH_GITLAB: gitlab.glab_problem(),
     }
+    age_limit_days, _ = settings.audio_limits()
     # Inside the lock, so a recording being discarded is seen whole or not at all.
     with store.lock():
         logs = worker.runs_by_recording()
@@ -66,6 +76,7 @@ def load_views(running: Mapping[str, Collection[str]]) -> list[RowView]:
                 ],
                 running=[action for action, ids in running.items() if recording_id in ids],
                 missing_tools=missing_tools,
+                age_limit_days=age_limit_days,
             )
             for recording_id in sorted(logs, reverse=True)
         ]
@@ -91,6 +102,24 @@ def menu_item(label: str, action: str, target: GLib.Variant) -> Gio.MenuItem:
 
 def warning_icon() -> Gtk.Image:
     return Gtk.Image(icon_name="dialog-warning-symbolic", css_classes=["error"])
+
+
+def limit_row(
+    title: str, unit: str, limit: int | None, default: int
+) -> tuple[Adw.ExpanderRow, Adw.SpinRow]:
+    """A limit's switch, and its value in unit, which shows the default while it is off."""
+    on = limit is not None
+    switch = Adw.ExpanderRow(title=title, show_enable_switch=True, enable_expansion=on, expanded=on)
+    # GTK needs an upper bound; nobody keeps audio that long, or that much of it.
+    value = Adw.SpinRow.new_with_range(1, 10_000, 1)
+    value.set_title(unit)
+    value.set_value(default if limit is None else limit)
+    switch.add_row(value)
+    return switch, value
+
+
+def chosen_limit(switch: Adw.ExpanderRow, value: Adw.SpinRow) -> int | None:
+    return int(value.get_value()) if switch.get_enable_expansion() else None
 
 
 class TrackControls:
@@ -263,6 +292,7 @@ class Details:
             controls.save.set_sensitive(track.available)
             if not track.available:
                 controls.stop()
+        self.files.set_subtitle(view.kept_until)
         self.delete.set_sensitive(not view.delete_disabled)
         self.delete.set_tooltip_text(view.delete_disabled or None)
         self.transcribe.display(view.transcribe)
@@ -341,8 +371,10 @@ class HistoryWindow(Adw.ApplicationWindow):
         self.toasts = Adw.ToastOverlay(
             child=Gtk.ScrolledWindow(child=self.viewport, hscrollbar_policy=Gtk.PolicyType.NEVER)
         )
+        header = Adw.HeaderBar()
+        header.pack_end(button("Audio limits", self.edit_audio_limits))
         page = Adw.ToolbarView(content=self.toasts)
-        page.add_top_bar(Adw.HeaderBar())
+        page.add_top_bar(header)
         self.set_content(page)
         # GLib polls for a monitored file whose folder is missing; in one that exists it waits.
         store.data_dir().mkdir(parents=True, exist_ok=True)
@@ -357,7 +389,7 @@ class HistoryWindow(Adw.ApplicationWindow):
             action = Gio.SimpleAction.new(name, GLib.VariantType.new(parameters))
             action.connect("activate", activated)
             self.add_action(action)
-        self.refresh()
+        self.delete_audio_over_limits()
 
     def status_changed(
         self,
@@ -369,6 +401,11 @@ class HistoryWindow(Adw.ApplicationWindow):
         # One rewrite is several events; this one comes once, when the new file is whole.
         if event == Gio.FileMonitorEvent.CHANGES_DONE_HINT:
             self.refresh()
+
+    def delete_audio_over_limits(self) -> None:
+        """Bounds the kept audio, where that costs nothing, and shows what is left."""
+        store.delete_audio_over_limits(now(), *settings.audio_limits())
+        self.refresh()
 
     def refresh(self) -> None:
         """Brings the rows up to date; a row whose recording did not change is left alone."""
@@ -511,6 +548,38 @@ class HistoryWindow(Adw.ApplicationWindow):
             store.delete_tracks(recording_id)
             self.refresh()
 
+    def edit_audio_limits(self, _button: Gtk.Button) -> None:
+        age_limit_days, size_limit_gb = settings.audio_limits()
+        kept = GLib.format_size(sum(store.audio_size(recording_id) for recording_id in self.rows))
+        against = "" if size_limit_gb is None else f" of {size_limit_gb} GB"
+        age = limit_row("Age limit", "Days", age_limit_days, settings.AUDIO_AGE_LIMIT_DAYS)
+        size = limit_row("Size limit", "GB", size_limit_gb, settings.AUDIO_SIZE_LIMIT_GB)
+        rows = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE, css_classes=["boxed-list"])
+        rows.append(age[0])
+        rows.append(size[0])
+        dialog = Adw.AlertDialog(
+            heading="Audio limits",
+            body=f"Kept audio: {kept}{against}.\n\n{AUDIO_LIMITS_NOTE}",
+            extra_child=rows,
+            default_response="save",
+            close_response="cancel",
+        )
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("save", "Save")
+        dialog.set_response_appearance("save", Adw.ResponseAppearance.SUGGESTED)
+        dialog.choose(self, None, self.audio_limits_chosen, age, size)
+
+    def audio_limits_chosen(
+        self,
+        dialog: Adw.AlertDialog,
+        result: Gio.AsyncResult,
+        age: tuple[Adw.ExpanderRow, Adw.SpinRow],
+        size: tuple[Adw.ExpanderRow, Adw.SpinRow],
+    ) -> None:
+        if dialog.choose_finish(result) == "save":
+            settings.set_audio_limits(chosen_limit(*age), chosen_limit(*size))
+            self.delete_audio_over_limits()
+
     def next_step(self, _button: Gtk.Button, recording_id: str, action: str) -> None:
         shown = self.shown(recording_id, action)
         if action == PUBLISH:
@@ -524,7 +593,7 @@ class HistoryWindow(Adw.ApplicationWindow):
         else:
             # A worker that does not start leaves a failed run, which says why.
             with contextlib.suppress(worker.WorkerError):
-                worker.queue(recording_id, datetime.now(UTC).astimezone())
+                worker.queue(recording_id, now())
 
     def show_details(self, _button: Gtk.Button, recording_id: str, action: str) -> None:
         log = store.recording_dir(recording_id) / str(self.shown(recording_id, action).details)
