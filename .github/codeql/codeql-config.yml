@@ -2,3 +2,12 @@ name: 'Minutas CodeQL config'
 
 queries:
   - uses: security-and-quality
+
+# Rules ruff already enforces, where CodeQL only adds false positives: it reads a name used
+# only in a quoted cast() type (which ruff's TC006 requires) as unused, and flags importing
+# the package for its location next to a submodule. ruff's F401 and import rules cover both.
+query-filters:
+  - exclude:
+      id: py/unused-import
+  - exclude:
+      id: py/import-and-import-from
