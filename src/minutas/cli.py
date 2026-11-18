@@ -10,6 +10,8 @@ from datetime import UTC, datetime
 from importlib.metadata import version
 from typing import cast
 
+from keyring.errors import KeyringError
+
 from minutas import agaric, recorder, settings, store, worker
 
 
@@ -120,7 +122,11 @@ def settings_agaric(args: argparse.Namespace) -> int:
         token = sys.stdin.readline().strip()
         if not token:
             return fail("No token on stdin.")
-        settings.set_agaric_token(token)
+        try:
+            settings.set_agaric_token(token)
+        except KeyringError as error:
+            # Dismissing the keyring's unlock prompt raises KeyringLocked, for one.
+            return fail(f"Could not store the Agaric agent token in the keyring: {error}")
     if args.space is not None:
         settings.set_agaric_space_id(args.space)
     if args.list_spaces:

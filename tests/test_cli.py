@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 import pytest
+from keyring.errors import KeyringLocked
 
 from minutas import agaric, cli, recorder, settings, store, worker
 from minutas.cli import main
@@ -601,6 +602,23 @@ def test_settings_agaric_reads_the_token_from_stdin(monkeypatch: pytest.MonkeyPa
     assert main(["settings", "agaric", "--token-from-stdin"]) == 0
 
     assert settings.agaric_token() == "agt_1"
+
+
+def test_settings_agaric_says_why_the_keyring_refused_the_token(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def locked(_token: str) -> None:
+        reason = "dismissed"
+        raise KeyringLocked(reason)  # what dismissing the unlock prompt raises
+
+    monkeypatch.setattr(sys, "stdin", io.StringIO("agt_1\n"))
+    monkeypatch.setattr(settings, "set_agaric_token", locked)
+
+    assert main(["settings", "agaric", "--token-from-stdin"]) == 1
+
+    assert capsys.readouterr().err == (
+        "Could not store the Agaric agent token in the keyring: dismissed\n"
+    )
 
 
 def test_settings_agaric_refuses_an_empty_token(
