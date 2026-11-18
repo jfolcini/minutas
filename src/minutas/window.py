@@ -209,6 +209,8 @@ class HistoryWindow(Adw.ApplicationWindow):
         self.details: dict[str, Details] = {}
         # The publish commands this window is running, by recording.
         self.publishing: dict[str, Gio.Subprocess] = {}
+        # How many runs each recording had when its publish started (unrecorded_failure).
+        self.runs_before_publish: dict[str, int] = {}
         self.list = Gtk.ListBox(
             selection_mode=Gtk.SelectionMode.NONE,
             css_classes=["boxed-list"],
@@ -422,6 +424,7 @@ class HistoryWindow(Adw.ApplicationWindow):
             Gio.SubprocessFlags.STDOUT_SILENCE | Gio.SubprocessFlags.STDERR_PIPE,
         )
         self.publishing[recording_id] = command
+        self.runs_before_publish[recording_id] = len(store.load_runs(recording_id))
         command.communicate_utf8_async(None, None, self.published, recording_id)
         self.refresh()
 
@@ -432,7 +435,10 @@ class HistoryWindow(Adw.ApplicationWindow):
         del self.publishing[recording_id]
         # The command records its own run, failure included; only one that died could not.
         problem = window_view.unrecorded_failure(
-            store.load_runs(recording_id), stderr or "", exited_ok=command.get_successful()
+            store.load_runs(recording_id),
+            stderr or "",
+            exited_ok=command.get_successful(),
+            known=self.runs_before_publish.pop(recording_id),
         )
         if problem is not None:
             # One that died after starting its run left it running: it fails, and says why.

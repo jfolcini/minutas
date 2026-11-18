@@ -447,7 +447,17 @@ def test_a_clean_name_has_no_stray_space_and_cleans_to_itself(typed: str) -> Non
 def test_a_publish_command_that_died_without_a_failed_run_is_reported(
     *, exited_ok: bool, runs: list[store.Run], stderr: str, message: str | None
 ) -> None:
-    assert unrecorded_failure(runs, stderr, exited_ok=exited_ok) == message
+    assert unrecorded_failure(runs, stderr, exited_ok=exited_ok, known=0) == message
+
+
+def test_an_earlier_failed_publish_does_not_hide_a_retry_that_died() -> None:
+    # Retry on a failed publish whose command dies before it records a run: the newest publish
+    # run is still the earlier failure, which says nothing about this press.
+    earlier = [run("publish_agaric", "failed", error="Agaric isn't running")]
+
+    assert unrecorded_failure(
+        earlier, "ModuleNotFoundError: No module named 'keyring'\n", exited_ok=False, known=1
+    ) == ("Publish to Agaric stopped: ModuleNotFoundError: No module named 'keyring'")
 
 
 def a_run() -> st.SearchStrategy[store.Run]:

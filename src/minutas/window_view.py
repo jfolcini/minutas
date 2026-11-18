@@ -91,10 +91,16 @@ def latest(runs: Sequence[store.Run], action: str) -> tuple[int, store.Run] | No
     )
 
 
-def unrecorded_failure(runs: Sequence[store.Run], stderr: str, *, exited_ok: bool) -> str | None:
-    """What to say when the publish command failed and left no failed run to say it."""
+def unrecorded_failure(
+    runs: Sequence[store.Run], stderr: str, *, exited_ok: bool, known: int
+) -> str | None:
+    """What to say when the publish command failed and left no failed run to say it.
+
+    `known` is how many runs the recording had when the command started: an older failed
+    publish run says nothing about this one.
+    """
     last = latest(runs, PUBLISH)
-    if exited_ok or (last is not None and last[1]["status"] == "failed"):
+    if exited_ok or (last is not None and last[0] >= known and last[1]["status"] == "failed"):
         return None
     said = [line.strip() for line in stderr.splitlines() if line.strip()]
     if not said:
