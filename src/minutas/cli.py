@@ -58,6 +58,19 @@ def record_stop(_: argparse.Namespace) -> int:
     return 0
 
 
+def repair(_: argparse.Namespace) -> int:
+    """Puts right what a crash or a logout left: a recording still open, transcriptions queued."""
+    if not recorder.is_running():
+        store.close_abandoned()
+    store.write_status()
+    try:
+        # A worker first fails a run a crash left running, then takes the queued ones.
+        worker.ensure_worker()
+    except worker.WorkerError as error:
+        return fail(f"Could not start transcribing: {error}")
+    return 0
+
+
 def queue_transcription(recording_id: str) -> int:
     try:
         worker.queue(recording_id, now())
@@ -159,6 +172,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     stopped.add_argument("recording_id")
     stopped.set_defaults(handler=record_stopped)
+
+    commands.add_parser(
+        "repair",
+        help="close a recording whose recorder is gone and resume the queued transcriptions"
+        " (the extension runs this at login)",
+    ).set_defaults(handler=repair)
 
     transcribe_command = commands.add_parser("transcribe", help="transcribe a recording again")
     transcribe_command.add_argument("recording_id")

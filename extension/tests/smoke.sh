@@ -205,6 +205,15 @@ gnome-extensions enable "$UUID"
 expect "$MENU" '["Record","---","Standup · '
 expect "$NOTES" "'[\"Transcript ready | Standup, ${now:0:10} ${now:11:5}\"]'"
 
+echo "== every enable runs minutas repair once (a crash or a logout may have left something open)"
+repairs=$(grep -cxF repair "$WORK/minutas.log")
+gnome-extensions disable "$UUID"
+expect "$B === undefined" "'true'"
+gnome-extensions enable "$UUID"
+expect "$MENU" '["Record","---","Standup · '
+sleep 1
+check "enable ran minutas repair" test "$(grep -cxF repair "$WORK/minutas.log")" -eq $((repairs + 1))
+
 echo "== soak: status churn, notifications, the timer and disable/enable cycles leave nothing behind"
 gnome-extensions disable "$UUID"
 expect "$B === undefined" "'true'"

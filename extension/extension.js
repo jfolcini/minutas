@@ -58,6 +58,9 @@ export default class MinutasExtension extends Extension {
 
         this._render();
         this._readStatus();
+        // Enable runs at login, after a crash or a logout may have left a recording open or
+        // transcriptions queued, some on recordings older than status.json lists.
+        this._run(['repair'], "Couldn't start transcribing");
     }
 
     disable() {
