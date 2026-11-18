@@ -105,7 +105,7 @@ The transcript is one paragraph per segment; Agaric makes each timestamp seek th
 [00:00:11] **Me:** CI is green since this morning.
 ```
 
-- The page id in `add_meeting`'s result becomes the history's output link, `agaric://page/<id>`, which opens the page in Agaric.
+- The page id in `add_meeting`'s result becomes the history's output link, `agaric://page/<id>`, which opens the page in Agaric; its `recording_block_id`, which the result always carries, is the block a later, newer summary goes onto.
 - Renaming is `update_block_content` on that page id with `<name> <YYYY-MM-DD>`; Agaric refuses a name another page of the space holds. A taken name on the first publish becomes Use that page or Rename; on a rename it becomes Rename only, since the page already holds the files.
 - Opus at about 32 kbps is about 15 MB an hour, so about three hours fit under the cap.
 - This tool's agent gets read-write access to the Work space only.

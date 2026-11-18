@@ -290,9 +290,7 @@ class HistoryWindow(Adw.ApplicationWindow):
         # Built when a row is first expanded: most never are.
         self.details: dict[str, Details] = {}
         # The commands this window is running, by recording.
-        self.publishing: dict[str, Gio.Subprocess] = {}
-        self.summarizing: dict[str, Gio.Subprocess] = {}
-        self.running = {PUBLISH: self.publishing, SUMMARIZE: self.summarizing}
+        self.running: dict[str, dict[str, Gio.Subprocess]] = {PUBLISH: {}, SUMMARIZE: {}}
         # How many runs a recording had when the window started its command for an action
         # (unrecorded_failure).
         self.runs_before: dict[tuple[str, str], int] = {}

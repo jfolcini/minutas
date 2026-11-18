@@ -1025,7 +1025,7 @@ def test_publish_runs_the_command_and_shows_its_result(
     assert buttons(row)["Publish"].get_sensitive() is False
     assert buttons(row)["Publish"].get_tooltip_text() == "Publishing"
 
-    wait_until(lambda: not shown.publishing)
+    wait_until(lambda: not shown.running[window.PUBLISH])
 
     assert publish.called() == ["publish", "agaric", FIRST]
     assert ("Publish to Agaric", "Succeeded") in lines(row)
@@ -1063,7 +1063,7 @@ def test_a_taken_name_offers_that_page(
     row = expand(shown)
 
     press(row, "Publish")
-    wait_until(lambda: not shown.publishing)
+    wait_until(lambda: not shown.running[window.PUBLISH])
 
     assert ("Publish to Agaric", f"Failed: {TAKEN['error']}") in lines(row)
     assert list(buttons(shown.details[FIRST].publish.row)) == [
@@ -1076,7 +1076,7 @@ def test_a_taken_name_offers_that_page(
 
     publish.will(run("publish_agaric", "succeeded", output="agaric://page/01HXPAGE"))
     press(row, "Use that page")
-    wait_until(lambda: not shown.publishing)
+    wait_until(lambda: not shown.running[window.PUBLISH])
 
     assert publish.called() == ["publish", "agaric", FIRST, "--page=01HXPAGE"]
     assert list(buttons(shown.details[FIRST].publish.row)) == ["Open in Agaric", "Publish again"]
@@ -1099,7 +1099,7 @@ def test_a_taken_name_offers_a_rename(
     # A name that looks like an option is still the name.
     entry.set_text("--page 2")
     press(dialog, "Save")
-    wait_until(lambda: not shown.publishing)
+    wait_until(lambda: not shown.running[window.PUBLISH])
 
     assert publish.called() == ["publish", "agaric", FIRST, "--name=--page 2"]
     assert ("Publish to Agaric", "Succeeded") in lines(row)
@@ -1127,7 +1127,7 @@ def test_a_typed_name_agaric_refused_offers_only_a_rename(
     [entry] = [widget for widget in descendants(dialog) if isinstance(widget, Gtk.Entry)]
     entry.set_text("Weekly sync, part two")
     press(dialog, "Save")
-    wait_until(lambda: not shown.publishing)
+    wait_until(lambda: not shown.running[window.PUBLISH])
 
     assert publish.called() == ["publish", "agaric", FIRST, "--name=Weekly sync, part two"]
     assert list(buttons(shown.details[FIRST].publish.row)) == ["Open in Agaric", "Publish again"]
@@ -1142,7 +1142,7 @@ def test_a_publish_command_that_dies_without_a_run_is_reported(
     row = expand(shown)
 
     press(row, "Publish")
-    wait_until(lambda: not shown.publishing)
+    wait_until(lambda: not shown.running[window.PUBLISH])
 
     assert "Publish to Agaric stopped: minutas: error: invalid choice" in texts(shown)
     assert ("Publish to Agaric", "Not published") in lines(row)
@@ -1159,7 +1159,7 @@ def test_a_publish_command_that_dies_mid_run_fails_its_run(
     row = expand(shown)
 
     press(row, "Publish again")
-    wait_until(lambda: not shown.publishing)
+    wait_until(lambda: not shown.running[window.PUBLISH])
 
     reason = "Publish to Agaric stopped: RuntimeError: boom"
     assert store.load_runs(FIRST)[-1] == run("publish_agaric", "failed", error=reason)
@@ -1241,7 +1241,7 @@ def test_summarize_offers_the_presets_and_runs_the_one_chosen(
     assert ("Summarize", "Running") in lines(row)
     assert (presets.get_sensitive(), presets.get_tooltip_text()) == (False, "Summarizing")
 
-    wait_until(lambda: not shown.summarizing)
+    wait_until(lambda: not shown.running[window.SUMMARIZE])
 
     assert publish.called() == ["summarize", FIRST, f"--prompt={summarizer.presets()['Standup']}"]
     assert ("Summarize", "Succeeded") in lines(row)
@@ -1302,7 +1302,7 @@ def test_custom_sends_the_typed_prompt_and_saves_it_as_a_preset(
     prompt.get_buffer().set_text("  Only the blockers.\n")
     name.set_text(" Blockers ")
     press(dialog, "Summarize")
-    wait_until(lambda: not shown.summarizing)
+    wait_until(lambda: not shown.running[window.SUMMARIZE])
 
     assert publish.called() == ["summarize", FIRST, "--prompt=Only the blockers."]
     assert settings.saved_presets() == {"Blockers": "Only the blockers."}
@@ -1325,7 +1325,7 @@ def test_custom_runs_nothing_when_cancelled_or_left_empty(
     press(dialog, answer)
     settle()
 
-    assert (shown.summarizing, publish.called()) == ({}, [])
+    assert (shown.running[window.SUMMARIZE], publish.called()) == ({}, [])
     assert settings.saved_presets() == {}
 
 
@@ -1339,7 +1339,7 @@ def test_custom_without_a_name_saves_no_preset(
     dialog, prompt, _ = custom_prompt_dialog(shown)
     prompt.get_buffer().set_text("Only the blockers.")
     press(dialog, "Summarize")
-    wait_until(lambda: not shown.summarizing)
+    wait_until(lambda: not shown.running[window.SUMMARIZE])
 
     assert publish.called() == ["summarize", FIRST, "--prompt=Only the blockers."]
     assert settings.saved_presets() == {}
@@ -1379,7 +1379,7 @@ def test_retry_sends_the_failed_runs_prompt_again(
     assert shown.details[FIRST].presets.get_label() == "Summarize"
 
     press(row, "Retry")
-    wait_until(lambda: not shown.summarizing)
+    wait_until(lambda: not shown.running[window.SUMMARIZE])
 
     assert publish.called() == ["summarize", FIRST, "--prompt=Only the blockers."]
     assert ("Summarize", "Succeeded") in lines(row)
@@ -1395,7 +1395,7 @@ def test_a_summarize_command_that_dies_mid_run_fails_its_run(
     row = expand(shown)
 
     choose_preset(shown, "General")
-    wait_until(lambda: not shown.summarizing)
+    wait_until(lambda: not shown.running[window.SUMMARIZE])
 
     reason = "Summarize stopped: RuntimeError: boom"
     assert store.load_runs(FIRST)[-1] == run(
