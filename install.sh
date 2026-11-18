@@ -133,8 +133,14 @@ main() {
   step_system_packages
   step_uv
   step_speech_environment
-  step_huggingface_token
-  step_models
+  # CI has no GNOME keyring or Hugging Face account, so it leaves these two out.
+  if [[ ${MINUTAS_SKIP_MODELS:-} == 1 ]]; then
+    report "Hugging Face token" "skipped: MINUTAS_SKIP_MODELS=1"
+    report Models "skipped: MINUTAS_SKIP_MODELS=1"
+  else
+    step_huggingface_token
+    step_models
+  fi
 }
 
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then

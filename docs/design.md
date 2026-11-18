@@ -181,7 +181,7 @@ Minutas lives in a GitHub repository. `install.sh` installs and updates it: it c
 - **Updating:** `minutas update` fetches the repository's tags, checks out the latest release tag and re-runs `install.sh`; on the latest tag it says so and changes nothing.
 - **Two Pythons:** the window and the calendar use Ubuntu's Python, for its PyGObject bindings; the speech stack uses its own uv-managed Python, so it works on Ubuntu 24.04 and later whatever Python each release ships.
 - **Log out once:** GNOME on Wayland loads a new or changed extension only at the next login, so the script says when that's needed.
-- **Tested:** CI runs `install.sh` twice on Ubuntu 24.04, without the models; the second run must print `ok` for every step.
+- **Tested:** CI runs `install.sh` twice on Ubuntu 24.04, without the models; the second run must print `ok` for every step. `MINUTAS_SKIP_MODELS=1` leaves out the Hugging Face token and model steps there.
 
 ## Later: more tools and platforms
 
