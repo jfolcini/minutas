@@ -38,8 +38,8 @@ The stack is settled: Python, Parakeet v3, pyannote community-1, two recorded tr
 | Agaric | Publish to Agaric runs `agaric-mcp call add_meeting`, with no template; running it again adds the summary and applies a new name | The summary already lists decisions and action items, so a template would repeat them |
 | GitLab | Publish to GitLab asks for a link: an issue link gets a comment, a project link a new issue with only a title and body; it posts the summary and links the uploaded transcript and audio | The link alone says where and how to post; labels and assignees are set in GitLab |
 | GitLab login | [`glab`](https://docs.gitlab.com/cli/api/), logged in once per server; 1.91 or newer, installed by install.sh from the snap | Already handles gitlab.com and self-hosted servers; no token handling in the tool |
-| Audio kept | Raw FLAC tracks for 30 days, never while a recording has no successful transcript; the compressed copy, transcript and outputs until the recording is deleted | Raw tracks allow re-transcribing with a better model, at about 120 MB an hour |
-| Audio files | Per recording, for the lossless tracks and the lossy copy: Play, Save a copy, Open folder, Delete now | Manage disk and hand a file to someone without leaving the window |
+| Audio kept | The two tracks as Ogg Opus, 16 kHz mono at 32 kbps each (about 30 MB an hour), with the transcript and outputs, until the recording is deleted; no lossless copy | At that rate Opus barely changes what the speech models hear, and 16 kHz is all they take; tracks small enough to keep for good can always be re-transcribed with a better model, and nothing needs a cleanup |
+| Audio files | Per recording, for its two tracks: Play, Save a copy, Open folder, Delete now | Manage disk and hand a file to someone without leaving the window |
 | Existing tools | Inspiration only, no fork | None fits; several have a piece worth borrowing |
 | Voice memory | Later, nice to have | Calendar attendees cover naming at first |
 
@@ -92,7 +92,7 @@ agaric-mcp --token agt_… call add_meeting '{"space_id":"…","title":"Weekly s
 | `space_id` | The Work space, from `list_spaces` |
 | `title`, `date` | The page name (calendar event, else the summary's proposal, else "Meeting") and the recording's date; the page becomes `<title> <YYYY-MM-DD>`, tagged `#meeting`, with the `meeting_date` property |
 | `template` | Not sent: meeting pages get no template. If one is added later, its `<% recording %>` block becomes the recording block |
-| `audio_path` | The mixed Opus file; `.opus`, `.ogg`, `.mp3`, `.m4a`, `.wav`, `.webm` and `.flac` are accepted, at most 50 MB a file |
+| `audio_path` | The two tracks mixed into one Opus file at publish time; `.opus`, `.ogg`, `.mp3`, `.m4a`, `.wav`, `.webm` and `.flac` are accepted, at most 50 MB a file |
 | `transcript_path` | Markdown, stored as `<name>.transcript.md` |
 | `page` + `summary_markdown` | Publish to Agaric run again after Summarize; the summary is written just above the recording block |
 
@@ -117,13 +117,13 @@ One Python program does the work and draws the history window; the GNOME extensi
 | --- | --- | --- |
 | GNOME extension | Top-bar menu: record and stop with a timer, the last few recordings with a warning mark on any failed run, Open history; notifications on Record ("Tell participants you're recording"), when a transcript is ready, and when a run fails | GJS, GNOME Shell 46+ |
 | History window | Every recording with its name, speakers, actions and their runs (status, error, Retry, Cancel, output link), its audio files, and the settings | GTK 4 and libadwaita through PyGObject |
-| Player and file buttons | Play, Save a copy, Open folder and Delete now for the lossless tracks and the lossy copy | GTK 4 `MediaFile` and `MediaControls`, `FileDialog`, `FileLauncher` |
-| Recorder | Mic and computer audio as two tracks; survives the lock screen and a Shell restart; if it dies, what was captured is kept; a setting records the echo-cancelled mic instead | `systemd-run --user`, GStreamer or `pw-record`, PipeWire |
-| Store | One folder per recording: lossless FLAC tracks, lossy Opus copy, transcript, summary, the name and where it came from, and a JSON log of every run with its status, error and output link; the 30-day cleanup skips recordings without a successful transcript | Python standard library |
+| Player and file buttons | Play, Save a copy, Open folder and Delete now for the recording's two tracks | GTK 4 `MediaFile` and `MediaControls`, `FileDialog`, `FileLauncher` |
+| Recorder | Mic and computer audio as two Opus tracks; survives the lock screen and a Shell restart; if it dies, what was captured is kept; a setting records the echo-cancelled mic instead | `systemd-run --user`, GStreamer or `pw-record`, PipeWire |
+| Store | One folder per recording: the two Opus tracks, transcript, summary, the name and where it came from, and a JSON log of every run with its status, error and output link | Python standard library |
 | Calendar lookup | The event overlapping the recording: name, date, attendee names | PyGObject `ECal` and `EDataServer` |
 | Page name | Picks the name: one typed in the history window, else the calendar event's, else the summary's proposal, else "Meeting" | Python standard library |
 | Turn finder | Who spoke when: my turns from the mic track, everyone else's from the call track | Silero VAD; pyannote.audio 4 with community-1 |
-| Transcriber | Runs on stop, and again on Retry or Run again: one pass per turn, same-speaker turns merged up to about 30 s, with the meeting's word list; uses the lossless tracks, or the lossy copy once they're gone | NeMo, Parakeet TDT 0.6B v3, phrase boosting |
+| Transcriber | Runs on stop, and again on Retry or Run again: one pass per turn, same-speaker turns merged up to about 30 s, with the meeting's word list | NeMo, Parakeet TDT 0.6B v3, phrase boosting |
 | Speaker naming | Each speaker set to a calendar attendee or a custom name in the history window; voice memory later | Calendar attendees; community-1 speaker embeddings later |
 | Formatter | Writes `[hh:mm:ss] **Name:** text` with the current names | Python standard library |
 | Summarize | A built-in preset (General, Standup, 1:1, Stakeholder call) or a saved one, or Custom typed at run time and savable as a preset; always in English. Every prompt gets one added instruction: start with a line `Title: <a few words, no date>`, which becomes the proposed page name and is cut from `summary.md` | Devin CLI, `devin -p --prompt-file` |
@@ -137,7 +137,7 @@ Minutas lives in a GitHub repository. `install.sh` installs and updates it: it c
 
 | Step | What it puts in place | Skipped when |
 | --- | --- | --- |
-| System packages | `python3-gi`, `gir1.2-gtk-4.0`, `gir1.2-adw-1`, `gir1.2-ecal-2.0`, `gir1.2-edataserver-1.2`, GStreamer with its PipeWire, Opus and FLAC plugins, through `apt` | All are installed |
+| System packages | `python3-gi`, `gir1.2-gtk-4.0`, `gir1.2-adw-1`, `gir1.2-ecal-2.0`, `gir1.2-edataserver-1.2`, GStreamer with its PipeWire and Opus plugins, through `apt` | All are installed |
 | glab | GitLab's [`glab` snap](https://snapcraft.io/glab), installed or refreshed | `glab` 1.91 or newer is on the PATH |
 | uv | `uv` at the version pinned in the repository, in `~/.local/bin` | That version is there |
 | Speech environment | Parakeet through NeMo, pyannote.audio, Silero VAD and CPU-only PyTorch, synced from `uv.lock` into `~/.local/share/minutas/speech` with a uv-managed Python | `uv.lock` didn't change |
@@ -180,8 +180,8 @@ Every recording is a row, newest first; expanding it shows its speakers, its aud
 - **Failed runs:** show the reason and the fix, with Retry and Details; see *When an action fails* below.
 - **Summarize:** the menu lists built-in presets, saved presets, then Custom; Custom opens a text box with Save as preset. Saved presets can be deleted, built-in ones can't.
 - **Publish to GitLab:** enabled once a summary exists; before posting, the dialog says whether the link will get a comment or a new issue.
-- **Audio files:** a row for the lossless tracks (mic and call, FLAC) and one for the lossy copy (Opus), each with Play, Save a copy and Delete now, plus Open folder for the recording. The lossless row says when the 30-day cleanup will delete it.
-- **Deleting:** asks first; the history entry and its outputs stay. Without the lossless tracks, Run again uses the lossy copy, and it is disabled once both are gone; publishing without the lossy copy leaves the audio out and says so.
+- **Audio files:** the mic and call tracks, each with Play and Save a copy; Delete now removes both, and Open folder opens the recording's folder.
+- **Deleting:** asks first; the history entry and its outputs stay. Without the tracks, Run again is disabled, and publishing leaves the audio out and says so.
 - **Links:** open in the default app: `summary.md` in the text editor, `agaric://` links in Agaric, GitLab links in the browser.
 - **Settings:** presets, the Agaric space and agent token (kept in the GNOME keyring through Python's keyring package), the glossary, the echo-cancelled mic switch, and whether `glab` is logged in.
 - **Top-bar menu:** record and stop, the last few recordings, and Open history.
@@ -207,7 +207,7 @@ A run still marked Running when the app starts again, after a logout or a crash,
 | Action | What can fail | What the history does |
 | --- | --- | --- |
 | Recording | The recorder dies, an audio device disappears, the disk fills | Keeps what was captured, marks the recording incomplete with the time it stopped, and still offers Transcribe |
-| Transcribe | Out of memory, a model fails to load, a crash | Failed with the log; Retry runs again from the lossless tracks, which the 30-day cleanup leaves alone until a transcript succeeds |
+| Transcribe | Out of memory, a model fails to load, a crash | Failed with the log; Retry runs again from the tracks |
 | Summarize | Devin not logged in, a non-zero exit, empty output | Failed with Devin's message; the run keeps the prompt it used, Custom included, so Retry sends the same one |
 | Publish to Agaric | Agaric not running, the agent token revoked, a file over 50 MB, the name already taken by another page | Failed with Agaric's message; `add_meeting` is one transaction, so a failed call leaves nothing behind. A taken name stops the run and asks: Use that page (adds the files to it) or Rename; a rename to a taken name asks for another name |
 | Publish to GitLab | `glab` not logged in for that server, no access to the link, an upload over the server's limit, network down | Failed at the step that broke, with the fix (for example `glab auth login --hostname <host>`); finished uploads are kept in the run, so Retry carries on without uploading again |
@@ -263,7 +263,7 @@ No existing tool does the whole job on Linux; each row is something to borrow, j
 The scorer comes first, so every later step is measured; the tool is usable end to end after M3, when a recording reaches Agaric from the history window.
 
 - [ ] **M0:** GitHub repository, `uv` project, `install.sh` with the system packages, uv, speech environment, token and model steps, the test set and the `jiwer` scorer
-- [ ] **M1:** recorder with two tracks under `systemd-run --user`, keeping what was captured if it dies, with the echo-cancelled mic setting; the per-recording folder, the lossy Opus copy, and the 30-day cleanup of lossless tracks that skips recordings without a transcript
+- [ ] **M1:** recorder with two Opus tracks under `systemd-run --user`, keeping what was captured if it dies, with the echo-cancelled mic setting; the per-recording folder
 - [ ] **M2:** transcription on stop: Silero VAD on both tracks, Parakeet per turn, the formatter ("Me" and "Speaker n"); measure an hour of audio on the laptop
 - [ ] **M3:** history window: recordings, the run log (queued, running, succeeded, failed, cancelled, interrupted) with Retry, Cancel and Details, the audio buttons (Play, Save a copy, Open folder, Delete), Transcribe's Run again, the name with Edit ("Meeting" by default), and Publish to Agaric with its output link and the Use that page or Rename prompt
 - [ ] **M4:** calendar lookup through GNOME Online Accounts: the event's name as the page name, the date, attendees and the word list
