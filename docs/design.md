@@ -306,7 +306,7 @@ The scorer comes first, so every later step is measured; the tool is usable end 
 
 Everything is decided.
 
-- [x] How long does an hour of audio take on the laptop at full precision with phrase boosting? Measured in M2 ([#5](https://github.com/jfolcini/minutas/issues/5)): Parakeet takes about a tenth of the recording's length, so full precision stays and int8 isn't needed. With speaker detection, measured in M5 ([#8](https://github.com/jfolcini/minutas/issues/8)), a transcription takes about a quarter of it, most of that pyannote on the call track.
+- [x] How long does an hour of audio take on the laptop at full precision with phrase boosting? Measured in M2 ([#5](https://github.com/jfolcini/minutas/issues/5)): Parakeet takes about a tenth of the recording's length, so full precision stays and int8 isn't needed. With speaker detection, measured in M5 ([#8](https://github.com/jfolcini/minutas/issues/8)), a transcription takes about a quarter of it, most of that pyannote on the call track. Moving pyannote's window three seconds at a time instead of one ([#46](https://github.com/jfolcini/minutas/issues/46)) brings it to about a sixth, most of that Parakeet; a two-hour meeting stays well inside the transcription's memory limit.
 
 ## Sources
 
