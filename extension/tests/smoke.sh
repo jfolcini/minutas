@@ -24,7 +24,9 @@ if [ -z "${MINUTAS_SMOKE_WORK:-}" ]; then
   }
   trap remove_runtime EXIT
   mkdir -p "$WORK/data/gnome-shell/extensions/smoke-unsafe@minutas.test"
-  cp -r "$EXTENSION_DIR" "$WORK/data/gnome-shell/extensions/$UUID"
+  # The sources only: node_modules holds the dev tools.
+  mkdir -p "$WORK/data/gnome-shell/extensions/$UUID"
+  cp "$EXTENSION_DIR"/metadata.json "$EXTENSION_DIR"/*.js "$WORK/data/gnome-shell/extensions/$UUID"
   # Test-only helper: unsafe mode lets this script call org.gnome.Shell.Eval and Screenshot.
   echo '{"uuid": "smoke-unsafe@minutas.test", "name": "Smoke unsafe mode", "description": "Test only", "shell-version": ["46"]}' \
     >"$WORK/data/gnome-shell/extensions/smoke-unsafe@minutas.test/metadata.json"

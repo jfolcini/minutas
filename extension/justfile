@@ -1,0 +1,53 @@
+# The GNOME Shell extension's recipes, run from the root as `just ext <recipe>`.
+# `setup` installs ESLint and TypeScript from package-lock.json; gjs, gnome-shell and
+# gnome-extensions come from the system (apt install gnome-shell gjs).
+
+set shell := ["bash", "-euo", "pipefail", "-c"]
+
+uuid := "minutas@jfolcini.github.io"
+
+# List the recipes.
+default:
+    @just --list
+
+# Install the Node tools (needs Node and npm).
+setup:
+    npm ci
+
+# ESLint over the extension.
+lint:
+    npx eslint .
+
+# Type-check the Shell-free modules (TypeScript checkJs, strict).
+typecheck:
+    npx tsc -p .
+
+# The unit tests of the Shell-free logic.
+test:
+    gjs -m tests/status.test.js
+
+# Load and drive the extension in a headless GNOME Shell; an OUT_DIR argument keeps its logs and screenshots.
+smoke *ARGS:
+    bash tests/smoke.sh {{ ARGS }}
+
+# Everything CI's extension job runs.
+check: lint typecheck test smoke
+
+# Install into ~/.local/share/gnome-shell/extensions and enable; on Wayland the Shell loads it after a log out.
+install: pack
+    gnome-extensions install --force build/{{ uuid }}.shell-extension.zip
+    gnome-extensions enable {{ uuid }}
+
+# Build the extension's zip in build/.
+pack:
+    mkdir -p build  # gnome-extensions 46 crashes on a missing --out-dir
+    gnome-extensions pack --force --extra-source=status.js --out-dir=build .
+
+# A GNOME Shell in a window, to try the installed extension without logging out (--nested up to 48, --devkit from 49).
+nested:
+    major=$(gnome-shell --version | sed -E 's/[^0-9]*([0-9]+).*/\1/'); \
+    MUTTER_DEBUG_DUMMY_MODE_SPECS=1280x800 dbus-run-session -- gnome-shell --wayland "$([ "$major" -ge 49 ] && echo --devkit || echo --nested)"
+
+# Follow the Shell's log, where the extension's errors land.
+logs:
+    journalctl -f -o cat /usr/bin/gnome-shell

@@ -7,6 +7,9 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 # The base a branch is compared against.
 base := "origin/main"
 
+# The GNOME Shell extension's recipes: `just --list ext`.
+mod ext 'extension/justfile'
+
 # List the recipes.
 default:
     @just --list
@@ -92,10 +95,11 @@ mutants:
 lint:
     uv run prek run --all-files
 
-# What CI checks: every hook in both stages and the whole suite.
+# What CI checks: every hook in both stages, the whole suite, and the extension's checks.
 verify:
     uv run prek run --all-files
     SKIP=no-commit-to-branch uv run prek run --all-files --hook-stage pre-push
+    uv run just ext check
 
 # Push the current branch (the pre-push hooks run) and confirm the remote has this commit.
 push *ARGS:

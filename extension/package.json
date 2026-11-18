@@ -1,0 +1,12 @@
+{
+  "name": "minutas-extension",
+  "private": true,
+  "license": "GPL-3.0-or-later",
+  "type": "module",
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@girs/gjs": "4.0.0-beta.12",
+    "eslint": "10.14.0",
+    "typescript": "7.0.2"
+  }
+}

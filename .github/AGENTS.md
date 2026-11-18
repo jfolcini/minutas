@@ -10,7 +10,7 @@ Workflows, Dependabot, zizmor and CodeQL config. What runs where is in root [`AG
 
 ## Conventions
 
-- **Pins:** every `uses:` is a full commit SHA with the version in a trailing comment; Dependabot moves both. Tools come from `uv.lock` through `uv sync`, never a second install in a workflow.
+- **Pins:** every `uses:` is a full commit SHA with the version in a trailing comment; Dependabot moves both. Tools come from `uv.lock` through `uv sync`, and the extension's from `extension/package-lock.json` through `npm ci`, never a second install in a workflow.
 - **Permissions:** `contents: read` at the top of every workflow; a job that needs more says so on the job.
 - **Checkout:** `persist-credentials: false` on every checkout.
 - **Timeouts:** every job sets `timeout-minutes`.

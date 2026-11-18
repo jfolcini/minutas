@@ -12,9 +12,18 @@ import {
     recentLabel,
 } from '../status.js';
 
+/** @typedef {import('../status.js').Recording} Recording */
+/** @typedef {import('../status.js').Recent} Recent */
+
+/** @type {{name: string, fn: () => void}[]} */
 const tests = [];
+/** @type {(name: string, fn: () => void) => void} */
 const test = (name, fn) => tests.push({name, fn});
 
+/**
+ * @param {unknown} actual
+ * @param {unknown} expected
+ */
 function assertEqual(actual, expected) {
     const a = JSON.stringify(actual);
     const e = JSON.stringify(expected);
@@ -22,6 +31,7 @@ function assertEqual(actual, expected) {
         throw new Error(`expected ${e}\n       got ${a}`);
 }
 
+/** @type {(fields?: Partial<Recent>) => Recent} */
 const entry = (fields = {}) => ({
     id: '2026-11-18T12-00-03',
     name: 'Meeting',
@@ -34,6 +44,7 @@ const entry = (fields = {}) => ({
 });
 
 const ACTIVE = {id: '2026-11-18T13-05-42', started_at: '2026-11-18T13:05:42+01:00'};
+/** @type {(recording: Recording | null, recent: Recent[]) => import('../status.js').Status} */
 const status = (recording, recent) => ({recording, recent});
 
 test('parseStatus reads the contract example', () => {
@@ -50,11 +61,13 @@ test('parseStatus rejects another version', () => {
 });
 
 test('parseStatus rejects a recent entry whose failed is not a list', () => {
+    // @ts-expect-error: the invalid entry this test is about
     const text = JSON.stringify({version: 1, recording: null, recent: [entry({failed: 'summarize'})]});
     assertEqual(parseStatus(text), null);
 });
 
 test('parseStatus rejects an unknown transcribe status', () => {
+    // @ts-expect-error: the invalid entry this test is about
     const text = JSON.stringify({version: 1, recording: null, recent: [entry({transcribe: 'done'})]});
     assertEqual(parseStatus(text), null);
 });
@@ -153,7 +166,7 @@ for (const {name, fn} of tests) {
         print(`ok - ${name}`);
     } catch (e) {
         failures++;
-        print(`FAIL - ${name}\n       ${e.message}`);
+        print(`FAIL - ${name}\n       ${e}`);
     }
 }
 print(`${tests.length - failures} passed, ${failures} failed`);

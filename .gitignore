@@ -8,6 +8,9 @@ dist/
 # uv
 .venv/
 
+# npm (the extension's lint and type-check tools)
+node_modules/
+
 # Tool caches and reports
 .coverage
 .coverage.*
