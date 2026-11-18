@@ -477,7 +477,9 @@ def test_the_worker_keeps_nothing_per_run(monkeypatch: pytest.MonkeyPatch) -> No
     for recording_id in recording_ids:
         put_runs(recording_id, [queued_run(START) for _ in range(25)])
     # Two windows after a warm-up: a leak grows in both, a one-off resize of one of the
-    # interpreter's tables in one at most.
+    # interpreter's tables in one at most. Each run's log is large, so a worker that holds on
+    # to what a run produced grows by megabytes, far above what the interpreter and the test
+    # tools allocate on any runner (CI's Python 3.12 measured 14 KB with nothing kept).
     traced_at = {20: 0, 60: 0, 100: 0}
     calls = 0
 
@@ -488,7 +490,7 @@ def test_the_worker_keeps_nothing_per_run(monkeypatch: pytest.MonkeyPatch) -> No
             # Empties the interpreter's free lists, whose blocks tracemalloc counts as in use.
             gc.collect()
             traced_at[calls] = tracemalloc.get_traced_memory()[0]
-        cast("TextIO", kwargs["stderr"]).write("transcribing turn 1 of 40\n" * 40 + "No luck\n")
+        cast("TextIO", kwargs["stderr"]).write("transcribing turn 1 of 40\n" * 2_000 + "No luck\n")
         return subprocess.CompletedProcess(args, 1)
 
     monkeypatch.setattr(subprocess, "run", failing)
@@ -501,7 +503,7 @@ def test_the_worker_keeps_nothing_per_run(monkeypatch: pytest.MonkeyPatch) -> No
     for recording_id in recording_ids:
         assert [run["error"] for run in store.load_runs(recording_id)] == ["No luck"] * 25
     windows = (traced_at[60] - traced_at[20], traced_at[100] - traced_at[60])
-    assert min(windows) < 5_000
+    assert min(windows) < 200_000
 
 
 @pytest.mark.usefixtures("sigterm")
