@@ -1,0 +1,58 @@
+name: Mutation testing
+
+# Weekly and on demand, report only: a surviving mutant is a change to the code
+# that no test notices. Gates nothing (it is not in validate-all).
+on:
+  schedule:
+    - cron: '0 5 * * 3'
+  workflow_dispatch:
+    inputs:
+      pattern:
+        description: Mutant names to run (a glob such as `minutas.store*`); empty runs all.
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mutation-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_FROZEN: 'true'
+
+jobs:
+  mutmut:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: false
+
+      - name: Install
+        run: uv sync
+
+      - name: mutmut
+        env:
+          PATTERN: ${{ inputs.pattern }}
+        run: |
+          # shellcheck disable=SC2086 # unquoted: an empty pattern means "all mutants"
+          uv run mutmut run $PATTERN
+
+      - name: Surviving mutants
+        if: always()
+        run: |
+          {
+            echo '## Surviving mutants'
+            echo
+            echo '```'
+            uv run mutmut results
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
