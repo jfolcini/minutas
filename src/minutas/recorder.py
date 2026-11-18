@@ -70,8 +70,6 @@ def start(
     SERVICE_RESULT. A recorder that dies or captures nothing raises RecorderError, once it has
     stopped and its on_exit has run.
     """
-    # The exit command must find the same data folder as the caller.
-    data_home = os.environ.get("XDG_DATA_HOME")
     run_or_raise(
         [
             *("systemd-run", "--user", f"--unit={UNIT}", "--collect", "--quiet"),
@@ -80,7 +78,12 @@ def start(
             "--property=TimeoutStopSec=5",
             *(f"--property={limit}" for limit in MEMORY_LIMITS),
             f"--property=ExecStopPost={shlex.join(on_exit)}",
-            *([f"--setenv=XDG_DATA_HOME={data_home}"] if data_home is not None else []),
+            # The exit command must find the same data and settings as the caller.
+            *(
+                f"--setenv={name}={os.environ[name]}"
+                for name in ("XDG_DATA_HOME", "XDG_CONFIG_HOME")
+                if name in os.environ
+            ),
             f"--working-directory={folder}",
             *("--", "gst-launch-1.0", "-e"),
             # Relative locations: gst-launch re-splits its arguments on spaces.
