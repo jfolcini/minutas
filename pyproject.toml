@@ -148,4 +148,4 @@ root_package = "minutas"
 [[tool.importlinter.contracts]]
 name = "layers"
 type = "layers"
-layers = ["minutas.cli", "(minutas.recorder)", "(minutas.store)"]
+layers = ["minutas.cli", "(minutas.recorder) | (minutas.worker)", "(minutas.store)"]

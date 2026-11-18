@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from importlib.metadata import version
 from typing import cast
 
-from minutas import recorder, store
+from minutas import recorder, store, worker
 
 
 def now() -> datetime:
@@ -57,21 +57,45 @@ def record_stop(_: argparse.Namespace) -> int:
     return 0
 
 
+def queue_transcription(recording_id: str) -> int:
+    try:
+        worker.queue(recording_id, now())
+    except worker.WorkerError as error:
+        return fail(f"Could not start transcribing: {error}")
+    return 0
+
+
 def record_stopped(args: argparse.Namespace) -> int:
     # systemd reports success for a clean exit, which closes both files: after Stop, or when the
     # session ends. Anything else means the recorder died: what it wrote is kept.
     incomplete = os.environ.get("SERVICE_RESULT") != "success"
     store.mark_stopped(args.recording_id, now(), incomplete=incomplete)
     store.write_status()
+    # A recorder that captured nothing leaves a recording that record start discards.
+    if not store.holds_audio(args.recording_id):
+        return 0
+    return queue_transcription(args.recording_id)
+
+
+def transcribe(args: argparse.Namespace) -> int:
+    if not store.is_recording(args.recording_id):
+        return fail(f"No recording {args.recording_id}.")
+    if not store.holds_audio(args.recording_id):
+        return fail(f"The tracks of {args.recording_id} are gone.")
+    return queue_transcription(args.recording_id)
+
+
+def work(_: argparse.Namespace) -> int:
+    worker.work()
     return 0
 
 
 def history(args: argparse.Namespace) -> int:
     folder = store.recordings_dir()
     if args.recording is not None:
-        folder = store.recording_dir(args.recording)
-        if folder.parent != store.recordings_dir() or not (folder / "recording.json").is_file():
+        if not store.is_recording(args.recording):
             return fail(f"No recording {args.recording}.")
+        folder = store.recording_dir(args.recording)
     folder.mkdir(parents=True, exist_ok=True)
     # gio is GLib's own tool, found on PATH like every desktop command; no shell is involved.
     return subprocess.run(["gio", "open", str(folder)], check=False).returncode  # noqa: S603, S607
@@ -95,6 +119,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     stopped.add_argument("recording_id")
     stopped.set_defaults(handler=record_stopped)
+
+    transcribe_command = commands.add_parser("transcribe", help="transcribe a recording again")
+    transcribe_command.add_argument("recording_id")
+    transcribe_command.set_defaults(handler=transcribe)
+    commands.add_parser(
+        "worker", help="transcribe the queued recordings (the transcription unit runs this)"
+    ).set_defaults(handler=work)
 
     history_command = commands.add_parser("history", help="open the recordings")
     history_command.add_argument("--recording", metavar="ID", help="open this recording")

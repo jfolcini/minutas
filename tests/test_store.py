@@ -1,3 +1,4 @@
+import fcntl
 import json
 import os
 from datetime import UTC, datetime, timedelta
@@ -240,4 +241,103 @@ def test_status_replaces_the_file_without_leaving_temporary_files() -> None:
     assert sorted(path.name for path in store.data_dir().iterdir()) == [
         "recordings",
         "status.json",
+        "store.lock",
     ]
+
+
+def store_lock_held() -> bool:
+    with (store.data_dir() / "store.lock").open("a") as file:
+        try:
+            fcntl.flock(file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+    return False
+
+
+def test_lock_shuts_out_every_other_holder_until_released() -> None:
+    with store.lock():
+        assert store_lock_held() is True
+
+    assert store_lock_held() is False
+
+
+def test_status_is_written_inside_the_store_lock(monkeypatch: pytest.MonkeyPatch) -> None:
+    store.data_dir().mkdir(parents=True)
+    held: list[bool] = []
+    write_json = store.write_json
+
+    def spy(path: Path, value: object) -> None:
+        held.append(store_lock_held())
+        write_json(path, value)
+
+    monkeypatch.setattr(store, "write_json", spy)
+
+    store.write_status()
+
+    assert held == [True]
+
+
+def test_discard_if_silent_removes_the_folder_inside_the_store_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store.create_recording(START)
+    held: list[bool] = []
+    rmdir = Path.rmdir
+
+    def spy(path: Path) -> None:
+        held.append(store_lock_held())
+        rmdir(path)
+
+    monkeypatch.setattr(Path, "rmdir", spy)
+
+    store.discard_if_silent("2026-11-18T13-05-42")
+
+    assert held == [True]
+
+
+@pytest.mark.parametrize(
+    ("tracks", "holds"),
+    [({}, False), ({"mic.opus": b""}, False), ({"call.opus": b"OggS"}, True)],
+)
+def test_holds_audio_when_a_track_has_bytes(tracks: dict[str, bytes], *, holds: bool) -> None:
+    store.create_recording(START)
+    for name, content in tracks.items():
+        (store.recording_dir("2026-11-18T13-05-42") / name).write_bytes(content)
+
+    assert store.holds_audio("2026-11-18T13-05-42") is holds
+
+
+@pytest.mark.parametrize(
+    ("recording_id", "exists"),
+    [("2026-11-18T13-05-42", True), ("2026-11-18T13-05-43", False), ("..", False), (".", False)],
+)
+def test_is_recording_only_for_a_recording_folder(recording_id: str, *, exists: bool) -> None:
+    store.create_recording(START)
+
+    assert store.is_recording(recording_id) is exists
+
+
+def test_is_recording_refuses_a_folder_outside_the_recordings(tmp_path: Path) -> None:
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "recording.json").write_text("{}")
+
+    assert store.is_recording(str(elsewhere)) is False
+
+
+def test_save_runs_replaces_the_run_log() -> None:
+    store.create_recording(START)
+    runs = [
+        store.Run(
+            action="transcribe",
+            status="queued",
+            queued_at="2026-11-18T13:06:42+00:00",
+            error=None,
+            details=None,
+            output=None,
+        )
+    ]
+
+    store.save_runs("2026-11-18T13-05-42", runs)
+
+    assert store.load_runs("2026-11-18T13-05-42") == runs
