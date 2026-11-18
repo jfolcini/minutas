@@ -372,7 +372,40 @@ def test_work_passes_the_glossary_as_the_word_list(system: FakeSystem, xdg_dirs:
 
     worker.work()
 
-    assert system.commands()[0][4:] == ["--words", str(glossary)]
+    words = store.recording_dir(recording_id) / "words.txt"
+    assert system.commands()[0][4:] == ["--words", str(words)]
+    assert words.read_text() == "deploy\nPR\n"
+
+
+@pytest.mark.usefixtures("speech", "sigterm")
+def test_work_passes_the_attendees_and_the_glossary_as_one_word_list(
+    system: FakeSystem, xdg_dirs: Path
+) -> None:
+    recording_id = recording()
+    store.set_calendar_event(recording_id, "Weekly sync", ["Ana Díaz", "bob.ruiz"])
+    put_runs(recording_id, [queued_run(START)])
+    glossary = xdg_dirs / "config" / "minutas" / "glossary.txt"
+    glossary.parent.mkdir(parents=True)
+    glossary.write_text("deploy\nPR\n")
+
+    worker.work()
+
+    words = store.recording_dir(recording_id) / "words.txt"
+    assert system.commands()[0][4:] == ["--words", str(words)]
+    assert words.read_text() == "Ana Díaz\nbob.ruiz\ndeploy\nPR\n"
+
+
+@pytest.mark.usefixtures("speech", "sigterm")
+def test_work_passes_the_attendees_alone_without_a_glossary(system: FakeSystem) -> None:
+    recording_id = recording()
+    store.set_calendar_event(recording_id, "Weekly sync", ["Ana Díaz"])
+    put_runs(recording_id, [queued_run(START)])
+
+    worker.work()
+
+    words = store.recording_dir(recording_id) / "words.txt"
+    assert system.commands()[0][4:] == ["--words", str(words)]
+    assert words.read_text() == "Ana Díaz\n"
 
 
 @pytest.mark.usefixtures("speech", "sigterm")
@@ -388,7 +421,9 @@ def test_work_finds_the_glossary_in_dot_config_by_default(
 
     worker.work()
 
-    assert system.commands()[0][4:] == ["--words", str(glossary)]
+    words = store.recording_dir(recording_id) / "words.txt"
+    assert system.commands()[0][4:] == ["--words", str(words)]
+    assert words.read_text() == "deploy\n"
 
 
 @pytest.mark.usefixtures("speech", "sigterm")

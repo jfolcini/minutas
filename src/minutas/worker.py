@@ -22,6 +22,7 @@ from minutas import store
 UNIT = "minutas-transcribe.service"
 ACTION = "transcribe"
 TRANSCRIPT = "transcript.md"
+WORDS = "words.txt"
 INTERRUPTED = "interrupted"
 # Sent to every process of the unit: it ends the transcriber, which takes the signal's default
 # action, and leaves the worker, which handles it and goes on with the queue.
@@ -71,6 +72,13 @@ def speech_python() -> Path:
 def glossary() -> Path:
     config_home = os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config"
     return Path(config_home) / "minutas" / "glossary.txt"
+
+
+def word_list(recording_id: str) -> list[str]:
+    """The phrases the transcriber boosts: the meeting's attendees, then the glossary."""
+    attendees = store.load_recording(recording_id).get("attendees", [])
+    listed = glossary().read_text(encoding="utf-8").splitlines() if glossary().is_file() else []
+    return [*attendees, *listed]
 
 
 def open_worker_lock() -> IO[str]:
@@ -231,8 +239,10 @@ def transcribe(recording_id: str, index: int) -> Outcome:
         return failed(SPEECH_MISSING)
     folder = store.recording_dir(recording_id)
     command = [str(python), "-m", "minutas.transcriber", str(folder)]
-    if glossary().is_file():
-        command += ["--words", str(glossary())]
+    words = word_list(recording_id)
+    if words:
+        (folder / WORDS).write_text("".join(f"{word}\n" for word in words), encoding="utf-8")
+        command += ["--words", str(folder / WORDS)]
     # The speech environment has no minutas installed; it imports the one running here.
     package_root = str(Path(minutas.__file__).parent.parent)
     python_path = os.pathsep.join(filter(None, [package_root, os.environ.get("PYTHONPATH")]))

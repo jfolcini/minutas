@@ -11,7 +11,7 @@ from typing import cast
 
 from keyring.errors import KeyringError
 
-from minutas import agaric, recorder, settings, store, worker
+from minutas import agaric, calendar, recorder, settings, store, worker
 
 
 def now() -> datetime:
@@ -70,11 +70,17 @@ def record_stopped(args: argparse.Namespace) -> int:
     # systemd reports success for a clean exit, which closes both files: after Stop, or when the
     # session ends. Anything else means the recorder died: what it wrote is kept.
     incomplete = os.environ.get("SERVICE_RESULT") != "success"
-    store.mark_stopped(args.recording_id, now(), incomplete=incomplete)
+    stopped = now()
+    store.mark_stopped(args.recording_id, stopped, incomplete=incomplete)
     store.write_status()
     # A recorder that captured nothing leaves a recording that record start discards.
     if not store.holds_audio(args.recording_id):
         return 0
+    started = datetime.fromisoformat(store.load_recording(args.recording_id)["started_at"])
+    event = calendar.lookup(started, stopped)
+    if event is not None:
+        store.set_calendar_event(args.recording_id, event.name, list(event.attendees))
+    # Queuing rewrites status.json, with the event's name.
     return queue_transcription(args.recording_id)
 
 

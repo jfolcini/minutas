@@ -14,6 +14,8 @@ RECORDING_ID_FORMAT = "%Y-%m-%dT%H-%M-%S"
 TRACKS = ("mic.opus", "call.opus")
 ACTIONS = ("transcribe", "summarize", "publish_agaric", "publish_gitlab")
 RECENT_IN_STATUS = 5
+# Where a name can come from, lowest first: a name gives way only to one from as high a source.
+NAME_ORDER = ("default", "summary", "calendar", "typed")
 
 
 class Recording(TypedDict):
@@ -22,8 +24,10 @@ class Recording(TypedDict):
     stopped_at: str | None
     incomplete: bool
     name: str
-    # Where the name came from: "default" or "typed".
+    # Where the name came from: one of NAME_ORDER.
     name_source: str
+    # The calendar event's, for naming the speakers and boosting their names.
+    attendees: NotRequired[list[str]]
 
 
 class Choice(TypedDict):
@@ -172,6 +176,22 @@ def set_typed_name(recording_id: str, name: str) -> None:
         recording = load_recording(recording_id)
         recording["name"] = name
         recording["name_source"] = "typed"
+        write_json(recording_dir(recording_id) / "recording.json", recording)
+
+
+def chosen_name(recording: Recording, name: str, source: str) -> tuple[str, str]:
+    """The name and source a recording keeps when offered another name (design § Page name)."""
+    name = name.strip()
+    if name and NAME_ORDER.index(source) >= NAME_ORDER.index(recording["name_source"]):
+        return name, source
+    return recording["name"], recording["name_source"]
+
+
+def set_calendar_event(recording_id: str, name: str, attendees: list[str]) -> None:
+    with lock():
+        recording = load_recording(recording_id)
+        recording["name"], recording["name_source"] = chosen_name(recording, name, "calendar")
+        recording["attendees"] = attendees
         write_json(recording_dir(recording_id) / "recording.json", recording)
 
 

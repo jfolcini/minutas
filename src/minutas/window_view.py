@@ -11,7 +11,7 @@ from minutas import store
 
 TRANSCRIBE, PUBLISH = "transcribe", "publish_agaric"
 TRACK_TITLES = dict(zip(store.TRACKS, ("Microphone", "Call"), strict=True))
-NAME_SOURCES = {"default": "Default name", "typed": "Typed name"}
+NAME_SOURCES = {"default": "Default name", "calendar": "Calendar event", "typed": "Typed name"}
 RESULTS = {
     "queued": "Queued",
     "running": "Running",

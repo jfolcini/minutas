@@ -40,13 +40,15 @@ jobs:
         run: uv sync
 
       # The suite runs the history window on Ubuntu's own PyGObject, GTK and libadwaita, on an Xvfb
-      # display and a session bus of their own (tests/conftest.py).
-      - name: Install GTK, libadwaita, PyGObject and Xvfb
+      # display and a session bus of their own (tests/conftest.py); the calendar's tests read
+      # libical events through Evolution Data Server's typelibs.
+      - name: Install GTK, libadwaita, Evolution Data Server's typelibs, PyGObject and Xvfb
         run: |
           sudo apt-get update -q
           sudo apt-get install -y -q --no-install-recommends \
             -o Acquire::http::Timeout=30 -o Acquire::Retries=3 \
-            python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 xvfb dbus-daemon
+            python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 gir1.2-ecal-2.0 gir1.2-edataserver-1.2 \
+            xvfb dbus-daemon
 
       - name: mutmut
         env:
