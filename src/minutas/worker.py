@@ -16,8 +16,7 @@ from pathlib import Path
 from types import FrameType
 from typing import IO, TypedDict
 
-import minutas
-from minutas import store
+from minutas import store, transcriber
 
 UNIT = "minutas-transcribe.service"
 ACTION = "transcribe"
@@ -237,14 +236,15 @@ def transcribe(recording_id: str, index: int) -> Outcome:
     if not python.is_file():
         return failed(SPEECH_MISSING)
     folder = store.recording_dir(recording_id)
-    command = [str(python), "-m", "minutas.transcriber", str(folder)]
+    # A file, not a module: the speech environment has no minutas, and the folder that would find
+    # it is, once installed, the app's site-packages, whose packages would shadow the speech
+    # environment's own with builds for Ubuntu's Python. -P keeps the file's own folder off the
+    # path, where minutas.calendar would take the standard library's place.
+    command = [str(python), "-P", transcriber.__file__, str(folder)]
     words = word_list(recording_id)
     if words:
         (folder / WORDS).write_text("".join(f"{word}\n" for word in words), encoding="utf-8")
         command += ["--words", str(folder / WORDS)]
-    # The speech environment has no minutas installed; it imports the one running here.
-    package_root = str(Path(minutas.__file__).parent.parent)
-    python_path = os.pathsep.join(filter(None, [package_root, os.environ.get("PYTHONPATH")]))
     log = store.run_log(recording_id, index)
     with log.open("w") as stderr:
         result = subprocess.run(  # noqa: S603 - this module's own argument list
@@ -252,7 +252,6 @@ def transcribe(recording_id: str, index: int) -> Outcome:
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=stderr,
-            env={**os.environ, "PYTHONPATH": python_path},
             check=False,
         )
     if result.returncode == 0:

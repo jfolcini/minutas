@@ -1,6 +1,6 @@
 """Writes a recording's transcript.json from its two tracks; runs in the speech environment.
 
-    <speech-python> -m minutas.transcriber <recording-folder> [--words <file>]
+    <speech-python> -P transcriber.py <recording-folder> [--words <file>]
 
 Silero VAD finds the speech on each track. The mic's is mine; pyannote community-1 says whose
 each stretch of the call's is. A speaker's consecutive stretches merge into turns of up to
@@ -327,7 +327,7 @@ def transcribe(folder: Path, words: Sequence[str]) -> list[Segment]:
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="python -m minutas.transcriber",
+        prog="python -P transcriber.py",
         description="Writes transcript.json for a recording folder's mic.opus and call.opus.",
     )
     parser.add_argument("folder", type=Path, help="the recording's folder")
