@@ -39,6 +39,7 @@ Read this section first. It outranks everything below it.
 | `src/minutas/` | The package (src layout; `minutas` console script in `cli.py`) |
 | `tests/` | pytest suite, one `test_<module>.py` per module |
 | `scripts/` | Shell helpers the hooks call |
+| `install.sh` | Installs and updates Minutas on the desktop, step by step, each skipped when already done (design § Installing and updating) |
 | `pyproject.toml` | Metadata, dependencies, and the ruff, ty, pytest and coverage config |
 | `prek.toml` | The git hooks, which CI also runs |
 
