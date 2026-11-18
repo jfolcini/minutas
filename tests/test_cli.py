@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, cast
 
 import pytest
 
-from minutas import cli, recorder, store
+from minutas import cli, recorder, store, worker
 from minutas.cli import main
 
 if TYPE_CHECKING:
@@ -288,6 +288,159 @@ def test_record_stopped_marks_the_recording_by_how_the_recorder_ended(
     recent = status["recent"]
     assert isinstance(recent, list)
     assert recent[0]["incomplete"] is incomplete
+
+
+class FakeWorker:
+    """Stands in for starting the worker's unit and for the worker itself."""
+
+    def __init__(self) -> None:
+        self.error: worker.WorkerError | None = None
+        self.starts = 0
+        self.works = 0
+
+    def ensure_worker(self) -> None:
+        self.starts += 1
+        if self.error is not None:
+            raise self.error
+
+    def work(self) -> None:
+        self.works += 1
+
+
+@pytest.fixture
+def fake_worker(monkeypatch: pytest.MonkeyPatch) -> FakeWorker:
+    fake = FakeWorker()
+    monkeypatch.setattr(worker, "ensure_worker", fake.ensure_worker)
+    monkeypatch.setattr(worker, "work", fake.work)
+    return fake
+
+
+def with_audio(recording_id: str, track: str = "mic.opus") -> str:
+    (store.recording_dir(recording_id) / track).write_bytes(b"OggS")
+    return recording_id
+
+
+def queued(at: str) -> dict[str, object]:
+    return {
+        "action": "transcribe",
+        "status": "queued",
+        "queued_at": at,
+        "error": None,
+        "details": None,
+        "output": None,
+    }
+
+
+def recent_transcribe() -> list[tuple[object, object]]:
+    recent = read_status()["recent"]
+    assert isinstance(recent, list)
+    return [(entry["transcribe"], entry["failed"]) for entry in recent]
+
+
+@pytest.mark.parametrize("service_result", ["success", "signal"])
+def test_record_stopped_queues_a_transcription_of_what_was_captured(
+    fake_worker: FakeWorker, monkeypatch: pytest.MonkeyPatch, service_result: str
+) -> None:
+    recording_id = with_audio(store.create_recording(START)["id"], "call.opus")
+    monkeypatch.setenv("SERVICE_RESULT", service_result)
+    monkeypatch.setattr(cli, "now", lambda: START + timedelta(seconds=90))
+
+    assert main(["record", "stopped", recording_id]) == 0
+
+    assert store.load_runs(recording_id) == [queued("2026-11-18T13:07:12+00:00")]
+    assert fake_worker.starts == 1
+    assert recent_transcribe() == [("queued", [])]
+
+
+def test_record_stopped_queues_nothing_for_a_recording_without_audio(
+    fake_worker: FakeWorker,
+) -> None:
+    recording = store.create_recording(START)
+    for name in store.TRACKS:
+        (store.recording_dir(recording["id"]) / name).touch()
+
+    assert main(["record", "stopped", recording["id"]]) == 0
+
+    assert store.load_runs(recording["id"]) == []
+    assert fake_worker.starts == 0
+
+
+def test_record_stopped_reports_a_worker_that_will_not_start(
+    fake_worker: FakeWorker, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recording_id = with_audio(store.create_recording(START)["id"])
+    fake_worker.error = worker.WorkerError("Failed to connect to bus")
+    monkeypatch.setattr(cli, "now", lambda: START + timedelta(seconds=90))
+
+    assert main(["record", "stopped", recording_id]) == 1
+
+    assert capsys.readouterr().err == "Could not start transcribing: Failed to connect to bus\n"
+    assert store.load_runs(recording_id) == [
+        {
+            **queued("2026-11-18T13:07:12+00:00"),
+            "status": "failed",
+            "error": "Failed to connect to bus",
+        }
+    ]
+    assert recent_transcribe() == [("failed", ["transcribe"])]
+
+
+def test_transcribe_queues_a_run_for_a_recording(
+    fake_worker: FakeWorker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recording_id = with_audio(store.create_recording(START)["id"])
+    store.mark_stopped(recording_id, START + timedelta(seconds=60), incomplete=False)
+    monkeypatch.setattr(cli, "now", lambda: START + timedelta(hours=1))
+
+    assert main(["transcribe", recording_id]) == 0
+
+    assert store.load_runs(recording_id) == [queued("2026-11-18T14:05:42+00:00")]
+    assert fake_worker.starts == 1
+    assert recent_transcribe() == [("queued", [])]
+
+
+@pytest.mark.parametrize("recording_id", ["2026-11-18T13-05-43", ".."])
+def test_transcribe_refuses_an_unknown_recording(
+    fake_worker: FakeWorker, capsys: pytest.CaptureFixture[str], recording_id: str
+) -> None:
+    with_audio(store.create_recording(START)["id"])
+
+    assert main(["transcribe", recording_id]) == 1
+
+    assert capsys.readouterr().err == f"No recording {recording_id}.\n"
+    assert fake_worker.starts == 0
+
+
+def test_transcribe_refuses_a_recording_whose_tracks_are_gone(
+    fake_worker: FakeWorker, capsys: pytest.CaptureFixture[str]
+) -> None:
+    recording_id = store.create_recording(START)["id"]
+
+    assert main(["transcribe", recording_id]) == 1
+
+    assert capsys.readouterr().err == f"The tracks of {recording_id} are gone.\n"
+    assert store.load_runs(recording_id) == []
+    assert fake_worker.starts == 0
+
+
+def test_transcribe_reports_a_worker_that_will_not_start(
+    fake_worker: FakeWorker, capsys: pytest.CaptureFixture[str]
+) -> None:
+    recording_id = with_audio(store.create_recording(START)["id"])
+    fake_worker.error = worker.WorkerError("Unit minutas-transcribe.service already exists.")
+
+    assert main(["transcribe", recording_id]) == 1
+
+    assert capsys.readouterr().err == (
+        "Could not start transcribing: Unit minutas-transcribe.service already exists.\n"
+    )
+    assert [run["status"] for run in store.load_runs(recording_id)] == ["failed"]
+
+
+def test_worker_runs_the_queue(fake_worker: FakeWorker) -> None:
+    assert main(["worker"]) == 0
+
+    assert fake_worker.works == 1
 
 
 class FakeGio:

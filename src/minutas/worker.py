@@ -1,0 +1,237 @@
+"""Runs queued Transcribe runs one at a time, oldest first, in a systemd user unit.
+
+The worker holds DATA/worker.lock while it runs and gives it up, inside the store lock, only
+once it finds no queued run. A run queued while the lock is held is sure to be seen; one queued
+after has to start a new worker.
+"""
+
+import fcntl
+import os
+import signal
+import subprocess
+import sys
+import time
+from datetime import datetime
+from pathlib import Path
+from types import FrameType
+from typing import IO, TypedDict
+
+import minutas
+from minutas import store
+
+UNIT = "minutas-transcribe.service"
+ACTION = "transcribe"
+TRANSCRIPT = "transcript.md"
+INTERRUPTED = "interrupted"
+SPEECH_MISSING = "Speech environment not found; run install.sh"
+# What the worker's unit must see as its caller does: the data, the glossary and the speech Python.
+FORWARDED_ENVIRONMENT = ("XDG_DATA_HOME", "XDG_CONFIG_HOME", "MINUTAS_SPEECH_PYTHON")
+# A worker that found the queue empty is gone, and one just started holds its lock, within a
+# fraction of a second.
+START_TIMEOUT_SECONDS = 2.0
+POLL_SECONDS = 0.05
+
+
+class WorkerError(Exception):
+    pass
+
+
+class Interrupted(Exception):  # noqa: N818 - what happened to the run, not a fault in the code
+    pass
+
+
+class Outcome(TypedDict):
+    status: str
+    error: str | None
+    details: str | None
+    output: str | None
+
+
+def failed(error: str, details: str | None = None) -> Outcome:
+    return Outcome(status="failed", error=error, details=details, output=None)
+
+
+def ended(run: store.Run, outcome: Outcome) -> store.Run:
+    return store.Run(action=run["action"], queued_at=run["queued_at"], **outcome)
+
+
+def speech_python() -> Path:
+    # MINUTAS_SPEECH_PYTHON lets a live check run a fake transcriber beside the installed one.
+    installed = Path.home() / ".local" / "share" / "minutas" / "speech" / "bin" / "python"
+    return Path(os.environ.get("MINUTAS_SPEECH_PYTHON") or installed)
+
+
+def glossary() -> Path:
+    config_home = os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config"
+    return Path(config_home) / "minutas" / "glossary.txt"
+
+
+def open_worker_lock() -> IO[str]:
+    store.data_dir().mkdir(parents=True, exist_ok=True)
+    return (store.data_dir() / "worker.lock").open("a")
+
+
+def worker_holds_lock() -> bool:
+    with open_worker_lock() as file:
+        try:
+            fcntl.flock(file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+    return False
+
+
+def start_command() -> list[str]:
+    return [
+        *("systemd-run", "--user", f"--unit={UNIT}", "--collect", "--quiet"),
+        # Idle CPU and disk priority: a call recorded meanwhile keeps the machine.
+        *("--nice=19", "--property=CPUSchedulingPolicy=idle", "--property=IOSchedulingClass=idle"),
+        *(
+            f"--setenv={name}={os.environ[name]}"
+            for name in FORWARDED_ENVIRONMENT
+            if name in os.environ
+        ),
+        *("--", sys.executable, "-m", "minutas", "worker"),
+    ]
+
+
+def ensure_worker() -> None:
+    """Returns once a worker that has yet to look at the queue again is running."""
+    deadline = time.monotonic() + START_TIMEOUT_SECONDS
+    while not worker_holds_lock():
+        # The commands are this module's own argument lists, never a shell string.
+        result = subprocess.run(start_command(), capture_output=True, text=True, check=False)  # noqa: S603
+        if result.returncode == 0:
+            return
+        # The unit is still there: its worker found the queue empty and is exiting, or it has only
+        # just started and has yet to take its lock.
+        if time.monotonic() >= deadline:
+            reason = result.stderr.strip() or f"systemd-run exited with status {result.returncode}"
+            raise WorkerError(reason)
+        time.sleep(POLL_SECONDS)
+
+
+def set_outcome(recording_id: str, index: int, outcome: Outcome) -> None:
+    with store.lock():
+        runs = store.load_runs(recording_id)
+        runs[index] = ended(runs[index], outcome)
+        store.save_runs(recording_id, runs)
+    store.write_status()
+
+
+def queue(recording_id: str, queued: datetime) -> None:
+    """Queues a Transcribe run and makes sure a worker takes it; fails the run if none starts."""
+    with store.lock():
+        runs = store.load_runs(recording_id)
+        runs.append(
+            store.Run(
+                action=ACTION,
+                status="queued",
+                queued_at=queued.isoformat(timespec="seconds"),
+                error=None,
+                details=None,
+                output=None,
+            )
+        )
+        store.save_runs(recording_id, runs)
+    store.write_status()
+    try:
+        ensure_worker()
+    except WorkerError as error:
+        set_outcome(recording_id, len(runs) - 1, failed(str(error)))
+        raise
+
+
+def runs_by_recording() -> dict[str, list[store.Run]]:
+    # By runs.json, which a recording gets only after its recording.json.
+    return {
+        path.parent.name: store.load_runs(path.parent.name)
+        for path in store.recordings_dir().glob("*/runs.json")
+    }
+
+
+def fail_interrupted() -> None:
+    """Fails the transcriptions a worker that crashed, or was killed, left running."""
+    with store.lock():
+        for recording_id, runs in runs_by_recording().items():
+            stale = [
+                i
+                for i, run in enumerate(runs)
+                if run["action"] == ACTION and run["status"] == "running"
+            ]
+            for index in stale:
+                runs[index] = ended(runs[index], failed(INTERRUPTED))
+            if stale:
+                store.save_runs(recording_id, runs)
+    store.write_status()
+
+
+def claim_next(worker_lock: IO[str]) -> tuple[str, int] | None:
+    """Marks the oldest queued Transcribe run running; with none left, gives up the worker lock."""
+    with store.lock():
+        logs = runs_by_recording()
+        queued = [
+            (datetime.fromisoformat(run["queued_at"]), recording_id, index)
+            for recording_id, runs in logs.items()
+            for index, run in enumerate(runs)
+            if run["action"] == ACTION and run["status"] == "queued"
+        ]
+        if not queued:
+            fcntl.flock(worker_lock, fcntl.LOCK_UN)
+            return None
+        _, recording_id, index = min(queued)
+        logs[recording_id][index]["status"] = "running"
+        store.save_runs(recording_id, logs[recording_id])
+    store.write_status()
+    return recording_id, index
+
+
+def transcribe(recording_id: str, index: int) -> Outcome:
+    python = speech_python()
+    if not python.is_file():
+        return failed(SPEECH_MISSING)
+    folder = store.recording_dir(recording_id)
+    command = [str(python), "-m", "minutas.transcriber", str(folder)]
+    if glossary().is_file():
+        command += ["--words", str(glossary())]
+    # The speech environment has no minutas installed; it imports the one running here.
+    package_root = str(Path(minutas.__file__).parent.parent)
+    python_path = os.pathsep.join(filter(None, [package_root, os.environ.get("PYTHONPATH")]))
+    log = folder / f"run-{index}.log"
+    with log.open("w") as stderr:
+        result = subprocess.run(  # noqa: S603 - this module's own argument list
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=stderr,
+            env={**os.environ, "PYTHONPATH": python_path},
+            check=False,
+        )
+    if result.returncode == 0:
+        return Outcome(status="succeeded", error=None, details=log.name, output=TRANSCRIPT)
+    lines = [line.strip() for line in log.read_text(errors="replace").splitlines() if line.strip()]
+    reason = lines[-1] if lines else f"The transcriber exited with status {result.returncode}"
+    return failed(reason, log.name)
+
+
+def interrupt(_signal: int, _frame: FrameType | None) -> None:
+    raise Interrupted
+
+
+def work() -> None:
+    """Transcribes queued runs until none is left.
+
+    systemd stops the unit with SIGTERM, at logout or shutdown: the run it was on fails as
+    interrupted, as one left running by a crash does at the next start.
+    """
+    signal.signal(signal.SIGTERM, interrupt)
+    with open_worker_lock() as worker_lock:
+        fcntl.flock(worker_lock, fcntl.LOCK_EX)
+        fail_interrupted()
+        while (claimed := claim_next(worker_lock)) is not None:
+            recording_id, index = claimed
+            try:
+                outcome = transcribe(recording_id, index)
+            except Interrupted:
+                set_outcome(recording_id, index, failed(INTERRUPTED))
+                return
+            set_outcome(recording_id, index, outcome)

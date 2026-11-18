@@ -1,8 +1,11 @@
 """One folder per recording under DATA/recordings, and DATA/status.json for the extension."""
 
+import fcntl
 import json
 import os
 import tempfile
+from collections.abc import Generator
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import TypedDict, cast
@@ -24,6 +27,12 @@ class Recording(TypedDict):
 class Run(TypedDict):
     action: str
     status: str
+    queued_at: str
+    error: str | None
+    # A file in the recording's folder: the full output of the tool that ran.
+    details: str | None
+    # A file in the recording's folder, or a link.
+    output: str | None
 
 
 def data_dir() -> Path:
@@ -37,6 +46,20 @@ def recordings_dir() -> Path:
 
 def recording_dir(recording_id: str) -> Path:
     return recordings_dir() / recording_id
+
+
+@contextmanager
+def lock() -> Generator[None]:
+    """Held across processes while a run log changes and while status.json is rewritten."""
+    data_dir().mkdir(parents=True, exist_ok=True)
+    with (data_dir() / "store.lock").open("a") as file:
+        fcntl.flock(file, fcntl.LOCK_EX)
+        yield
+
+
+def is_recording(recording_id: str) -> bool:
+    folder = recording_dir(recording_id)
+    return folder.parent == recordings_dir() and (folder / "recording.json").is_file()
 
 
 def write_json(path: Path, value: object) -> None:
@@ -77,6 +100,10 @@ def load_runs(recording_id: str) -> list[Run]:
     return cast("list[Run]", json.loads((recording_dir(recording_id) / "runs.json").read_text()))
 
 
+def save_runs(recording_id: str, runs: list[Run]) -> None:
+    write_json(recording_dir(recording_id) / "runs.json", runs)
+
+
 def load_recordings() -> list[Recording]:
     """Newest first."""
     folders = sorted(recordings_dir().glob("*/recording.json"), reverse=True)
@@ -87,15 +114,20 @@ def has_audio(track: Path) -> bool:
     return track.is_file() and track.stat().st_size > 0
 
 
+def holds_audio(recording_id: str) -> bool:
+    return any(has_audio(recording_dir(recording_id) / name) for name in TRACKS)
+
+
 def discard_if_silent(recording_id: str) -> None:
     """Removes a recording whose tracks hold no audio; one that captured anything is kept."""
-    folder = recording_dir(recording_id)
-    tracks = [folder / name for name in TRACKS]
-    if any(has_audio(track) for track in tracks):
+    if holds_audio(recording_id):
         return
-    for path in [*tracks, folder / "recording.json", folder / "runs.json"]:
-        path.unlink(missing_ok=True)
-    folder.rmdir()
+    folder = recording_dir(recording_id)
+    # A status rewrite in another process must not find the folder half gone.
+    with lock():
+        for name in [*TRACKS, "recording.json", "runs.json"]:
+            (folder / name).unlink(missing_ok=True)
+        folder.rmdir()
 
 
 def mark_stopped(recording_id: str, stopped: datetime, *, incomplete: bool) -> None:
@@ -142,15 +174,16 @@ def recent_entry(recording: Recording) -> dict[str, object]:
 
 
 def write_status() -> None:
-    recordings = load_recordings()
-    active = next((r for r in recordings if r["stopped_at"] is None), None)
-    stopped = [r for r in recordings if r["stopped_at"] is not None]
-    status = {
-        "version": 1,
-        "recording": None
-        if active is None
-        else {"id": active["id"], "started_at": active["started_at"]},
-        "recent": [recent_entry(r) for r in stopped[:RECENT_IN_STATUS]],
-    }
-    data_dir().mkdir(parents=True, exist_ok=True)
-    write_json(data_dir() / "status.json", status)
+    # Read and written under one lock, so the last process to write wrote the newest state.
+    with lock():
+        recordings = load_recordings()
+        active = next((r for r in recordings if r["stopped_at"] is None), None)
+        stopped = [r for r in recordings if r["stopped_at"] is not None]
+        status = {
+            "version": 1,
+            "recording": None
+            if active is None
+            else {"id": active["id"], "started_at": active["started_at"]},
+            "recent": [recent_entry(r) for r in stopped[:RECENT_IN_STATUS]],
+        }
+        write_json(data_dir() / "status.json", status)
