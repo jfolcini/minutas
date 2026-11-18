@@ -13,7 +13,7 @@ import shutil
 import sys
 from collections.abc import Callable, Collection, Mapping, Sequence
 from datetime import UTC, datetime
-from typing import override
+from typing import cast, override
 
 import gi
 
@@ -21,8 +21,15 @@ gi.require_version("Adw", "1")
 gi.require_version("Gtk", "4.0")
 from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402 - after the versions are chosen
 
-from minutas import settings, store, summarizer, window_view, worker  # noqa: E402
-from minutas.window_view import PUBLISH, SUMMARIZE, TRANSCRIBE, ActionView, RowView  # noqa: E402
+from minutas import gitlab, settings, store, summarizer, window_view, worker  # noqa: E402
+from minutas.window_view import (  # noqa: E402
+    PUBLISH,
+    PUBLISH_GITLAB,
+    SUMMARIZE,
+    TRANSCRIBE,
+    ActionView,
+    RowView,
+)
 
 APP_ID = "io.github.jfolcini.Minutas"
 # The program itself, as the recorder's and the worker's units run it.
@@ -32,6 +39,8 @@ DELETE_WARNING = (
     "Without the audio the recording can't be transcribed again, and publishing leaves it out."
 )
 CUSTOM_NAME = "Custom name…"
+ASK_LINK = "Paste an issue link to comment on it, or a project link to open a new issue"
+NOT_A_LINK = "Not a GitLab issue or project link"
 
 
 def load_views(running: Mapping[str, Collection[str]]) -> list[RowView]:
@@ -39,7 +48,10 @@ def load_views(running: Mapping[str, Collection[str]]) -> list[RowView]:
     command the window is running."""
     # Looked for at each refresh: one installed while the window is open is found.
     found = shutil.which(summarizer.DEVIN) is not None
-    summarizer_missing = "" if found else summarizer.DEVIN_MISSING
+    missing_tools = {
+        SUMMARIZE: "" if found else summarizer.DEVIN_MISSING,
+        PUBLISH_GITLAB: gitlab.glab_problem(),
+    }
     # Inside the lock, so a recording being discarded is seen whole or not at all.
     with store.lock():
         logs = worker.runs_by_recording()
@@ -53,7 +65,7 @@ def load_views(running: Mapping[str, Collection[str]]) -> list[RowView]:
                     if store.has_audio(store.recording_dir(recording_id) / name)
                 ],
                 running=[action for action, ids in running.items() if recording_id in ids],
-                summarizer_missing=summarizer_missing,
+                missing_tools=missing_tools,
             )
             for recording_id in sorted(logs, reverse=True)
         ]
@@ -214,6 +226,9 @@ class Details:
         self.publish = ActionControls(
             "Publish to Agaric", "Open in Agaric", PUBLISH, recording_id, window
         )
+        self.publish_gitlab = ActionControls(
+            "Publish to GitLab", "Open in GitLab", PUBLISH_GITLAB, recording_id, window
+        )
         for row in (
             self.name,
             *(controls.row for controls in self.tracks.values()),
@@ -221,6 +236,7 @@ class Details:
             self.transcribe.row,
             self.summarize.row,
             self.publish.row,
+            self.publish_gitlab.row,
         ):
             expander.add_row(row)
 
@@ -230,7 +246,7 @@ class Details:
         if speakers == list(self.speakers):
             return
         # An expander row only adds at its end: the rows below step out, and back in after them.
-        below = (self.summarize.row, self.publish.row)
+        below = (self.summarize.row, self.publish.row, self.publish_gitlab.row)
         for row in [*(controls.row for controls in self.speakers.values()), *below]:
             self.expander.remove(row)
         self.speakers = {key: SpeakerControls(view.recording_id, key) for key in speakers}
@@ -260,6 +276,7 @@ class Details:
         self.presets.set_sensitive(not view.summarize.disabled)
         self.presets.set_tooltip_text(view.summarize.disabled or None)
         self.publish.display(view.publish)
+        self.publish_gitlab.display(view.publish_gitlab)
 
     def stop_playing(self) -> None:
         for controls in self.tracks.values():
@@ -290,7 +307,11 @@ class HistoryWindow(Adw.ApplicationWindow):
         # Built when a row is first expanded: most never are.
         self.details: dict[str, Details] = {}
         # The commands this window is running, by recording.
-        self.running: dict[str, dict[str, Gio.Subprocess]] = {PUBLISH: {}, SUMMARIZE: {}}
+        self.running: dict[str, dict[str, Gio.Subprocess]] = {
+            PUBLISH: {},
+            PUBLISH_GITLAB: {},
+            SUMMARIZE: {},
+        }
         # How many runs a recording had when the window started its command for an action
         # (unrecorded_failure).
         self.runs_before: dict[tuple[str, str], int] = {}
@@ -382,7 +403,12 @@ class HistoryWindow(Adw.ApplicationWindow):
 
     def shown(self, recording_id: str, action: str) -> ActionView:
         view = self.rows[recording_id].view
-        actions = {TRANSCRIBE: view.transcribe, SUMMARIZE: view.summarize, PUBLISH: view.publish}
+        actions = {
+            TRANSCRIBE: view.transcribe,
+            SUMMARIZE: view.summarize,
+            PUBLISH: view.publish,
+            PUBLISH_GITLAB: view.publish_gitlab,
+        }
         return actions[action]
 
     def say(self, problem: str) -> None:
@@ -489,6 +515,8 @@ class HistoryWindow(Adw.ApplicationWindow):
         shown = self.shown(recording_id, action)
         if action == PUBLISH:
             self.publish(recording_id)
+        elif action == PUBLISH_GITLAB:
+            self.ask_link(recording_id, shown.link or "")
         elif action == SUMMARIZE:
             self.summarize(recording_id, str(shown.prompt))
         elif shown.cancels is not None:
@@ -537,6 +565,43 @@ class HistoryWindow(Adw.ApplicationWindow):
 
     def publish(self, recording_id: str, *options: str) -> None:
         self.start(PUBLISH, recording_id, ["publish", "agaric", recording_id, *options])
+
+    def ask_link(self, recording_id: str, link: str) -> None:
+        """Asks where to publish to GitLab, saying what the link typed will get."""
+        entry = Gtk.Entry(text=link, activates_default=True)
+        dialog = Adw.AlertDialog(
+            heading="Publish to GitLab",
+            extra_child=entry,
+            default_response="publish",
+            close_response="cancel",
+        )
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("publish", "Publish")
+        dialog.set_response_appearance("publish", Adw.ResponseAppearance.SUGGESTED)
+        entry.connect("changed", self.link_typed)
+        dialog.choose(self, None, self.link_chosen, entry, recording_id)
+        # Once presented: until then the entry is not inside the dialog.
+        self.link_typed(entry)
+
+    def link_typed(self, entry: Gtk.Entry) -> None:
+        # The dialog is found, not held: a handler that held it would keep it for good.
+        dialog = cast("Adw.AlertDialog", entry.get_ancestor(Adw.AlertDialog))
+        typed = entry.get_text().strip()
+        target = gitlab.parse_link(typed)
+        if target is not None:
+            dialog.set_body(target.plan)
+        else:
+            dialog.set_body(NOT_A_LINK if typed else ASK_LINK)
+        dialog.set_response_enabled("publish", target is not None)
+
+    def link_chosen(
+        self, dialog: Adw.AlertDialog, result: Gio.AsyncResult, entry: Gtk.Entry, recording_id: str
+    ) -> None:
+        target = gitlab.parse_link(entry.get_text())
+        if dialog.choose_finish(result) == "publish" and target is not None:
+            self.start(
+                PUBLISH_GITLAB, recording_id, ["publish", "gitlab", recording_id, target.link]
+            )
 
     def list_presets(self, presets: Gtk.MenuButton, recording_id: str) -> None:
         """The built-in and saved presets, Custom, and the saved ones to delete."""

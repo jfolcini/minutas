@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, cast
 import pytest
 from keyring.errors import KeyringLocked
 
-from minutas import agaric, calendar, cli, recorder, settings, store, summarizer, worker
+from minutas import agaric, calendar, cli, gitlab, recorder, settings, store, summarizer, worker
 from minutas.cli import main
 
 if TYPE_CHECKING:
@@ -710,6 +710,77 @@ def test_publish_agaric_refuses_an_unknown_recording(
 
     assert capsys.readouterr().err == "No recording 2026-11-18T13-05-42.\n"
     assert fake_publisher.published == []
+
+
+class FakeGitLab:
+    """Stands in for the gitlab module's publish: no glab."""
+
+    def __init__(self) -> None:
+        self.succeeds = True
+        self.published: list[tuple[str, datetime, gitlab.Target]] = []
+
+    def publish(self, recording_id: str, published: datetime, target: gitlab.Target) -> bool:
+        self.published.append((recording_id, published, target))
+        return self.succeeds
+
+
+@pytest.fixture
+def fake_gitlab(monkeypatch: pytest.MonkeyPatch) -> FakeGitLab:
+    fake = FakeGitLab()
+    monkeypatch.setattr(gitlab, "publish", fake.publish)
+    monkeypatch.setattr(cli, "now", lambda: START + timedelta(hours=1))
+    return fake
+
+
+ISSUE_LINK = "https://gitlab.example.com/group/project/-/issues/7"
+
+
+def summarized() -> str:
+    recording_id = store.create_recording(START)["id"]
+    (store.recording_dir(recording_id) / "summary.md").write_text("Ship on Friday.\n")
+    return recording_id
+
+
+@pytest.mark.parametrize(("succeeds", "code"), [(True, 0), (False, 1)])
+def test_publish_gitlab_posts_the_summary_where_the_link_says(
+    fake_gitlab: FakeGitLab, *, succeeds: bool, code: int
+) -> None:
+    recording_id = summarized()
+    fake_gitlab.succeeds = succeeds
+
+    assert main(["publish", "gitlab", recording_id, f"{ISSUE_LINK}#note_3"]) == code
+
+    assert fake_gitlab.published == [
+        (
+            recording_id,
+            START + timedelta(hours=1),
+            gitlab.Target(ISSUE_LINK, "gitlab.example.com", "group/project", 7),
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    ("link", "error"),
+    [
+        ("https://gitlab.example.com/group", "Not a GitLab issue or project link: "),
+        (ISSUE_LINK, "No recording 2026-11-18T13-05-42."),
+        (ISSUE_LINK, "2026-11-18T13-05-42 has no summary yet: summarize it first."),
+    ],
+    ids=["not gitlab", "unknown recording", "no summary"],
+)
+def test_publish_gitlab_refuses_what_it_cannot_post(
+    fake_gitlab: FakeGitLab, capsys: pytest.CaptureFixture[str], link: str, error: str
+) -> None:
+    if error.startswith("Not"):
+        summarized()
+        error += link
+    elif error.endswith("summarize it first."):
+        store.create_recording(START)
+
+    assert main(["publish", "gitlab", "2026-11-18T13-05-42", link]) == 1
+
+    assert capsys.readouterr().err == f"{error}\n"
+    assert fake_gitlab.published == []
 
 
 class FakeSummarizer:

@@ -19,7 +19,7 @@ gi.require_version("Adw", "1")
 gi.require_version("Gtk", "4.0")
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Graphene, Gtk  # noqa: E402
 
-from minutas import settings, store, summarizer, window, worker  # noqa: E402
+from minutas import gitlab, settings, store, summarizer, window, worker  # noqa: E402
 
 pytestmark = pytest.mark.usefixtures("no_handler_raised")
 
@@ -129,7 +129,9 @@ def descendants(widget: Gtk.Widget) -> Iterator[Gtk.Widget]:
     yield widget
     child = widget.get_first_child()
     while child is not None:
-        yield from descendants(child)
+        # GTK moves a tooltip to whatever pops up under the pointer: it is no part of that.
+        if child.get_css_name() != "tooltip":
+            yield from descendants(child)
         child = child.get_next_sibling()
 
 
@@ -314,6 +316,12 @@ def devin_installed(
     (folder / "devin").write_text("#!/bin/sh\nexit 1\n")
     (folder / "devin").chmod(0o755)
     monkeypatch.setenv("PATH", f"{folder}{os.pathsep}{os.environ['PATH']}")
+
+
+@pytest.fixture(autouse=True)
+def glab_installed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A glab that can publish, never run: the window offers Publish to GitLab only then."""
+    monkeypatch.setattr(gitlab, "glab_problem", lambda: "")
 
 
 class FakePublish:
@@ -530,6 +538,7 @@ def test_a_row_expands_to_its_name_its_tracks_and_its_actions(
         ("Transcribe", "Not run yet"),
         ("Summarize", "Not summarized"),
         ("Publish to Agaric", "Not published"),
+        ("Publish to GitLab", "Not published"),
     ]
     assert list(buttons(row)) == [
         "Edit",
@@ -539,6 +548,7 @@ def test_a_row_expands_to_its_name_its_tracks_and_its_actions(
         "Delete now",
         "Transcribe",
         "Publish",
+        "Publish…",
     ]
 
 
@@ -612,6 +622,7 @@ def test_the_speakers_sit_between_the_transcription_and_the_summary(
         ("Speaker 2", ""),
         ("Summarize", "Not summarized"),
         ("Publish to Agaric", "Not published"),
+        ("Publish to GitLab", "Not published"),
     ]
     # An attendee's "_" is a letter of the name, not the mark of a shortcut key.
     assert {speaker: choices(shown, picker) for speaker, picker in pickers(row).items()} == {
@@ -719,6 +730,7 @@ def test_the_speakers_follow_each_transcription(
         ("Transcribe", "Not run yet"),
         ("Summarize", "Not summarized"),
         ("Publish to Agaric", "Not published"),
+        ("Publish to GitLab", "Not published"),
     ]
 
     transcribe(SAID)
@@ -730,6 +742,7 @@ def test_the_speakers_follow_each_transcription(
         ("Speaker 2", ""),
         ("Summarize", "Not summarized"),
         ("Publish to Agaric", "Not published"),
+        ("Publish to GitLab", "Not published"),
     ]
 
     # Run again hears one speaker fewer.
@@ -741,6 +754,7 @@ def test_the_speakers_follow_each_transcription(
         ("Speaker 1", ""),
         ("Summarize", "Not summarized"),
         ("Publish to Agaric", "Not published"),
+        ("Publish to GitLab", "Not published"),
     ]
 
 
@@ -898,14 +912,15 @@ def test_play_puts_a_player_for_the_track_in_its_row(
     assert "Play" in buttons(shown.details[FIRST].tracks["mic.opus"].row)
 
     # Collapsing the row stops it and drops the player, and its decoder with it.
+    expanded_to = lines(row)
     row.set_expanded(False)
 
     assert desktop_calls.stopped == [str(store.recording_dir(FIRST) / "call.opus")]
     assert [widget for widget in descendants(row) if isinstance(widget, Gtk.MediaControls)] == []
     assert list(buttons(call.row)) == ["Play", "Save a copy"]
-    # Expanded again it is the same eight lines, not a second set.
+    # Expanded again it is the same lines, not a second set.
     expand(shown)
-    assert len(lines(row)) == 8
+    assert lines(row) == expanded_to
 
 
 def test_save_a_copy_writes_the_track_where_the_person_chose(
@@ -1166,6 +1181,127 @@ def test_a_publish_command_that_dies_mid_run_fails_its_run(
     assert ("Publish to Agaric", f"Failed: {reason}") in lines(row)
     assert list(buttons(shown.details[FIRST].publish.row)) == ["Open in Agaric", "Retry"]
     assert row.warning.get_visible() is True
+
+
+ISSUE_LINK = "https://gitlab.example.com/group/project/-/issues/7"
+SUMMARIZED = [
+    run("transcribe", "succeeded", output="transcript.md"),
+    run("summarize", "succeeded", output="summary.md"),
+]
+
+
+def link_dialog(shown: window.HistoryWindow, label: str) -> tuple[Adw.AlertDialog, Gtk.Entry]:
+    press(shown.details[FIRST].publish_gitlab.row, label)
+    dialog = open_dialog(shown)
+    assert isinstance(dialog, Adw.AlertDialog)
+    [entry] = [widget for widget in descendants(dialog) if isinstance(widget, Gtk.Entry)]
+    return dialog, entry
+
+
+def test_publish_to_gitlab_says_what_the_link_will_get_and_posts_there(
+    history: Callable[[], window.HistoryWindow], publish: FakePublish, desktop_calls: Desktop
+) -> None:
+    recording(SUMMARIZED)
+    output = f"{ISSUE_LINK}#note_302"
+    publish.will(run("publish_gitlab", "succeeded", output=output, link=ISSUE_LINK))
+    shown = history()
+    row = expand(shown)
+
+    dialog, entry = link_dialog(shown, "Publish…")
+
+    assert (dialog.get_heading(), entry.get_text()) == ("Publish to GitLab", "")
+    said: list[tuple[str, bool]] = []
+    for typed in (
+        "",
+        "https://gitlab.example.com/group",
+        "https://gitlab.example.com/group/project",
+        f" {ISSUE_LINK}#note_1 ",
+    ):
+        entry.set_text(typed)
+        said.append((dialog.get_body(), dialog.get_response_enabled("publish")))
+    assert said == [
+        ("Paste an issue link to comment on it, or a project link to open a new issue", False),
+        ("Not a GitLab issue or project link", False),
+        ("Opens a new issue in group/project", True),
+        ("Comments on issue #7 of group/project", True),
+    ]
+
+    press(dialog, "Publish")
+    assert ("Publish to GitLab", "Running") in lines(row)
+    wait_until(lambda: not shown.running[window.PUBLISH_GITLAB])
+
+    assert publish.called() == ["publish", "gitlab", FIRST, ISSUE_LINK]
+    assert ("Publish to GitLab", "Succeeded") in lines(row)
+    assert list(buttons(shown.details[FIRST].publish_gitlab.row)) == [
+        "Open in GitLab",
+        "Publish again…",
+    ]
+
+    press(row, "Open in GitLab")
+
+    assert desktop_calls.opened == [output]
+
+
+def test_retry_asks_again_starting_from_the_failed_runs_link(
+    history: Callable[[], window.HistoryWindow], publish: FakePublish
+) -> None:
+    error = "Could not upload the audio: it is over gitlab.example.com's upload limit"
+    recording([*SUMMARIZED, run("publish_gitlab", "failed", error=error, link=ISSUE_LINK)])
+    publish.will(run("publish_gitlab", "succeeded", output=f"{ISSUE_LINK}#note_1"))
+    shown = history()
+    row = expand(shown)
+    assert ("Publish to GitLab", f"Failed: {error}") in lines(row)
+    assert row.warning.get_visible() is True
+
+    dialog, entry = link_dialog(shown, "Retry…")
+    assert (entry.get_text(), dialog.get_body()) == (
+        ISSUE_LINK,
+        "Comments on issue #7 of group/project",
+    )
+    press(dialog, "Publish")
+    wait_until(lambda: not shown.running[window.PUBLISH_GITLAB])
+
+    assert publish.called() == ["publish", "gitlab", FIRST, ISSUE_LINK]
+
+
+def test_cancelling_the_link_dialog_posts_nothing(
+    history: Callable[[], window.HistoryWindow], publish: FakePublish
+) -> None:
+    recording(SUMMARIZED)
+    shown = history()
+    expand(shown)
+
+    dialog, entry = link_dialog(shown, "Publish…")
+    entry.set_text(ISSUE_LINK)
+    press(dialog, "Cancel")
+    settle()
+
+    assert (shown.running[window.PUBLISH_GITLAB], publish.called()) == ({}, [])
+
+
+def test_publish_to_gitlab_waits_for_a_summary(
+    history: Callable[[], window.HistoryWindow],
+) -> None:
+    recording([run("transcribe", "succeeded", output="transcript.md")])
+    shown = history()
+    row = expand(shown)
+
+    assert buttons(row)["Publish…"].get_sensitive() is False
+    assert buttons(row)["Publish…"].get_tooltip_text() == "Summarize first"
+
+
+def test_without_glab_publish_to_gitlab_says_how_to_install_it(
+    history: Callable[[], window.HistoryWindow], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    install = "glab not found: install glab 1.91.0 or newer"
+    monkeypatch.setattr(gitlab, "glab_problem", lambda: install)
+    recording(SUMMARIZED)
+    shown = history()
+    row = expand(shown)
+
+    assert ("Publish to GitLab", f"Not published · {install}") in lines(row)
+    assert buttons(row)["Publish…"].get_sensitive() is False
+    assert buttons(row)["Publish…"].get_tooltip_text() == install
 
 
 def menu_entries(model: Gio.MenuModel, within: str = "") -> dict[str, tuple[str, GLib.Variant]]:
@@ -1481,9 +1617,13 @@ def test_a_row_that_goes_takes_everything_it_showed_with_it(
 ) -> None:
     transcribed()
     store.save_runs(
-        FIRST, [run("transcribe", "failed", error="Out of memory", details="run-0.log")]
+        FIRST,
+        [
+            run("summarize", "succeeded", output="summary.md"),
+            run("transcribe", "failed", error="Out of memory", details="run-1.log"),
+        ],
     )
-    (store.recording_dir(FIRST) / "run-0.log").write_text("Out of memory\n")
+    (store.recording_dir(FIRST) / "run-1.log").write_text("Out of memory\n")
     shown = history()
     row = expand(shown)
     # Everything that hangs a handler on the row's widgets, dialogs included.
@@ -1493,6 +1633,7 @@ def test_a_row_that_goes_takes_everything_it_showed_with_it(
         ("Delete now", "Cancel"),
         ("Details", None),
         ("Custom name…", "Cancel"),
+        ("Publish…", "Cancel"),
     ):
         if label == "Custom name…":
             choose(shown, pickers(row)["Speaker 2"], label)

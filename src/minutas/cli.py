@@ -11,7 +11,7 @@ from typing import cast
 
 from keyring.errors import KeyringError
 
-from minutas import agaric, calendar, recorder, settings, store, summarizer, worker
+from minutas import agaric, calendar, gitlab, recorder, settings, store, summarizer, worker
 
 
 def now() -> datetime:
@@ -130,6 +130,18 @@ def publish_agaric(args: argparse.Namespace) -> int:
     return 0 if agaric.publish(args.recording_id, now(), page=args.page) else 1
 
 
+def publish_gitlab(args: argparse.Namespace) -> int:
+    recording_id = args.recording_id
+    if not store.is_recording(recording_id):
+        return fail(f"No recording {recording_id}.")
+    target = gitlab.parse_link(args.link)
+    if target is None:
+        return fail(f"Not a GitLab issue or project link: {args.link}")
+    if not (store.recording_dir(recording_id) / store.SUMMARY).is_file():
+        return fail(f"{recording_id} has no summary yet: summarize it first.")
+    return 0 if gitlab.publish(recording_id, now(), target) else 1
+
+
 def summarize(args: argparse.Namespace) -> int:
     recording_id = args.recording_id
     if not store.is_recording(recording_id):
@@ -216,6 +228,14 @@ def build_parser() -> argparse.ArgumentParser:
     agaric_command.add_argument("--page", metavar="ID", help="add the files to this page instead")
     agaric_command.add_argument("--name", help="name the recording first; the name is kept")
     agaric_command.set_defaults(handler=publish_agaric)
+    gitlab_command = publish_commands.add_parser(
+        "gitlab", help="post a recording's summary to GitLab"
+    )
+    gitlab_command.add_argument("recording_id")
+    gitlab_command.add_argument(
+        "link", help="an issue to comment on, or a project to open an issue in"
+    )
+    gitlab_command.set_defaults(handler=publish_gitlab)
 
     settings_command = commands.add_parser("settings", help="change the settings")
     settings_commands = settings_command.add_subparsers(title="commands", required=True)
