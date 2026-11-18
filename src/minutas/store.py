@@ -80,6 +80,8 @@ class Run(TypedDict):
     note: NotRequired[str | None]
     # What a Summarize run asked Devin, so Retry asks the same.
     prompt: NotRequired[str]
+    # The issue or project link a Publish to GitLab run posted to, which the next one offers.
+    link: NotRequired[str]
 
 
 def data_dir() -> Path:

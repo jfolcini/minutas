@@ -208,7 +208,7 @@ Every recording is a row, newest first; expanding it shows its speakers, its aud
 - **Actions:** Transcribe (runs on stop; Run again re-transcribes, for example after the word list changes), Summarize, Publish to Agaric and Publish to GitLab. Every run is kept with its time, status and output link; Publish to Agaric run again adds what the page lacks, such as the summary or a newer one, and applies a changed name.
 - **Failed runs:** show the reason and the fix, with Retry and Details; see *When an action fails* below.
 - **Summarize:** the menu lists built-in presets, saved presets, then Custom; Custom opens a text box with Save as preset. Saved presets can be deleted from the menu's Delete a preset, built-in ones can't. Without the Devin CLI on the PATH, Summarize is disabled and says how to install it.
-- **Publish to GitLab:** enabled once a summary exists; before posting, the dialog says whether the link will get a comment or a new issue.
+- **Publish to GitLab:** enabled once a summary exists; its dialog asks for the link, starting from the last run's, and says before posting whether it will get a comment or a new issue. Without `glab` 1.91 or newer on the PATH, it is disabled and recommends GitLab's own `.deb`: the snap can't read the recordings.
 - **Audio files:** the mic and call tracks, each with Play and Save a copy; Delete now removes both, and Open folder opens the recording's folder.
 - **Deleting:** asks first; the history entry and its outputs stay. Without the tracks, Run again is disabled, and publishing leaves the audio out and says so.
 - **Links:** open in the default app: `summary.md` in the text editor, `agaric://` links in Agaric, GitLab links in the browser.
@@ -239,7 +239,7 @@ A run still marked Running when the app starts again, after a logout or a crash,
 | Transcribe | Out of memory, a model fails to load, a crash | Failed with the log; Retry runs again from the tracks |
 | Summarize | Devin not logged in, a non-zero exit, empty output, no answer at all | Failed with Devin's output in Details; a Devin that stalls is stopped after a generous timeout; the run keeps the prompt it used, Custom included, so Retry sends the same one |
 | Publish to Agaric | Agaric not running, the agent token revoked, a file over 50 MB, the name already taken by another page | Failed with Agaric's message; `add_meeting` is one transaction, so a failed call leaves nothing behind. A taken name stops the run and asks: Use that page (adds the files to it) or Rename; a rename to a taken name asks for another name |
-| Publish to GitLab | `glab` not logged in for that server, no access to the link, an upload over the server's limit, network down | Failed at the step that broke, with the fix (for example `glab auth login --hostname <host>`); finished uploads are kept in the run, so Retry carries on without uploading again |
+| Publish to GitLab | `glab` not logged in for that server, no access to the link, an upload over the server's limit, network down | Failed at the step that broke, with the fix (for example `glab auth login --hostname <host>`); a finished audio upload is kept in the run, so Retry doesn't upload it again |
 
 - **Where failures show:** a red status on the run, a warning mark on the recording in the top-bar menu, and a GNOME notification.
 - **Details:** the full output of the tool that failed, ready to copy.

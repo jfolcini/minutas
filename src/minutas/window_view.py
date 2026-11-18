@@ -3,15 +3,20 @@
 No GTK and no files here: the window draws what these functions return.
 """
 
-from collections.abc import Collection, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
 
 from minutas import store
 
 TRANSCRIBE, SUMMARIZE, PUBLISH = "transcribe", "summarize", "publish_agaric"
+PUBLISH_GITLAB = "publish_gitlab"
 # The actions the window runs as commands, by the title it gives them.
-COMMAND_TITLES = {SUMMARIZE: "Summarize", PUBLISH: "Publish to Agaric"}
+COMMAND_TITLES = {
+    SUMMARIZE: "Summarize",
+    PUBLISH: "Publish to Agaric",
+    PUBLISH_GITLAB: "Publish to GitLab",
+}
 TRACK_TITLES = dict(zip(store.TRACKS, ("Microphone", "Call"), strict=True))
 NAME_SOURCES = {
     "default": "Default name",
@@ -31,6 +36,7 @@ NAME_TAKEN = {"name_taken", "rename_taken"}
 STILL_RECORDING = "Still recording"
 NO_AUDIO = "The audio was deleted"
 NO_TRANSCRIPT = "Transcribe first"
+NO_SUMMARY = "Summarize first"
 
 
 @dataclass(frozen=True)
@@ -73,6 +79,8 @@ class ActionView:
     menu: str | None = None
     # The prompt of the newest run, which Retry sends again.
     prompt: str | None = None
+    # The link of the newest run, which the dialog that asks for one starts from.
+    link: str | None = None
 
 
 @dataclass(frozen=True)
@@ -91,6 +99,7 @@ class RowView:
     attendees: tuple[str, ...]
     summarize: ActionView
     publish: ActionView
+    publish_gitlab: ActionView
 
 
 def duration(seconds: int) -> str:
@@ -178,14 +187,17 @@ def row(
     tracks: Collection[str],
     *,
     running: Collection[str],
-    summarizer_missing: str,
+    missing_tools: Mapping[str, str],
 ) -> RowView:
     """The row of a recording.
 
     tracks: those of its two that hold audio. running: the actions whose command the window is
-    running, whatever the run log says so far. summarizer_missing: how to install the summarizer
-    the window could not find; empty when it found it.
+    running, whatever the run log says so far. missing_tools: by action, why the tool it runs
+    is missing or too old, and how to install one that will do; empty or left out when the
+    window found one.
     """
+    summarizer_missing = missing_tools.get(SUMMARIZE, "")
+    glab_problem = missing_tools.get(PUBLISH_GITLAB, "")
     publishing, summarizing = PUBLISH in running, SUMMARIZE in running
     stopped = recording["stopped_at"] is not None
     still_recording = "" if stopped else STILL_RECORDING
@@ -236,12 +248,36 @@ def row(
     else:
         publish = replace(last_publish, disabled=still_recording)
 
+    # Every press asks for a link, starting from the newest run's.
+    last_gitlab = last_result(runs, PUBLISH_GITLAB, "Not published", "Publish", "Publish again")
+    last_gitlab = replace(last_gitlab, label=f"{last_gitlab.label}…")
+    if PUBLISH_GITLAB in running:
+        publish_gitlab = ActionView(
+            result="Running",
+            label=last_gitlab.label,
+            disabled="Publishing",
+            output=last_gitlab.output,
+        )
+    else:
+        gitlab_run = latest(runs, PUBLISH_GITLAB)
+        publish_gitlab = replace(
+            last_gitlab,
+            result=" · ".join(filter(None, [last_gitlab.result, glab_problem])),
+            link=None if gitlab_run is None else gitlab_run[1].get("link"),
+            disabled=still_recording
+            or glab_problem
+            or ("" if last_summary.output is not None else NO_SUMMARY),
+        )
+
     return RowView(
         recording_id=recording["id"],
         name=recording["name"],
         name_source=NAME_SOURCES[recording["name_source"]],
         subtitle=subtitle(recording, transcribing),
-        warning=transcribe.failed or last_summary.failed or last_publish.failed,
+        warning=transcribe.failed
+        or last_summary.failed
+        or last_publish.failed
+        or last_gitlab.failed,
         tracks=tuple(
             TrackView(
                 file=name,
@@ -263,4 +299,5 @@ def row(
         attendees=tuple(recording.get("attendees", [])),
         summarize=summarize,
         publish=publish,
+        publish_gitlab=publish_gitlab,
     )

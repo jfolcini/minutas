@@ -193,9 +193,12 @@ type = "layers"
 layers = [
     "minutas.cli",
     # The window draws what window_view works out, and reaches the rest of the program only
-    # through the worker, the store, the settings and the summarizer's presets; it runs the
-    # publisher and the summarizer as commands.
+    # through the worker, the store, the settings, the summarizer's presets and the GitLab
+    # publisher's reading of a link and of glab's version; it runs the publishers and the
+    # summarizer as commands.
     "minutas.window",
+    # Mixes the tracks and names a new issue as Publish to Agaric does for a page.
+    "minutas.gitlab",
     "(minutas.recorder) | (minutas.worker) | (minutas.agaric) | (minutas.summarizer) | (minutas.window_view) | (minutas.calendar)",
     "minutas.settings",
     "minutas.store",
