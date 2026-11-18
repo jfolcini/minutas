@@ -1,7 +1,9 @@
 import sys
+import threading
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from types import ModuleType, SimpleNamespace
+from typing import TYPE_CHECKING
 
 import pytest
 from hypothesis import given
@@ -10,12 +12,18 @@ from hypothesis import strategies as st
 from minutas import calendar
 from minutas.calendar import Event
 
+if TYPE_CHECKING:
+    from gi.repository import ICalGLib
+
 START = datetime(2026, 11, 18, 13, 5, 42, tzinfo=UTC)
 STOP = START + timedelta(minutes=30)
 # 2026-11-18 13:00 UTC, which is 10:00 in Buenos Aires.
 ONE_PM = 1795006800
 HOUR = 3600
 BUENOS_AIRES = "America/Argentina/Buenos_Aires"
+DAY = 24 * HOUR
+DAY_DELTA = timedelta(days=1)
+CANCELLED = "Operation was cancelled"
 
 
 @pytest.mark.parametrize(
@@ -116,26 +124,40 @@ class Calendars:
         gi.require_version("ECal", "2.0")
         gi.require_version("EDataServer", "1.2")
         gi.require_version("ICalGLib", "3.0")
-        from gi.repository import ECal, EDataServer, GLib, ICalGLib  # noqa: PLC0415
+        from gi.repository import ECal, EDataServer, Gio, GLib, GObject, ICalGLib  # noqa: PLC0415
 
         self.ical = ICalGLib
+        self.gobject = GObject
         self.glib = GLib
         self.sources: list[SimpleNamespace] = []
         self.extensions: list[str | None] = []
         self.connected: list[tuple[str, object, int]] = []
+        self.zones: list[str | None] = []
         self.asked: list[tuple[str, int, int]] = []
         self.registry_error: str | None = None
+        self.cancellable = Gio.Cancellable()
+        self.system_zone: str | None = BUENOS_AIRES
         monkeypatch.setattr(EDataServer.SourceRegistry, "new_sync", self.registry)
+        monkeypatch.setattr(ECal, "util_get_system_timezone", self.system_timezone)
         monkeypatch.setattr(ECal.Client, "connect_sync", self.connect)
 
     def add(
-        self, name: str, *events: tuple[Sequence[str], str, str], error: str | None = None
+        self,
+        name: str,
+        *events: tuple[Sequence[str], str, str],
+        error: str | None = None,
+        hangs: bool = False,
     ) -> None:
-        """A calendar, each event as its VEVENT lines and its occurrence's start and end."""
-        self.sources.append(SimpleNamespace(name=name, events=events, error=error))
+        """A calendar, each event as its VEVENT lines and its occurrence's start and end.
 
-    def registry(self, cancellable: object = None) -> SimpleNamespace:
-        assert cancellable is None
+        One that hangs is a server that takes the connection and never answers: its open
+        returns only once the lookup gives up on it, as EDS's does.
+        """
+        self.sources.append(SimpleNamespace(name=name, events=events, error=error, hangs=hangs))
+
+    def registry(self, cancellable: object) -> SimpleNamespace:
+        assert isinstance(cancellable, type(self.cancellable))
+        self.cancellable = cancellable
         if self.registry_error is not None:
             raise self.glib.Error(self.registry_error)
 
@@ -149,11 +171,24 @@ class Calendars:
         return SimpleNamespace(list_enabled=list_enabled)
 
     def connect(
-        self, source: SimpleNamespace, source_type: object, seconds: int, _: object = None
+        self, source: SimpleNamespace, source_type: object, seconds: int, cancellable: object
     ) -> SimpleNamespace:
+        assert cancellable is self.cancellable
         self.connected.append((source.fake.name, source_type, seconds))
+        if source.fake.hangs:
+            given_up = threading.Event()
+            self.gobject.Object.connect(self.cancellable, "cancelled", lambda *_: given_up.set())
+            if self.cancellable.is_cancelled():
+                given_up.set()
+            assert given_up.wait(timeout=10), "the lookup never gave up on a calendar that hangs"
+        if self.cancellable.is_cancelled():
+            raise self.glib.Error(CANCELLED)
         if source.fake.error is not None:
             raise self.glib.Error(source.fake.error)
+
+        def set_default_timezone(zone: "ICalGLib.Timezone | None") -> None:
+            # EDS's takes no None: PyGObject raises TypeError for it.
+            self.zones.append(None if zone is None else zone.get_display_name())
 
         def generate_instances_sync(
             start: int, end: int, _cancellable: object, callback: Callable[..., bool]
@@ -165,7 +200,15 @@ class Calendars:
                 )
                 callback(component, self.time(begins), self.time(ends), None, None)
 
-        return SimpleNamespace(generate_instances_sync=generate_instances_sync)
+        return SimpleNamespace(
+            set_default_timezone=set_default_timezone,
+            generate_instances_sync=generate_instances_sync,
+        )
+
+    def system_timezone(self) -> "ICalGLib.Timezone | None":
+        if self.system_zone is None:
+            return None
+        return self.ical.Timezone.get_builtin_timezone(self.system_zone)
 
     def time(self, text: str) -> object:
         """A time as libical writes it, "20261118T100000 America/…" for one in a time zone."""
@@ -203,9 +246,50 @@ def test_lookup_gives_the_event_the_recording_overlaps(
         end=ONE_PM + HOUR,
     )
     assert calendars.extensions == ["Calendar"]
-    assert calendars.connected == [("Work", ECal.ClientSourceType.EVENTS, 1)]
-    assert calendars.asked == [("Work", int(START.timestamp()), int(STOP.timestamp()))]
+    assert calendars.connected == [("Work", ECal.ClientSourceType.EVENTS, 0xFFFFFFFF)]
+    assert calendars.zones == [BUENOS_AIRES]
+    assert calendars.asked == [("Work", int(START.timestamp()) - DAY, int(STOP.timestamp()) + DAY)]
     assert capsys.readouterr().err == ""
+
+
+def test_without_a_known_system_zone_times_without_one_are_read_as_utc(
+    calendars: Calendars,
+) -> None:
+    calendars.system_zone = None
+    calendars.add("Work", (WEEKLY_SYNC, "20261118T130000Z", "20261118T140000Z"))
+
+    calendar.lookup(START, STOP)
+
+    assert calendars.zones == ["UTC"]
+
+
+def test_the_organizer_is_named_first_and_only_once(calendars: Calendars) -> None:
+    outlook = ("ORGANIZER;CN=Olga Ríos:mailto:olga@example.com", *WEEKLY_SYNC)
+    google = ("ORGANIZER;CN=Ana Díaz:mailto:ana@example.com", *WEEKLY_SYNC)
+    calendars.add("Outlook", (outlook, "20261118T130000Z", "20261118T140000Z"))
+    calendars.add("Google", (google, "20261119T130000Z", "20261119T140000Z"))
+
+    from_outlook = calendar.lookup(START, STOP)
+    from_google = calendar.lookup(START + DAY_DELTA, STOP + DAY_DELTA)
+
+    assert from_outlook is not None
+    assert from_outlook.attendees == ("Olga Ríos", "Ana Díaz", "bob.ruiz")
+    assert from_google is not None
+    assert from_google.attendees == ("Ana Díaz", "bob.ruiz")
+
+
+def test_a_calendar_that_hangs_is_given_up_on_and_the_lookup_ends(
+    calendars: Calendars, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(calendar, "LOOKUP_SECONDS", 0)
+    calendars.add("Nextcloud", hangs=True)
+    calendars.add("Work", (WEEKLY_SYNC, "20261118T130000Z", "20261118T140000Z"))
+
+    assert calendar.lookup(START, STOP) is None
+
+    assert capsys.readouterr().err == (
+        f"calendar: Nextcloud skipped: {CANCELLED}\ncalendar: Work skipped: {CANCELLED}\n"
+    )
 
 
 def test_a_repeating_meeting_is_found_at_the_occurrence_eds_expanded(

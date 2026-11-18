@@ -816,10 +816,21 @@ TAKEN = run(
 
 
 def test_a_taken_name_offers_that_page(
-    history: Callable[[], window.HistoryWindow], publish: FakePublish
+    history: Callable[[], window.HistoryWindow],
+    publish: FakePublish,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     recording()
     publish.will(TAKEN, exit_status=1)
+    spawn = Gio.Subprocess.new
+
+    def spawn_and_let_it_run(argv: list[str], flags: Gio.SubprocessFlags) -> Gio.Subprocess:
+        # The fastest command there is: it has recorded its run before the window looks.
+        command = spawn(argv, flags)
+        command.wait()
+        return command
+
+    monkeypatch.setattr(Gio.Subprocess, "new", spawn_and_let_it_run)
     shown = history()
     row = expand(shown)
 
