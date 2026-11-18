@@ -530,6 +530,8 @@ class FakePipeline:
     def __init__(self, stack: "FakeSpeechStack") -> None:
         self.stack = stack
         self.embedding_batch_size = 32
+        # community-1's segmentation: a ten-second window, moved a tenth of it at a time.
+        self._segmentation = types.SimpleNamespace(duration=10.0, step=1.0)
         self.model = FakeEmbedding()
         self._embedding: Callable[..., object] = self.model
 
@@ -544,6 +546,7 @@ class FakePipeline:
                 "batched": waveform.batched,
                 "sample_rate": file["sample_rate"],
                 "embedding_batch_size": self.embedding_batch_size,
+                "window": (self._segmentation.duration, self._segmentation.step),
                 "min_num_samples": needs,
                 "embeddings": [
                     self._embedding("chunk 1", masks=SILENT),
@@ -577,6 +580,8 @@ class FakeSpeechStack:
         self.inference = False
         self.onednn = True
         self.inference_in_vad: set[bool] = set()
+        self.threads_in_vad: set[int] = set()
+        self.silero_imported = False
         self.vad_rates: set[int] = set()
         self.vad_settings: list[dict[str, object]] = []
         self.telemetry_when_pyannote_is_imported: str | None = None
@@ -660,6 +665,7 @@ class FakeSpeechStack:
 
     def __call__(self, window: list[float], rate: int) -> types.SimpleNamespace:
         self.inference_in_vad.add(self.inference)
+        self.threads_in_vad.add(self.torch_threads)
         self.vad_rates.add(rate)
         return types.SimpleNamespace(item=lambda: window[0])
 
@@ -789,8 +795,10 @@ def stack(monkeypatch: pytest.MonkeyPatch) -> FakeSpeechStack:
         fromlist: Sequence[str] = (),
         level: int = 0,
     ) -> types.ModuleType:
-        if name == "silero_vad":
-            # As the real one does, on import: load_silero_vad is too late to read torch's count.
+        if name == "silero_vad" and not fake.silero_imported:
+            # As the real one does, on its first import only: load_silero_vad is too late to read
+            # torch's count.
+            fake.silero_imported = True
             fake.torch_threads = 1
         if name == "pyannote.audio":
             # The real one reads it on import, and reports its runs unless it says not to.
@@ -929,6 +937,17 @@ def test_pyannote_embeds_one_voice_at_a_time_and_only_where_someone_speaks(
     assert run["min_num_samples"] == 400
 
 
+def test_pyannote_moves_its_ten_second_window_three_seconds_at_a_time(
+    home: Path, stack: FakeSpeechStack, recording: Path
+) -> None:
+    install_models(home)
+
+    main([str(recording)])
+
+    (run,) = stack.diarizations
+    assert run["window"] == (10.0, 3.0)
+
+
 def test_a_silent_batch_gets_one_empty_embedding_for_each_of_its_masks(
     stack: FakeSpeechStack,
 ) -> None:
@@ -994,6 +1013,16 @@ def test_parakeet_gets_the_threads_torch_had_before_silero_took_them(
     main([str(recording)])
 
     assert [run["threads"] for run in stack.transcriptions] == [8] * 6
+
+
+def test_silero_steps_through_both_tracks_on_one_thread(
+    home: Path, stack: FakeSpeechStack, recording: Path
+) -> None:
+    install_models(home)
+
+    main([str(recording)])
+
+    assert stack.threads_in_vad == {1}
 
 
 def test_the_models_run_without_recording_gradients(

@@ -198,6 +198,9 @@ def find_speech(track: Path) -> list[tuple[int, int]]:
     # Importing silero_vad sets torch to one thread, and the other models would be left with it.
     import silero_vad
 
+    # Only its first import does: the second track would step through on every thread, at the
+    # same speed, for several times the CPU.
+    torch.set_num_threads(1)
     vad = silero_vad.load_silero_vad()
     with soundfile.SoundFile(track) as audio, torch.inference_mode():
         probabilities = [
@@ -248,6 +251,10 @@ def diarize(pipeline_file: Path, call: Path) -> list[Turn]:
     pipeline = Pipeline.from_pretrained(pipeline_file)
     # On a CPU one embedding at a time is the fastest, and takes the least memory.
     pipeline.embedding_batch_size = 1
+    # Its ten-second window moves one second at a time, so it embeds every second of the call ten
+    # times over, most of its work. Moved three seconds, it tells the speakers apart as well; five,
+    # and it starts to mix them up.
+    pipeline._segmentation.step = 3.0  # noqa: SLF001 - only its constructor takes the step
     pipeline._embedding = VoicedOnly(pipeline._embedding)  # noqa: SLF001 - it has no setting for this
     # pyannote takes the call whole.
     audio, _ = soundfile.read(call, dtype="float32")
