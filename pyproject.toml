@@ -6,7 +6,9 @@ readme = "README.md"
 license = "GPL-3.0-or-later"
 license-files = ["LICENSE"]
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "jiwer>=4.0.0",
+]
 
 [project.scripts]
 minutas = "minutas.cli:main"
@@ -43,6 +45,14 @@ dev = [
     "typos>=1.52.2",
     "zizmor>=1.32.0",
 ]
+speech = [
+    "nemo-toolkit[asr]>=3.0.0",
+    "pyannote-audio>=4",
+    "silero-vad>=6.2.3",
+    "torch>=2.15.0",
+    "torchaudio>=2.11.1",
+    "torchcodec>=0.17.0",
+]
 
 [build-system]
 requires = ["uv_build>=0.11.32,<0.14"]
@@ -50,6 +60,16 @@ build-backend = "uv_build"
 
 [tool.uv]
 required-version = ">=0.11.32"
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+torchaudio = { index = "pytorch-cpu" }
+torchcodec = { index = "pytorch-cpu" }
 
 [tool.ruff]
 line-length = 100
