@@ -21,7 +21,6 @@ from minutas import store
 
 UNIT = "minutas-transcribe.service"
 ACTION = "transcribe"
-TRANSCRIPT = "transcript.md"
 WORDS = "words.txt"
 INTERRUPTED = "interrupted"
 # Sent to every process of the unit: it ends the transcriber, which takes the signal's default
@@ -257,7 +256,8 @@ def transcribe(recording_id: str, index: int) -> Outcome:
             check=False,
         )
     if result.returncode == 0:
-        return Outcome(status="succeeded", error=None, details=log.name, output=TRANSCRIPT)
+        store.write_transcript(recording_id)
+        return Outcome(status="succeeded", error=None, details=log.name, output=store.TRANSCRIPT)
     # A killed transcriber gave no reason, its last line is only progress; the OOM kill at
     # MemoryMax is a SIGKILL.
     if result.returncode == -signal.SIGKILL:

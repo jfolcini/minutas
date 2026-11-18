@@ -29,6 +29,28 @@ def read_status() -> dict[str, object]:
     return cast("dict[str, object]", json.loads((store.data_dir() / "status.json").read_text()))
 
 
+def said(start: float, speaker: str, text: str) -> store.Segment:
+    return store.Segment(start=start, end=start + 3.0, speaker=speaker, text=text)
+
+
+SAID = [
+    said(4.0, "Speaker 1", "Arrancamos con el release."),
+    said(11.0, "Me", "CI is green since this morning."),
+    said(3725.9, "Speaker 2", "Año nuevo, <deploy> & PR."),
+    said(3730.0, "Speaker 1", "Dale."),
+]
+
+
+def write_segments(recording_id: str, segments: list[store.Segment]) -> None:
+    """As the transcriber leaves them."""
+    path = store.recording_dir(recording_id) / "transcript.json"
+    path.write_text(json.dumps(segments, ensure_ascii=False), encoding="utf-8")
+
+
+def read_transcript(recording_id: str) -> str:
+    return (store.recording_dir(recording_id) / "transcript.md").read_text(encoding="utf-8")
+
+
 def test_data_dir_follows_xdg_data_home(xdg_dirs: Path) -> None:
     assert store.data_dir() == xdg_dirs / "data" / "minutas"
 
@@ -198,12 +220,15 @@ def test_set_typed_name_fails_for_a_recording_that_is_gone() -> None:
         lambda: store.set_typed_name("2026-11-18T13-05-42", "Weekly sync"),
         lambda: store.mark_stopped("2026-11-18T13-05-42", START, incomplete=False),
         lambda: store.set_calendar_event("2026-11-18T13-05-42", "Weekly sync", ["Ana Díaz"]),
+        lambda: store.write_transcript("2026-11-18T13-05-42"),
+        lambda: store.set_speaker_name("2026-11-18T13-05-42", "Speaker 1", "Ana Díaz"),
     ],
 )
 def test_a_recording_is_read_and_rewritten_inside_the_store_lock(
     change: Callable[[], None], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     store.create_recording(START)
+    write_segments("2026-11-18T13-05-42", SAID)
     held: list[bool] = []
     load_recording, write_json = store.load_recording, store.write_json
 
@@ -550,3 +575,180 @@ def test_set_typed_name_keeps_the_name_for_good() -> None:
         "name": "Weekly sync",
         "name_source": "typed",
     }
+
+
+@pytest.mark.parametrize(
+    ("seconds", "stamp"),
+    [
+        (0.0, "00:00:00"),
+        (4.0, "00:00:04"),
+        (4.999, "00:00:04"),
+        (59.0, "00:00:59"),
+        (60.0, "00:01:00"),
+        (3599.5, "00:59:59"),
+        (3661.0, "01:01:01"),
+        (360000.0, "100:00:00"),
+    ],
+)
+def test_timestamp_is_whole_seconds_from_the_recording_start(seconds: float, stamp: str) -> None:
+    assert store.format_timestamp(seconds) == stamp
+
+
+def test_transcript_is_one_paragraph_per_segment_under_the_speakers_names() -> None:
+    names = {"Speaker 1": "Ana Díaz", "Speaker 2": "Speaker 2"}
+
+    assert store.format_transcript(SAID, names) == (
+        "[00:00:04] **Ana Díaz:** Arrancamos con el release.\n"
+        "\n"
+        "[00:00:11] **Me:** CI is green since this morning.\n"
+        "\n"
+        "[01:02:05] **Speaker 2:** Año nuevo, <deploy> & PR.\n"
+        "\n"
+        "[01:02:10] **Ana Díaz:** Dale.\n"
+    )
+
+
+def test_a_speaker_nobody_listed_goes_by_its_key() -> None:
+    assert store.format_transcript(SAID[:2], {}) == (
+        "[00:00:04] **Speaker 1:** Arrancamos con el release.\n"
+        "\n"
+        "[00:00:11] **Me:** CI is green since this morning.\n"
+    )
+
+
+speaker_keys = st.sampled_from(["Me", "Speaker 1", "Speaker 2", "Speaker 3"])
+given_names = st.text(st.characters(codec="utf-8", exclude_categories=["C"]), min_size=1)
+segments_said = st.lists(
+    st.builds(
+        store.Segment,
+        start=st.floats(0, 36000),
+        end=st.floats(0, 36000),
+        speaker=speaker_keys,
+        text=st.text(st.characters(codec="utf-8", exclude_categories=["C", "Z"]), min_size=1),
+    )
+)
+
+
+@given(
+    segments=segments_said,
+    names=st.dictionaries(speaker_keys, given_names),
+    renamed=speaker_keys,
+    name=given_names,
+)
+def test_renaming_a_speaker_rewrites_that_speakers_paragraphs_and_no_others(
+    segments: list[store.Segment], names: dict[str, str], renamed: str, name: str
+) -> None:
+    before = store.format_transcript(segments, names).split("\n\n")
+    after = store.format_transcript(segments, {**names, renamed: name}).split("\n\n")
+
+    assert len(after) == len(before) == max(len(segments), 1)
+    for segment, was, now in zip(segments, before, after, strict=False):
+        stamp = store.format_timestamp(segment["start"])
+        if segment["speaker"] == renamed:
+            assert now.rstrip("\n") == f"[{stamp}] **{name}:** {segment['text']}"
+        else:
+            assert now == was
+
+
+def test_write_transcript_lists_the_calls_speakers_under_their_keys() -> None:
+    recording_id = make_stopped(START)
+    write_segments(recording_id, SAID)
+
+    store.write_transcript(recording_id)
+
+    assert store.load_recording(recording_id).get("speakers") == {
+        "Speaker 1": "Speaker 1",
+        "Speaker 2": "Speaker 2",
+    }
+    assert read_transcript(recording_id) == (
+        "[00:00:04] **Speaker 1:** Arrancamos con el release.\n"
+        "\n"
+        "[00:00:11] **Me:** CI is green since this morning.\n"
+        "\n"
+        "[01:02:05] **Speaker 2:** Año nuevo, <deploy> & PR.\n"
+        "\n"
+        "[01:02:10] **Speaker 1:** Dale.\n"
+    )
+
+
+def test_write_transcript_replaces_the_old_one_and_leaves_nothing_else() -> None:
+    recording_id = make_stopped(START)
+    write_segments(recording_id, SAID[:1])
+    (store.recording_dir(recording_id) / "transcript.md").write_text("old\n")
+
+    store.write_transcript(recording_id)
+
+    assert read_transcript(recording_id) == "[00:00:04] **Speaker 1:** Arrancamos con el release.\n"
+    assert sorted(path.name for path in store.recording_dir(recording_id).iterdir()) == [
+        "recording.json",
+        "runs.json",
+        "transcript.json",
+        "transcript.md",
+    ]
+
+
+def test_write_transcript_fails_without_the_transcribers_segments() -> None:
+    recording_id = make_stopped(START)
+
+    with pytest.raises(FileNotFoundError):
+        store.write_transcript(recording_id)
+
+    assert "speakers" not in store.load_recording(recording_id)
+    assert not (store.recording_dir(recording_id) / "transcript.md").exists()
+
+
+def test_set_speaker_name_writes_the_transcript_again_with_the_name() -> None:
+    recording_id = make_stopped(START)
+    write_segments(recording_id, SAID)
+    store.write_transcript(recording_id)
+
+    store.set_speaker_name(recording_id, "Speaker 2", "Ana Díaz")
+
+    saved = json.loads((store.recording_dir(recording_id) / "recording.json").read_text())
+    assert saved["speakers"] == {"Speaker 1": "Speaker 1", "Speaker 2": "Ana Díaz"}
+    assert read_transcript(recording_id) == (
+        "[00:00:04] **Speaker 1:** Arrancamos con el release.\n"
+        "\n"
+        "[00:00:11] **Me:** CI is green since this morning.\n"
+        "\n"
+        "[01:02:05] **Ana Díaz:** Año nuevo, <deploy> & PR.\n"
+        "\n"
+        "[01:02:10] **Speaker 1:** Dale.\n"
+    )
+
+
+def test_set_speaker_name_fails_for_a_recording_that_is_gone() -> None:
+    with pytest.raises(FileNotFoundError):
+        store.set_speaker_name("2026-11-18T13-05-42", "Speaker 1", "Ana Díaz")
+
+    assert not store.recordings_dir().exists()
+
+
+def test_transcribing_again_keeps_the_names_of_the_speakers_still_heard() -> None:
+    recording_id = make_stopped(START)
+    write_segments(recording_id, SAID)
+    store.write_transcript(recording_id)
+    store.set_speaker_name(recording_id, "Speaker 1", "Ana Díaz")
+    store.set_speaker_name(recording_id, "Speaker 2", "Bob Ruiz")
+    again = [said(2.0, "Speaker 1", "Hola."), said(9.0, "Speaker 3", "Buenas.")]
+    write_segments(recording_id, again)
+
+    store.write_transcript(recording_id)
+
+    assert store.load_recording(recording_id).get("speakers") == {
+        "Speaker 1": "Ana Díaz",
+        "Speaker 3": "Speaker 3",
+    }
+    assert read_transcript(recording_id) == (
+        "[00:00:02] **Ana Díaz:** Hola.\n\n[00:00:09] **Speaker 3:** Buenas.\n"
+    )
+
+
+def test_a_recording_with_only_my_voice_lists_no_speakers() -> None:
+    recording_id = make_stopped(START)
+    write_segments(recording_id, [said(1.0, "Me", "Hola.")])
+
+    store.write_transcript(recording_id)
+
+    assert store.load_recording(recording_id).get("speakers") == {}
+    assert read_transcript(recording_id) == "[00:00:01] **Me:** Hola.\n"

@@ -10,7 +10,7 @@ everything in it, for good.
 
 import contextlib
 import sys
-from collections.abc import Callable, Collection
+from collections.abc import Callable, Collection, Sequence
 from datetime import UTC, datetime
 from typing import override
 
@@ -30,6 +30,7 @@ DELETE_WARNING = (
     "Both tracks are deleted for good. The transcript and everything published stay. "
     "Without the audio the recording can't be transcribed again, and publishing leaves it out."
 )
+CUSTOM_NAME = "Custom name…"
 
 
 def load_views(publishing: Collection[str]) -> list[RowView]:
@@ -96,6 +97,43 @@ class TrackControls:
         self.play.set_visible(True)
 
 
+def name_menu(recording_id: str, speaker: str, attendees: Sequence[str]) -> Gio.Menu:
+    """The names on offer for a speaker: the meeting's attendees, then one to type."""
+    menu = Gio.Menu()
+    for attendee in attendees:
+        # A menu takes "_" for the mark of a shortcut key; doubled, it is the letter.
+        named = Gio.MenuItem.new(attendee.replace("_", "__"), None)
+        named.set_action_and_target_value(
+            "win.name-speaker", GLib.Variant("(sss)", (recording_id, speaker, attendee))
+        )
+        menu.append_item(named)
+    custom = Gio.MenuItem.new(CUSTOM_NAME, None)
+    custom.set_action_and_target_value(
+        "win.type-speaker-name", GLib.Variant("(ss)", (recording_id, speaker))
+    )
+    menu.append_item(custom)
+    return menu
+
+
+class SpeakerControls:
+    """A speaker's row: the name it goes by, and the menu that gives it one."""
+
+    def __init__(self, recording_id: str, speaker: str) -> None:
+        self.recording_id = recording_id
+        self.speaker = speaker
+        self.row = text_row(speaker)
+        self.picker = Gtk.MenuButton(label="Name", valign=Gtk.Align.CENTER)
+        self.row.add_suffix(self.picker)
+        self.offered: tuple[str, ...] | None = None
+
+    def display(self, name: str, attendees: tuple[str, ...]) -> None:
+        self.row.set_subtitle(name)
+        # A new menu is a new popover: only when what it offers changed.
+        if attendees != self.offered:
+            self.offered = attendees
+            self.picker.set_menu_model(name_menu(self.recording_id, self.speaker, attendees))
+
+
 class ActionControls:
     """An action's row: its last result, then Details, its output link and the next step."""
 
@@ -133,10 +171,12 @@ class ActionControls:
 
 
 class Details:
-    """What a recording expands to: its name, its tracks and its actions."""
+    """What a recording expands to: its name, its tracks, its actions and its speakers."""
 
-    def __init__(self, view: RowView, window: "HistoryWindow") -> None:
+    def __init__(self, view: RowView, expander: Adw.ExpanderRow, window: "HistoryWindow") -> None:
         recording_id = view.recording_id
+        self.expander = expander
+        self.speakers: dict[str, SpeakerControls] = {}
         self.name = text_row("")
         self.name.add_suffix(button("Edit", window.edit_name, recording_id))
         self.tracks = {
@@ -154,15 +194,28 @@ class Details:
         self.publish = ActionControls(
             "Publish to Agaric", "Open in Agaric", PUBLISH, recording_id, window
         )
-
-    def rows(self) -> list[Adw.ActionRow]:
-        return [
+        for row in (
             self.name,
             *(controls.row for controls in self.tracks.values()),
             self.files,
             self.transcribe.row,
             self.publish.row,
-        ]
+        ):
+            expander.add_row(row)
+
+    def list_speakers(self, view: RowView) -> None:
+        """Puts the speakers a transcription found after it, and before the publishing."""
+        speakers = [speaker.key for speaker in view.speakers]
+        if speakers == list(self.speakers):
+            return
+        # An expander row only adds at its end: Publish steps out, and back in after them.
+        for controls in self.speakers.values():
+            self.expander.remove(controls.row)
+        self.expander.remove(self.publish.row)
+        self.speakers = {key: SpeakerControls(view.recording_id, key) for key in speakers}
+        for controls in self.speakers.values():
+            self.expander.add_row(controls.row)
+        self.expander.add_row(self.publish.row)
 
     def display(self, view: RowView) -> None:
         self.name.set_title(view.name)
@@ -177,6 +230,9 @@ class Details:
         self.delete.set_sensitive(not view.delete_disabled)
         self.delete.set_tooltip_text(view.delete_disabled or None)
         self.transcribe.display(view.transcribe)
+        self.list_speakers(view)
+        for speaker in view.speakers:
+            self.speakers[speaker.key].display(speaker.name, view.attendees)
         self.publish.display(view.publish)
 
     def stop_playing(self) -> None:
@@ -237,6 +293,14 @@ class HistoryWindow(Adw.ApplicationWindow):
         status = Gio.File.new_for_path(str(store.data_dir() / "status.json"))
         self.monitor = status.monitor_file(Gio.FileMonitorFlags.NONE, None)
         self.monitor.connect("changed", self.status_changed)
+        # What a speaker's menu does: an action each, told which recording and speaker.
+        for name, parameters, activated in (
+            ("name-speaker", "(sss)", self.speaker_picked),
+            ("type-speaker-name", "(ss)", self.type_speaker_name),
+        ):
+            action = Gio.SimpleAction.new(name, GLib.VariantType.new(parameters))
+            action.connect("activate", activated)
+            self.add_action(action)
         self.refresh()
 
     def status_changed(
@@ -276,10 +340,8 @@ class HistoryWindow(Adw.ApplicationWindow):
     def expanded(self, row: RecordingRow, _property: object) -> None:
         recording_id = row.view.recording_id
         if recording_id not in self.details:
-            details = self.details[recording_id] = Details(row.view, self)
-            for detail in details.rows():
-                row.add_row(detail)
-            details.display(row.view)
+            self.details[recording_id] = Details(row.view, row, self)
+            self.details[recording_id].display(row.view)
         if not row.get_expanded():
             self.details[recording_id].stop_playing()
 
@@ -295,30 +357,47 @@ class HistoryWindow(Adw.ApplicationWindow):
         if not error.matches(Gtk.dialog_error_quark(), Gtk.DialogError.DISMISSED):
             self.say(error.message)
 
-    def ask_name(self, heading: str, recording_id: str, named: Callable[[str, str], None]) -> None:
-        entry = Gtk.Entry(text=self.rows[recording_id].view.name, activates_default=True)
+    def ask_name(
+        self, heading: str, name: str, named: Callable[..., None], *arguments: object
+    ) -> None:
+        """Asks for a name, starting from the one there is, and hands it on after the arguments."""
+        entry = Gtk.Entry(text=name, activates_default=True)
         dialog = Adw.AlertDialog(
             heading=heading, extra_child=entry, default_response="save", close_response="cancel"
         )
         dialog.add_response("cancel", "Cancel")
         dialog.add_response("save", "Save")
         dialog.set_response_appearance("save", Adw.ResponseAppearance.SUGGESTED)
-        dialog.choose(self, None, self.name_chosen, entry, recording_id, named)
+        dialog.choose(self, None, self.name_chosen, entry, named, *arguments)
 
     def name_chosen(
         self,
         dialog: Adw.AlertDialog,
         result: Gio.AsyncResult,
         entry: Gtk.Entry,
-        recording_id: str,
-        named: Callable[[str, str], None],
+        named: Callable[..., None],
+        *arguments: object,
     ) -> None:
         name = window_view.clean_name(entry.get_text())
         if dialog.choose_finish(result) == "save" and name is not None:
-            named(recording_id, name)
+            named(*arguments, name)
 
     def edit_name(self, _button: Gtk.Button, recording_id: str) -> None:
-        self.ask_name("Name", recording_id, self.name_recording)
+        name = self.rows[recording_id].view.name
+        self.ask_name("Name", name, self.name_recording, recording_id)
+
+    def speaker_picked(self, _action: Gio.SimpleAction, picked: GLib.Variant) -> None:
+        self.name_speaker(*picked.unpack())
+
+    def type_speaker_name(self, _action: Gio.SimpleAction, asked: GLib.Variant) -> None:
+        recording_id, speaker = asked.unpack()
+        names = {shown.key: shown.name for shown in self.rows[recording_id].view.speakers}
+        self.ask_name(f"Name {speaker}", names[speaker], self.name_speaker, recording_id, speaker)
+
+    def name_speaker(self, recording_id: str, speaker: str, name: str) -> None:
+        # The transcript is written again with the name, for whatever is published next.
+        store.set_speaker_name(recording_id, speaker, name)
+        store.write_status()
 
     def name_recording(self, recording_id: str, name: str) -> None:
         store.set_typed_name(recording_id, name)
@@ -412,7 +491,7 @@ class HistoryWindow(Adw.ApplicationWindow):
         self.publish(recording_id, f"--page={self.shown(recording_id, PUBLISH).taken_by}")
 
     def rename_page(self, _button: Gtk.Button, recording_id: str) -> None:
-        self.ask_name("Rename", recording_id, self.publish_as)
+        self.ask_name("Rename", self.rows[recording_id].view.name, self.publish_as, recording_id)
 
     def publish_as(self, recording_id: str, name: str) -> None:
         # With "=": a name that starts with a dash is still the name, never another option.
