@@ -6,6 +6,7 @@ name: Validate
 #   - test         — pytest with branch coverage and the floor in pyproject.toml, on
 #                    the floor Python and the newest one, plus a leg on the lowest
 #                    versions pyproject.toml allows; on a PR, every changed line covered.
+#                    The history window's tests run it for real, on Ubuntu's GTK.
 #   - extension    — the GNOME Shell extension: ESLint, the TypeScript check, the gjs
 #                    unit tests and a headless GNOME Shell 46 smoke test, each the
 #                    command its `just ext` recipe runs.
@@ -76,8 +77,11 @@ jobs:
           # The floor (Ubuntu 24.04's system Python), with the lock.
           - python: '3.12'
             coverage-diff: true
-          # The newest Python, to see deprecations before Ubuntu ships it.
+          # The newest Python, to see deprecations before Ubuntu ships it. Ubuntu builds
+          # its PyGObject for its own Python alone, so the window's tests are skipped
+          # here, and the coverage floor, which counts the window, goes with them.
           - python: '3.14'
+            pytest-args: --cov-fail-under=0
           # The lowest versions pyproject.toml allows, so its floors stay true.
           - python: '3.12'
             resolution: lowest-direct
@@ -105,8 +109,19 @@ jobs:
       - name: Install
         run: uv sync
 
+      # The window's tests run it on Ubuntu's own PyGObject, GTK and libadwaita, on an Xvfb
+      # display and a session bus of their own (tests/conftest.py).
+      - name: Install GTK, libadwaita, PyGObject and Xvfb
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends \
+            -o Acquire::http::Timeout=30 -o Acquire::Retries=3 \
+            python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 xvfb dbus-daemon
+
       - name: pytest (coverage gate)
-        run: uv run pytest --cov-report=xml
+        env:
+          PYTEST_ARGS: ${{ matrix.pytest-args }}
+        run: uv run pytest --cov-report=xml ${PYTEST_ARGS:+"$PYTEST_ARGS"}
 
       # Every line a PR adds or changes is covered, whatever the project total.
       - name: Changed lines covered (diff-cover)

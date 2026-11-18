@@ -19,6 +19,8 @@ from minutas import store, worker
 START = datetime(2026, 11, 18, 13, 5, 42, tzinfo=UTC)
 FIRST = "2026-11-18T13-05-42"
 SRC = str(Path(minutas.__file__).parent.parent)
+TRANSCRIBER = "minutas.transcriber"
+KILL = ["systemctl", "--user", "kill", "--signal=SIGUSR1", "minutas-transcribe.service"]
 
 
 def start_command(data_home: Path, config_home: Path) -> list[str]:
@@ -50,16 +52,22 @@ def write_transcript(args: list[str], _: TextIO) -> int:
 
 class FakeSystem:
     """Stands in for subprocess.run: systemd-run answers from start_codes, one per call, then
-    keeps giving the last; the transcriber is the transcribe callable, given its stderr file."""
+    keeps giving the last; systemctl answers kill_code; the transcriber is the transcribe
+    callable, given its stderr file."""
 
     def __init__(self) -> None:
         self.calls: list[tuple[list[str], dict[str, object]]] = []
         self.start_codes = [0]
         self.start_stderr = ""
+        self.kill_code = 0
+        self.killed_inside_the_store_lock: list[bool] = []
         self.transcribe: Callable[[list[str], TextIO], int] = write_transcript
 
     def __call__(self, args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         self.calls.append((args, kwargs))
+        if args[0] == "systemctl":
+            self.killed_inside_the_store_lock.append(store_lock_held())
+            return subprocess.CompletedProcess(args, self.kill_code, "", "")
         if args[0] == "systemd-run":
             code = self.start_codes.pop(0) if len(self.start_codes) > 1 else self.start_codes[0]
             return subprocess.CompletedProcess(args, code, "", self.start_stderr)
@@ -71,7 +79,10 @@ class FakeSystem:
         return [args for args, _ in self.calls]
 
     def transcribed(self) -> list[str]:
-        return [Path(args[3]).name for args in self.commands() if args[0] != "systemd-run"]
+        return [Path(args[3]).name for args in self.commands() if args[1:3] == ["-m", TRANSCRIBER]]
+
+    def kills(self) -> list[list[str]]:
+        return [args for args in self.commands() if args[0] == "systemctl"]
 
 
 class FakeSpeechPython:
@@ -125,10 +136,11 @@ def fake_clock(monkeypatch: pytest.MonkeyPatch) -> FakeTime:
 
 @pytest.fixture
 def sigterm() -> Iterator[None]:
-    """work() installs its own SIGTERM handler; the test process gets its own back."""
-    handler = signal.getsignal(signal.SIGTERM)
+    """work() installs its own signal handlers; the test process gets its own back."""
+    handlers = {number: signal.getsignal(number) for number in (signal.SIGTERM, signal.SIGUSR1)}
     yield
-    signal.signal(signal.SIGTERM, handler)
+    for number, handler in handlers.items():
+        signal.signal(number, handler)
 
 
 @pytest.fixture
@@ -177,13 +189,21 @@ def transcribe_status(recording_id: str) -> tuple[object, object]:
     return entry["transcribe"], entry["failed"]
 
 
-def worker_lock_held() -> bool:
-    with (store.data_dir() / "worker.lock").open("a") as file:
+def lock_held(name: str) -> bool:
+    with (store.data_dir() / name).open("a") as file:
         try:
             fcntl.flock(file, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return True
     return False
+
+
+def worker_lock_held() -> bool:
+    return lock_held("worker.lock")
+
+
+def store_lock_held() -> bool:
+    return lock_held("store.lock")
 
 
 QUEUED = {
@@ -648,3 +668,105 @@ def test_the_worker_gives_up_its_lock_inside_the_store_lock(
 
     assert system.transcribed() == [recording_id]
     assert store_held_at_release == [True]
+
+
+@pytest.mark.usefixtures("speech", "sigterm")
+def test_cancel_takes_a_queued_run_out_of_the_queue(system: FakeSystem) -> None:
+    first, second = recording(), recording(START + timedelta(hours=1))
+    put_runs(first, [queued_run(START + timedelta(seconds=60))])
+    put_runs(second, [queued_run(START + timedelta(hours=2))])
+    store.write_status()
+
+    worker.cancel(first, 0)
+
+    assert store.load_runs(first) == [{**QUEUED, "status": "cancelled"}]
+    assert transcribe_status(first) == ("cancelled", [])
+    # Nothing is running for it: nothing is stopped.
+    assert system.kills() == []
+
+    worker.work()
+
+    assert system.transcribed() == [second]
+    assert store.load_runs(first) == [{**QUEUED, "status": "cancelled"}]
+
+
+@pytest.mark.usefixtures("speech", "sigterm")
+def test_cancel_stops_the_running_transcription_and_the_worker_goes_on(system: FakeSystem) -> None:
+    first, second = recording(), recording(START + timedelta(hours=1))
+    put_runs(first, [queued_run(START + timedelta(seconds=60))])
+    put_runs(second, [queued_run(START + timedelta(hours=2))])
+
+    def cancelled_midway(args: list[str], stderr: TextIO) -> int:
+        if Path(args[3]).name == second:
+            return write_transcript(args, stderr)
+        stderr.write("transcribing turn 3 of 40\n")
+        stderr.flush()
+        worker.cancel(first, 0)
+        # What the signal does to the transcriber.
+        return -signal.SIGUSR1
+
+    system.transcribe = cancelled_midway
+
+    worker.work()
+
+    assert system.kills() == [KILL]
+    # Sent inside the store lock, where the worker cannot have moved on to another run.
+    assert system.killed_inside_the_store_lock == [True]
+    # Cancelled, with what the transcriber had written; not failed as killed, nor interrupted.
+    assert store.load_runs(first) == [{**QUEUED, "status": "cancelled", "details": "run-0.log"}]
+    assert transcribe_status(first) == ("cancelled", [])
+    assert system.transcribed() == [first, second]
+    assert [run["status"] for run in store.load_runs(second)] == ["succeeded"]
+
+
+@pytest.mark.usefixtures("speech", "sigterm")
+def test_the_worker_outlives_the_signal_that_stops_its_transcriber(system: FakeSystem) -> None:
+    recording_id = recording()
+    put_runs(recording_id, [queued_run(START)])
+    handled: list[bool] = []
+
+    def signalled(args: list[str], stderr: TextIO) -> int:
+        # A handler, which the transcriber does not inherit: an ignored signal it would.
+        handled.append(callable(signal.getsignal(signal.SIGUSR1)))
+        if handled == [True]:
+            os.kill(os.getpid(), signal.SIGUSR1)
+        return write_transcript(args, stderr)
+
+    system.transcribe = signalled
+
+    worker.work()
+
+    assert handled == [True]
+    # No cancel was recorded, so the run's own outcome stands.
+    assert [run["status"] for run in store.load_runs(recording_id)] == ["succeeded"]
+
+
+@pytest.mark.usefixtures("speech", "sigterm")
+def test_a_run_cancelled_after_its_worker_died_stays_cancelled(system: FakeSystem) -> None:
+    recording_id = recording()
+    put_runs(recording_id, [cast("store.Run", {**QUEUED, "status": "running"})])
+    # No unit is left to signal.
+    system.kill_code = 1
+
+    worker.cancel(recording_id, 0)
+
+    assert system.kills() == [KILL]
+    assert store.load_runs(recording_id) == [{**QUEUED, "status": "cancelled"}]
+
+    worker.work()
+
+    # The next worker fails what was left running as interrupted; this was cancelled.
+    assert store.load_runs(recording_id) == [{**QUEUED, "status": "cancelled"}]
+    assert transcribe_status(recording_id) == ("cancelled", [])
+
+
+@pytest.mark.parametrize("status", ["succeeded", "failed", "cancelled"])
+def test_cancel_leaves_a_run_that_has_ended(system: FakeSystem, status: str) -> None:
+    recording_id = recording()
+    ended = cast("store.Run", {**QUEUED, "status": status, "output": "transcript.md"})
+    put_runs(recording_id, [ended])
+
+    worker.cancel(recording_id, 0)
+
+    assert store.load_runs(recording_id) == [ended]
+    assert system.kills() == []

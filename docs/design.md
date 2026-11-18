@@ -139,7 +139,7 @@ The extension holds no state of its own: it runs three commands and watches one 
 | --- | --- |
 | `minutas record start` | Starts the recorder unit, waits until both tracks receive audio, and prints `{"id": …, "started_at": …}`; exits 1 with the reason on stderr when already recording or no audio arrives |
 | `minutas record stop` | Stops the recorder; exits 1 when nothing is recording |
-| `minutas history [--recording <id>]` | Opens the history window; until it exists, the recordings folder or that recording's folder |
+| `minutas history [--recording <id>]` | Opens the history window, on that recording when one is given; with the window already open, brings it forward and shows that recording |
 
 The program rewrites `DATA/status.json` atomically after every change, and the extension reads it with a file monitor:
 

@@ -71,6 +71,7 @@ Strict settings are project-wide; do not weaken them.
 
 - ruff: `select = ["ALL"]`; the ignore list in `pyproject.toml` is the deliberate exceptions, each with its reason. Prefer fixing over `# noqa`; a `# noqa` names the rule and says why.
 - ty: every rule is an error (`[tool.ty.rules] all = "error"`) over `src` and `tests`; ruff's `ANN` rules require the annotations ty checks. A suppression is `# ty: ignore[<rule>]`, only at an untyped third-party boundary.
+- GTK: ty reads GTK 4 and libadwaita from `pygobject-stubs`. PyGObject itself is never installed from PyPI (`[tool.uv] exclude-dependencies`): the window runs on Ubuntu's `python3-gi`, so its tests do too.
 - import-linter (`[tool.importlinter]` in `pyproject.toml`): the module layers; a new module takes its place in the contract in the same PR. deptry: every import is a declared dependency and every runtime dependency is imported.
 - Python: 3.12 is the floor (Ubuntu 24.04's system Python, which the GTK window will run under).
 - Extension: ESLint's recommended rules plus `eqeqeq` and `prefer-const` (`extension/eslint.config.js`). TypeScript `checkJs`, strict, against `@girs/gjs` (`extension/tsconfig.json`), over the Shell-free `status.js` and its test; `extension.js` is left to ESLint and the smoke test, because under strict every field `enable()` sets and `disable()` nulls is "possibly null" everywhere else. A suppression is `// @ts-expect-error: <why>`.
@@ -84,6 +85,7 @@ Strict settings are project-wide; do not weaken them.
 - The suite runs in random order (pytest-randomly), with a timeout per test, with beartype checking every annotation in the package at run time, and with warnings as errors; child Pythons run in development mode (`conftest.py`). A test that only passes in one order or one timing is a bug.
 - Mutation testing (`just mutate`, weekly in `.github/workflows/mutation.yml`) reports surviving mutants; a survivor in code you touched gets a test.
 - No sleeps; no network; no real microphone, calendar, Agaric or GitLab in unit tests. Fakes sit at the module boundary the design names (recorder, calendar lookup, summarizer, publisher).
+- The history window's rules live in `window_view.py`, which has no GTK and is tested like any pure logic. `test_window.py` runs the real window and presses its buttons by their labels, on an Xvfb display and a session bus that `conftest.py` starts before any test is imported, because PyGObject opens the display when Gtk is imported: no test window reaches the desktop. Its fakes are the commands the window runs and what GTK would hand the desktop (a file or link to open, the save dialog, playback). The tests are skipped on a Python other than Ubuntu's, which its PyGObject is not built for.
 
 ### Acceptance is falsification
 
@@ -93,7 +95,7 @@ A test that cannot fail covers nothing. Before calling a test done, break the co
 
 - **Pre-commit:** `prek.toml` is the list. Formatters and fixers rewrite files and abort the commit once; re-stage and commit again.
 - **Pre-push:** the full test suite with the coverage floor, `pip-audit`, and no direct push to `main`.
-- **CI:** `.github/workflows/_validate.yml` runs every hook in both stages plus zizmor's online audits and a link check (`lint`), the suite on Python 3.12, the newest Python and the lowest allowed dependency versions with diff coverage on PRs (`test`), the extension's ESLint, type check, gjs unit tests and headless GNOME Shell 46 smoke test (`extension`), and the aggregate `validate-all`. The required contexts on `main` are `dco` and `validate / validate-all`.
+- **CI:** `.github/workflows/_validate.yml` runs every hook in both stages plus zizmor's online audits and a link check (`lint`), the suite on Python 3.12, the newest Python (without the window's tests) and the lowest allowed dependency versions with diff coverage on PRs (`test`), the extension's ESLint, type check, gjs unit tests and headless GNOME Shell 46 smoke test (`extension`), and the aggregate `validate-all`. The required contexts on `main` are `dco` and `validate / validate-all`.
 - **Claude Code Review:** `claude-code-review.yml` reviews every non-draft PR that changes more than Markdown, and approves or requests changes. It is advisory: nothing requires it. A push does not re-run it; adding the `re-review` label does.
 - **Commits:** Conventional Commits subjects and a DCO `Signed-off-by:` on every commit; the hooks enforce both locally, CI on the PR.
 

@@ -25,6 +25,7 @@ constraints = [
     { name = "torchaudio", specifier = ">=2.11.1", index = "https://download.pytorch.org/whl/cpu" },
     { name = "torchcodec", specifier = ">=0.17.0", index = "https://download.pytorch.org/whl/cpu" },
 ]
+excludes = ["pygobject"]
 
 [[package]]
 name = "absl-py"
@@ -2737,6 +2738,7 @@ dev = [
     { name = "mutmut" },
     { name = "pip-audit" },
     { name = "prek" },
+    { name = "pygobject-stubs" },
     { name = "pytest" },
     { name = "pytest-beartype" },
     { name = "pytest-cov" },
@@ -2777,6 +2779,7 @@ dev = [
     { name = "mutmut", specifier = ">=3.8.1" },
     { name = "pip-audit", specifier = ">=2.10.1" },
     { name = "prek", specifier = ">=0.5.11" },
+    { name = "pygobject-stubs", specifier = ">=2.20.0" },
     { name = "pytest", specifier = ">=9.2.0" },
     { name = "pytest-beartype", specifier = ">=0.3.0" },
     { name = "pytest-cov", specifier = ">=7.1.0" },
@@ -4322,6 +4325,15 @@ sdist = { url = "https://files.pythonhosted.org/packages/49/2e/ced460408999b33da
 wheels = [
     { url = "https://files.pythonhosted.org/packages/71/46/17f022dd3e953bf20a04a028a21ec746d942f8d2af30fa0f124fa0e6a684/pygments-2.21.0-py3-none-any.whl", hash = "sha256:2363c69b61c4a97c838da3b130dcd6468f4848992b21a82f2a63ec34377137d9", size = 1250147, upload-time = "2026-08-17T08:02:44.912Z" },
 ]
+
+[[package]]
+name = "pygobject-stubs"
+version = "2.20.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/5b/13/20718103f5e697c5b6b4d91fd32f0a4e3f4f6e3c4990ffe4d5c3bf5ec598/pygobject_stubs-2.20.0.tar.gz", hash = "sha256:fd61ebf27a893e3b162e0dfb84d80de92ef33f8fdf144298e178239934bce8df", size = 1081385, upload-time = "2026-10-19T18:38:19.621Z" }
 
 [[package]]
 name = "pyparsing"

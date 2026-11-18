@@ -1,6 +1,7 @@
 import fcntl
 import json
 import os
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
@@ -54,8 +55,100 @@ def test_create_recording_writes_metadata_and_empty_run_log() -> None:
         "stopped_at": None,
         "incomplete": False,
         "name": "Meeting",
+        "name_source": "default",
     }
     assert json.loads((folder / "runs.json").read_text()) == []
+
+
+def test_a_recording_made_before_names_had_a_source_holds_the_default_name() -> None:
+    store.create_recording(START)
+    path = store.recording_dir("2026-11-18T13-05-42") / "recording.json"
+    before = json.loads(path.read_text())
+    del before["name_source"]
+    path.write_text(json.dumps(before))
+
+    assert store.load_recording("2026-11-18T13-05-42") == {**before, "name_source": "default"}
+
+
+def test_set_typed_name_keeps_the_name_and_says_it_was_typed() -> None:
+    recording_id = make_stopped(START, seconds=90)
+
+    store.set_typed_name(recording_id, "Weekly sync")
+
+    assert store.load_recording(recording_id) == {
+        "id": "2026-11-18T13-05-42",
+        "started_at": "2026-11-18T13:05:42+00:00",
+        "stopped_at": "2026-11-18T13:07:12+00:00",
+        "incomplete": False,
+        "name": "Weekly sync",
+        "name_source": "typed",
+    }
+
+
+def test_set_typed_name_fails_for_a_recording_that_is_gone() -> None:
+    with pytest.raises(FileNotFoundError):
+        store.set_typed_name("2026-11-18T13-05-42", "Weekly sync")
+
+    assert not store.recordings_dir().exists()
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda: store.set_typed_name("2026-11-18T13-05-42", "Weekly sync"),
+        lambda: store.mark_stopped("2026-11-18T13-05-42", START, incomplete=False),
+    ],
+)
+def test_a_recording_is_read_and_rewritten_inside_the_store_lock(
+    change: Callable[[], None], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store.create_recording(START)
+    held: list[bool] = []
+    load_recording, write_json = store.load_recording, store.write_json
+
+    def spy_load(recording_id: str) -> store.Recording:
+        held.append(store_lock_held())
+        return load_recording(recording_id)
+
+    def spy_write(path: Path, value: object) -> None:
+        held.append(store_lock_held())
+        write_json(path, value)
+
+    monkeypatch.setattr(store, "load_recording", spy_load)
+    monkeypatch.setattr(store, "write_json", spy_write)
+
+    change()
+
+    assert held == [True, True]
+
+
+def test_delete_tracks_removes_the_audio_and_keeps_everything_else() -> None:
+    recording_id = make_stopped(START)
+    folder = store.recording_dir(recording_id)
+    for name in [*store.TRACKS, "transcript.md", "run-0.log"]:
+        (folder / name).write_bytes(b"OggS")
+
+    store.delete_tracks(recording_id)
+
+    assert sorted(path.name for path in folder.iterdir()) == [
+        "recording.json",
+        "run-0.log",
+        "runs.json",
+        "transcript.md",
+    ]
+    assert store.holds_audio(recording_id) is False
+
+
+def test_delete_tracks_removes_the_one_track_that_is_left() -> None:
+    recording_id = make_stopped(START)
+    (store.recording_dir(recording_id) / "call.opus").write_bytes(b"OggS")
+
+    store.delete_tracks(recording_id)
+
+    assert sorted(path.name for path in store.recording_dir(recording_id).iterdir()) == [
+        "recording.json",
+        "runs.json",
+    ]
 
 
 def test_create_recording_never_overwrites_an_existing_one() -> None:

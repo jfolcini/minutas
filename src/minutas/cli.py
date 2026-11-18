@@ -3,7 +3,6 @@
 import argparse
 import json
 import os
-import subprocess
 import sys
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
@@ -93,14 +92,12 @@ def work(_: argparse.Namespace) -> int:
 
 
 def history(args: argparse.Namespace) -> int:
-    folder = store.recordings_dir()
-    if args.recording is not None:
-        if not store.is_recording(args.recording):
-            return fail(f"No recording {args.recording}.")
-        folder = store.recording_dir(args.recording)
-    folder.mkdir(parents=True, exist_ok=True)
-    # gio is GLib's own tool, found on PATH like every desktop command; no shell is involved.
-    return subprocess.run(["gio", "open", str(folder)], check=False).returncode  # noqa: S603, S607
+    if args.recording is not None and not store.is_recording(args.recording):
+        return fail(f"No recording {args.recording}.")
+    # Here, not at the top: only the window needs GTK, which the other commands never load.
+    from minutas.window import run  # noqa: PLC0415
+
+    return run(args.recording)
 
 
 def publish_agaric(args: argparse.Namespace) -> int:
@@ -164,7 +161,7 @@ def build_parser() -> argparse.ArgumentParser:
         "worker", help="transcribe the queued recordings (the transcription unit runs this)"
     ).set_defaults(handler=work)
 
-    history_command = commands.add_parser("history", help="open the recordings")
+    history_command = commands.add_parser("history", help="open the history window")
     history_command.add_argument("--recording", metavar="ID", help="open this recording")
     history_command.set_defaults(handler=history)
 

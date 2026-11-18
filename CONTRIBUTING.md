@@ -18,6 +18,8 @@ uv run just ext setup   # the extension's ESLint and TypeScript, from extension/
 
 The extension's tools need Node and npm; its tests need GNOME Shell and gjs (`sudo apt install gnome-shell gjs` on Ubuntu 24.04).
 
+The test suite runs the history window for real, on Ubuntu's own PyGObject, GTK and libadwaita and on a display and session bus of its own, never your desktop's: `sudo apt install python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 xvfb dbus-daemon`.
+
 ### The `just` task runner
 
 `uv sync` installs [`just`](https://just.systems/) into the virtualenv with the rest of the toolchain; run `uv run just --list` (or `just --list` with the venv active) for the recipes in the [`justfile`](justfile). Each recipe is a few `uv run` lines you can also type yourself.

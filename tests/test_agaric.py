@@ -704,6 +704,41 @@ def test_a_crashed_run_without_a_log_has_no_details(system: FakeSystem) -> None:
     assert runs(recording_id)[0]["details"] is None
 
 
+def test_fail_left_running_fails_the_publish_a_dead_publisher_left_running() -> None:
+    recording_id = recording()
+    (store.recording_dir(recording_id) / "run-1.log").write_text("$ agaric-mcp call …\n")
+    published = succeeded_run()
+    stale = {**published, "status": "running", "details": None, "output": None}
+    del stale["title"]
+    transcribing = {**stale, "action": "transcribe"}
+    put_runs(recording_id, [published, stale, transcribing])
+    store.write_status()
+
+    agaric.fail_left_running(recording_id, "Publish to Agaric stopped: RuntimeError: boom")
+
+    assert runs(recording_id) == [
+        published,
+        {
+            **stale,
+            "status": "failed",
+            "error": "Publish to Agaric stopped: RuntimeError: boom",
+            "details": "run-1.log",
+        },
+        transcribing,
+    ]
+    assert failed_in_status(recording_id) == ["publish_agaric"]
+
+
+def test_fail_left_running_leaves_a_log_with_no_running_publish() -> None:
+    recording_id = recording()
+    put_runs(recording_id, [succeeded_run()])
+
+    agaric.fail_left_running(recording_id, "Publish to Agaric stopped without saying why")
+
+    assert runs(recording_id) == [succeeded_run()]
+    assert failed_in_status(recording_id) == []
+
+
 @pytest.mark.usefixtures("configured")
 def test_sigterm_fails_the_run_as_interrupted_and_removes_the_files(system: FakeSystem) -> None:
     recording_id = recording()
