@@ -1,0 +1,99 @@
+[project]
+name = "minutas"
+version = "0.0.0"
+description = "Records work meetings on GNOME, transcribes them and publishes them to Agaric and GitLab."
+readme = "README.md"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
+requires-python = ">=3.12"
+dependencies = []
+
+[project.scripts]
+minutas = "minutas.cli:main"
+
+[project.urls]
+Repository = "https://github.com/jfolcini/minutas"
+Issues = "https://github.com/jfolcini/minutas/issues"
+
+[dependency-groups]
+# Every lint, format, test and hook tool, pinned by uv.lock. prek runs them
+# with `uv run`, so `uv sync` is the whole toolchain install.
+dev = [
+    "actionlint-py>=1.7.12.25",
+    "conventional-pre-commit>=4.5.0",
+    "pip-audit>=2.10.1",
+    "prek>=0.5.11",
+    "pytest>=9.2.0",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.17.5",
+    "rumdl>=0.3.4",
+    "shellcheck-py>=0.11.0.1",
+    "shfmt-py>=4.2.0",
+    "ty>=0.0.105",
+    "typos>=1.52.2",
+    "zizmor>=1.32.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.11.32,<0.12"]
+build-backend = "uv_build"
+
+[tool.uv]
+required-version = ">=0.11.32"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+# Every rule on; the ignores below are the deliberate exceptions.
+select = ["ALL"]
+ignore = [
+    "COM812", # conflicts with the formatter
+    "CPY",    # no per-file copyright headers; LICENSE covers the tree
+    "D",      # names do the explaining; docstrings where they say why
+    "ISC001", # conflicts with the formatter
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = [
+    "INP001",  # tests are not a package (pytest --import-mode=importlib)
+    "PLR2004", # literal expected values are the point of a test
+    "S101",    # pytest asserts
+]
+
+[tool.ruff.format]
+docstring-code-format = true
+
+[tool.ty.src]
+include = ["src", "tests"]
+
+[tool.ty.rules]
+# Every rule, the ones off by default included, is an error. ty checks types;
+# ruff's ANN rules require the annotations it checks.
+all = "error"
+
+[tool.pytest.ini_options]
+minversion = "9.0"
+testpaths = ["tests"]
+addopts = [
+    "--strict-config",
+    "--strict-markers",
+    "--import-mode=importlib",
+    "--cov",
+    "--cov-report=term-missing:skip-covered",
+]
+xfail_strict = true
+filterwarnings = ["error"]
+
+[tool.coverage.run]
+branch = true
+source = ["minutas"]
+# Measures `python -m minutas` and other child Pythons the tests start.
+patch = ["subprocess"]
+
+[tool.coverage.report]
+fail_under = 90
+show_missing = true
+skip_covered = true
+exclude_also = ["if TYPE_CHECKING:", "raise NotImplementedError"]

@@ -1,0 +1,38 @@
+name: Feature request
+description: Suggest a new capability or improvement.
+title: 'feat: '
+labels: ['feature', 'triage']
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing, please skim [docs/design.md](https://github.com/jfolcini/minutas/blob/main/docs/design.md): its Decisions table is settled, and its Milestones say what comes when.
+
+  - type: checkboxes
+    id: prereqs
+    attributes:
+      label: Before you file
+      options:
+        - label: I searched [open and closed issues](https://github.com/jfolcini/minutas/issues?q=is%3Aissue) and could not find a duplicate.
+          required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do today, and where do you get stuck?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: The smallest change that fixes the problem. If it changes a decision in the design, say which and why.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered

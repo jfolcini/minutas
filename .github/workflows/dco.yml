@@ -1,0 +1,84 @@
+# Every commit in a pull request carries a `Signed-off-by:` trailer whose email
+# matches the commit author's: the Developer Certificate of Origin
+# (CONTRIBUTING.md § Developer Certificate of Origin).
+name: DCO
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  dco:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - name: Verify Signed-off-by on every PR commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! commits_raw=$(
+            gh api -X GET \
+              "repos/${REPO}/pulls/${PR_NUMBER}/commits" \
+              --paginate \
+              --jq '.[] | {sha, msg: .commit.message, name: .commit.author.name, email: .commit.author.email} | @base64'
+          ); then
+            echo "::error::gh api repos/${REPO}/pulls/${PR_NUMBER}/commits failed — cannot verify DCO sign-offs."
+            exit 1
+          fi
+          if [ -z "$commits_raw" ]; then
+            echo "::error::gh api returned zero commits for PR #${PR_NUMBER}; refusing to report success."
+            exit 1
+          fi
+          mapfile -t commits <<< "$commits_raw"
+          fail=0
+          {
+            echo "## DCO sign-off check"
+            echo
+            echo "| Commit | Author | Status |"
+            echo "| --- | --- | --- |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          for c in "${commits[@]}"; do
+            json=$(printf '%s' "$c" | base64 -d)
+            sha=$(printf '%s' "$json" | jq -r .sha)
+            msg=$(printf '%s' "$json" | jq -r .msg)
+            name=$(printf '%s' "$json" | jq -r .name)
+            email=$(printf '%s' "$json" | jq -r .email)
+            label="\`${sha:0:8}\` $(printf '%s' "$msg" | head -1 | cut -c1-60)"
+            # Dependabot authors as <id>+dependabot[bot]@users.noreply.github.com
+            # but signs off as support@github.com.
+            if [ "$name" = "dependabot[bot]" ] \
+               && printf '%s' "$email" | grep -qE '^[0-9]+\+dependabot\[bot\]@users\.noreply\.github\.com$'; then
+              expected_email="support@github.com"
+            else
+              expected_email="$email"
+            fi
+            if printf '%s' "$msg" | grep -iE "^[[:space:]]*signed-off-by:[[:space:]]" | grep -qiF "<${expected_email}>"; then
+              echo "| ${label} | ${name} <${email}> | ✓ signed off |" >> "$GITHUB_STEP_SUMMARY"
+            elif printf '%s' "$msg" | grep -qiE "^[[:space:]]*signed-off-by:[[:space:]]"; then
+              echo "::error::${sha}: Signed-off-by present but its email does not match the author ${email}. Re-sign with \`git commit --amend -s --no-edit\` (or \`git rebase --signoff <base>\` for older commits) and force-push."
+              echo "| ${label} | ${name} <${email}> | ✗ email mismatch on Signed-off-by |" >> "$GITHUB_STEP_SUMMARY"
+              fail=1
+            else
+              echo "::error::${sha}: missing Signed-off-by. Run \`git commit --amend -s --no-edit\` (or \`git rebase --signoff <base>\` for older commits) and force-push."
+              echo "| ${label} | ${name} <${email}> | ✗ missing sign-off |" >> "$GITHUB_STEP_SUMMARY"
+              fail=1
+            fi
+          done
+          if [ "$fail" -ne 0 ]; then
+            {
+              echo
+              echo "**One or more commits are missing a valid \`Signed-off-by\` trailer.**"
+              echo
+              echo "See [CONTRIBUTING.md § Developer Certificate of Origin](https://github.com/${REPO}/blob/main/CONTRIBUTING.md#developer-certificate-of-origin-dco) for the fix."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "All ${#commits[@]} commit(s) carry a valid Signed-off-by trailer."

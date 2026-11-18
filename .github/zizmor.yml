@@ -1,0 +1,6 @@
+rules:
+  # Composite and reusable workflows in this repository are referenced by
+  # local path (`./.github/workflows/_validate.yml`), which zizmor would
+  # otherwise flag as unpinned.
+  self-repository:
+    disable: true
