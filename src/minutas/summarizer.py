@@ -152,6 +152,10 @@ def ask_devin(prompt: str, log: Path) -> tuple[str | None, str]:
         Path(work, "home").mkdir()
         command = [DEVIN, "-p", "--prompt-file", str(prompt_file), "--config", str(config)]
         command += DEVIN_FLAGS
+        # The person's own Devin config, where they would choose its model, is out of reach.
+        model = settings.summary_model()
+        if model is not None:
+            command += ["--model", model]
         with log.open("w") as out:
             out.write(f"$ {shlex.join(command)}\n")
             try:
