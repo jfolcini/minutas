@@ -646,6 +646,21 @@ def test_an_older_glab_says_to_install_a_newer_one(
     assert system.commands == [[str(glab_on_path), "--version"]]
 
 
+def test_a_snap_glab_says_to_install_the_deb_instead(
+    system: FakeSystem, glab_on_path: Path
+) -> None:
+    # What /snap/bin/glab is: a link to snap, which runs glab confined to the visible home.
+    snap = glab_on_path.with_name("snap")
+    glab_on_path.rename(snap)
+    glab_on_path.symlink_to(snap)
+    system.version = "glab 1.91.0 (e60b4a84)\n"
+
+    assert gitlab.glab_problem() == (
+        f"The glab at {glab_on_path} is the snap, which can't read the recordings: {INSTALL}"
+    )
+    assert system.commands == []
+
+
 def test_without_glab_it_says_how_to_install_it(
     system: FakeSystem, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

@@ -104,6 +104,7 @@ def test_start_launches_one_pipeline_for_both_tracks_in_a_user_unit(
             "--property=MemorySwapMax=0",
             "--property=ExecStopPost=/venv/bin/python -m minutas record stopped",
             f"--setenv=XDG_DATA_HOME={xdg_dirs / 'data'}",
+            f"--setenv=XDG_CONFIG_HOME={xdg_dirs / 'config'}",
             f"--working-directory={folder}",
             "--",
             "gst-launch-1.0",
@@ -155,10 +156,11 @@ def test_start_quotes_the_exit_command_for_systemd(
     assert "--property=ExecStopPost='/home/me/my venv/python' -m minutas" in fake_run.calls[0][0]
 
 
-def test_start_passes_no_data_home_when_unset(
+def test_start_passes_neither_folder_when_unset(
     fake_run: FakeRun, monkeypatch: pytest.MonkeyPatch, folder: Path, fake_clock: FakeClock
 ) -> None:
     monkeypatch.delenv("XDG_DATA_HOME")
+    monkeypatch.delenv("XDG_CONFIG_HOME")
     fill_tracks(folder)
 
     start(folder, fake_clock)

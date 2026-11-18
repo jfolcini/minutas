@@ -107,6 +107,20 @@ def test_glab_older_or_missing_says_where_to_get_it(
     )
 
 
+def test_glab_snap_says_to_install_the_deb_instead(sandbox: Sandbox) -> None:
+    # What /snap/bin/glab is: a link to snap, which runs glab confined to the visible home.
+    sandbox.fake("snap", 'echo "glab 1.91.0 (2026-10-02)"')
+    (sandbox.fakes / "glab").symlink_to(sandbox.fakes / "snap")
+
+    result = sandbox.run("step_glab")
+
+    assert result.stdout == (
+        "glab: the PATH has the glab snap, which can't read the recordings; Publish to GitLab "
+        "stays off until glab 1.91 or newer is installed from GitLab's own .deb: "
+        "https://gitlab.com/gitlab-org/cli/-/releases\n"
+    )
+
+
 # --- App ---------------------------------------------------------------------------------------
 
 

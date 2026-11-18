@@ -219,7 +219,10 @@ step_agaric_mcp() {
 # home, such as ~/.local/share/minutas, so it couldn't upload the recordings.
 step_glab() {
   local found="glab isn't on the PATH"
-  if [[ $(glab --version 2>/dev/null) =~ ([0-9]+)\.([0-9]+)(\.[0-9]+)? ]]; then
+  # /snap/bin/glab links to snap.
+  if [[ $(readlink -f "$(command -v glab)") == */snap ]]; then
+    found="the PATH has the glab snap, which can't read the recordings"
+  elif [[ $(glab --version 2>/dev/null) =~ ([0-9]+)\.([0-9]+)(\.[0-9]+)? ]]; then
     if ((BASH_REMATCH[1] > 1 || (BASH_REMATCH[1] == 1 && BASH_REMATCH[2] >= 91))); then
       report glab ok
       return

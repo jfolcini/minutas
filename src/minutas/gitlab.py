@@ -99,6 +99,9 @@ def glab_problem() -> str:
     path = shutil.which(GLAB)
     if path is None:
         return GLAB_MISSING
+    # /snap/bin/glab links to snap, which runs glab confined to the home's visible files.
+    if Path(path).resolve().name == "snap":
+        return f"The glab at {path} is the snap, which can't read the recordings: {INSTALL}"
     # The path just found, never a shell string.
     said = subprocess.run(  # noqa: S603
         [path, "--version"], capture_output=True, text=True, check=False

@@ -73,11 +73,6 @@ def repair(_: argparse.Namespace) -> int:
     return 0
 
 
-def installed_clone() -> Path:
-    # install.sh links the clone it ran from here.
-    return Path.home() / ".local" / "share" / "minutas" / "app" / "repository"
-
-
 def git(clone: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(  # noqa: S603 - this module's own argument list
         ["git", "-C", str(clone), *args],  # noqa: S607 - git from the PATH, like any command
@@ -88,7 +83,8 @@ def git(clone: Path, *args: str) -> subprocess.CompletedProcess[str]:
 
 
 def update(_: argparse.Namespace) -> int:
-    clone = installed_clone()
+    # install.sh links the clone it ran from here.
+    clone = Path.home() / ".local" / "share" / "minutas" / "app" / "repository"
     if not (clone / "install.sh").is_file():
         return fail(f"No clone of Minutas at {clone}: run install.sh from your clone first.")
     fetched = git(clone, "fetch", "--quiet", "--tags")
