@@ -131,6 +131,7 @@ expect "$MENU" '["Stop",'
 expect_log "record start"
 expect "$PANEL" '{"recordingStyle":true,"timerVisible":true}'
 expect "$NOTES" "Tell participants you're recording"
+expect "Main.messageTray.getSources().filter(s => s.title === 'Minutas').flatMap(s => s.notifications).find(n => n.title.startsWith('Tell')).urgency" "'3'" # CRITICAL
 first_tick=$(ev "$TIMER")
 sleep 2
 check "timer advances from $first_tick" test "$(ev "$TIMER")" != "$first_tick"

@@ -146,7 +146,10 @@ export default class MinutasExtension extends Extension {
             this._run(['record', 'stop'], "Couldn't stop recording");
         } else {
             this._run(['record', 'start'], "Couldn't start recording",
-                () => this._notify("Tell participants you're recording", null, null));
+                // CRITICAL shows through Do Not Disturb, which is often on in exactly the
+                // meetings this reminder is for; it stays up until dismissed.
+                () => this._notify("Tell participants you're recording", null, null,
+                    MessageTray.Urgency.CRITICAL));
         }
     }
 
@@ -185,7 +188,7 @@ export default class MinutasExtension extends Extension {
         });
     }
 
-    _notify(title, body, recordingId) {
+    _notify(title, body, recordingId, urgency = MessageTray.Urgency.NORMAL) {
         if (!this._source) {
             this._source = new MessageTray.Source({title: this.metadata.name, iconName: ICON});
             // The tray destroys a source once its last notification is gone.
@@ -194,7 +197,7 @@ export default class MinutasExtension extends Extension {
             });
             Main.messageTray.add(this._source);
         }
-        const notification = new MessageTray.Notification({source: this._source, title, body});
+        const notification = new MessageTray.Notification({source: this._source, title, body, urgency});
         if (recordingId)
             notification.connect('activated', () => this._openHistory(recordingId));
         this._source.addNotification(notification);
