@@ -121,8 +121,9 @@ merge-ready PR:
     gh pr view {{ PR }} --json headRefOid,baseRefName,mergeable,mergeStateStatus,isDraft \
         --jq '"head \(.headRefOid[:8])  base \(.baseRefName)  mergeable \(.mergeable)  state \(.mergeStateStatus)  draft \(.isDraft)"'
     gh pr checks {{ PR }} --required
-    git fetch -q origin main
-    base_sha=$(gh pr view {{ PR }} --json baseRefOid --jq .baseRefOid)
+    head_sha=$(gh pr view {{ PR }} --json headRefOid --jq .headRefOid)
+    git fetch -q origin main "pull/{{ PR }}/head"
+    base_sha=$(git merge-base origin/main "$head_sha")
     moved=$(comm -12 <(gh pr diff {{ PR }} --name-only | sort) <(git diff --name-only "$base_sha" origin/main | sort))
     if [ -n "$moved" ]; then
         echo "These files of the PR changed on main since its base; merge main in and let CI re-run:"
