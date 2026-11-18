@@ -269,7 +269,7 @@ def test_record_stop_closes_a_recording_whose_recorder_died() -> None:
 
 @pytest.mark.parametrize(
     ("service_result", "incomplete"),
-    [("success", False), ("signal", True), ("exit-code", True), (None, True)],
+    [("success", False), ("signal", True), ("exit-code", True), ("oom-kill", True), (None, True)],
 )
 def test_record_stopped_marks_the_recording_by_how_the_recorder_ended(
     monkeypatch: pytest.MonkeyPatch, service_result: str | None, *, incomplete: bool

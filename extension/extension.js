@@ -66,6 +66,13 @@ export default class MinutasExtension extends Extension {
         this._monitor.cancel();
         this._stopTimer();
         this._source?.destroy();
+        // The Shell ties handlers between the panel, the menu and the section to owners without a
+        // destroy signal, so destroy() leaves them connected, and they would keep every disabled
+        // indicator alive.
+        const menu = this._button.menu;
+        menu.disconnectObject(Main.panel);
+        menu.disconnectObject(this._recentSection);
+        this._recentSection.disconnectObject(menu);
         this._button.destroy();
         this._cancellable = null;
         this._monitor = null;

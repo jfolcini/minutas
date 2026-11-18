@@ -17,12 +17,15 @@ if [ -z "${MINUTAS_SMOKE_WORK:-}" ]; then
   mkdir -p "$WORK"/{home,config,data,cache,state,bin}
   # A Wayland socket path must fit in 108 bytes, so the runtime dir gets a short path.
   RUNTIME=$(mktemp -d /tmp/minutas-smoke.XXXXXX)
-  # Services the session bus starts (the document portal) mount FUSE file systems in it.
-  remove_runtime() {
+  # What the session starts can outlive dbus-run-session: orphaned ibus-daemons, which gnome-shell
+  # spawns, grew until they swapped the desktop to death. Each carries the session's environment.
+  # Services the session bus starts (the document portal) mount FUSE file systems in RUNTIME.
+  end_session() {
+    grep -lzxF "MINUTAS_SMOKE_WORK=$WORK" /proc/[0-9]*/environ 2>/dev/null | cut -d/ -f3 | xargs -r kill -KILL 2>/dev/null
     for mount in "$RUNTIME"/*/; do fusermount -uzq "$mount" 2>/dev/null; done
     rm -rf "$RUNTIME"
   }
-  trap remove_runtime EXIT
+  trap end_session EXIT
   mkdir -p "$WORK/data/gnome-shell/extensions/smoke-unsafe@minutas.test"
   # The sources only: node_modules holds the dev tools.
   mkdir -p "$WORK/data/gnome-shell/extensions/$UUID"
@@ -201,6 +204,98 @@ write_status "{\"version\":1,\"recording\":null,\"recent\":[$(recent "$id2" Stan
 gnome-extensions enable "$UUID"
 expect "$MENU" '["Record","---","Standup · '
 expect "$NOTES" "'[\"Transcript ready | Standup, ${now:0:10} ${now:11:5}\"]'"
+
+echo "== soak: status churn, notifications, the timer and disable/enable cycles leave nothing behind"
+gnome-extensions disable "$UUID"
+expect "$B === undefined" "'true'"
+# From here on every GLib source and signal handler created with the extension's code on the
+# stack is recorded, the Shell's on its behalf included, each with a test of whether it is still
+# there; so are the extension's objects, held weakly. Whatever is still there once disabled leaked.
+ev "const {GLib, GObject} = imports.gi; globalThis.__soak = [];
+  const ours = () => new Error().stack.includes('/$UUID/');
+  for (const name of ['timeout_add', 'timeout_add_seconds', 'idle_add']) {
+    const original = GLib[name];
+    GLib[name] = (...args) => {
+      const id = original(...args);
+      if (ours()) __soak.push(['GLib source', 'GLib source', () => GLib.MainContext.default().find_source_by_id(id) !== null]);
+      return id;
+    };
+  }
+  for (const name of ['connect', 'connect_after']) {
+    const original = GObject.Object.prototype[name];
+    GObject.Object.prototype[name] = function (...args) {
+      const id = original.apply(this, args);
+      if (ours()) {
+        const ref = new WeakRef(this);
+        // Disposing drops an object's handlers; checking a disposed one logs a critical.
+        const live = () => ref.deref() && !GObject.Object.prototype.toString.call(ref.deref()).includes('DISPOSED');
+        __soak.push(['signal handler', args[0] + ' handler on ' + this.constructor.name, () => live() && GObject.signal_handler_is_connected(ref.deref(), id)]);
+      }
+      return id;
+    };
+  }" >/dev/null
+TRACK="(() => { const e = Main.extensionManager.lookup('$UUID').stateObj;
+  const items = e._button.menu._getMenuItems().flatMap(i => [i, ...(i._getMenuItems?.() ?? [])]);
+  const objects = [['button', e._button], ['menu', e._button.menu], ['notification source', e._source],
+    ...(e._source?.notifications ?? []).map(n => ['notification', n]), ...items.map(i => ['menu item', i])];
+  for (const [kind, object] of objects.filter(([, o]) => o)) { const ref = new WeakRef(object); __soak.push([kind, kind, () => ref.deref() !== undefined]); }
+  const monitor = new WeakRef(e._monitor); __soak.push(['file monitor', 'file monitor', () => monitor.deref()?.is_cancelled() === false]); })()"
+count() { echo "Object.entries($1.reduce((n, kind) => ({...n, [kind]: (n[kind] ?? 0) + 1}), {})).map(([kind, n]) => n + ' ' + kind).join(', ') || 'none'"; }
+# What is still there, by detail; the argument narrows it to one category.
+there() { echo "imports.system.gc(); $(count "__soak.filter(([category, , there]) => ${1:-true} && there()).map(([, detail]) => detail)")"; }
+baseline_rss=$(awk '/^VmRSS/ {print $2}' "/proc/$shell_pid/status")
+# Quiet, unlike expect: the soak waits on the menu many times.
+until_menu() {
+  for _ in $(seq 200); do
+    case "$(ev "$MENU")" in *"$1"*) return ;; esac
+    sleep 0.05
+  done
+  fail "expected '$1' in $(ev "$MENU")"
+}
+
+write_status '{"version":1,"recording":null,"recent":[]}'
+gnome-extensions enable "$UUID"
+until_menu '["Record","---","---","Open history"]'
+echo "  idle: no timer"
+expect "$(there "category === 'GLib source'")" '"none"'
+entries=()
+for i in $(seq 5); do
+  history=$(
+    IFS=,
+    echo "${entries[*]}"
+  )
+  now=$(date --iso-8601=seconds)
+  write_status "{\"version\":1,\"recording\":{\"id\":\"soak-$i\",\"started_at\":\"$now\"},\"recent\":[$history]}"
+  until_menu '["Stop",'
+  if [ "$i" -eq 1 ]; then
+    echo "  recording: the timer"
+    expect "$(there "category === 'GLib source'")" '"1 GLib source"'
+  fi
+  ev "$TRACK" >/dev/null
+  gnome-extensions disable "$UUID"
+  gnome-extensions enable "$UUID"
+  until_menu '["Stop",'
+  incomplete=$(recent "soak-$i" "Soak $i" "$now" 60 true '"queued"' '[]')
+  write_status "{\"version\":1,\"recording\":null,\"recent\":[$incomplete${history:+,$history}]}"
+  until_menu "[\"Record\",\"---\",\"Soak $i · "
+  ev "$TRACK" >/dev/null
+  finished=$(recent "soak-$i" "Soak $i" "$now" 60 true '"succeeded"' '["summarize","publish_gitlab"]')
+  write_status "{\"version\":1,\"recording\":null,\"recent\":[$finished${history:+,$history}]}"
+  until_menu "\"Soak $i · ${now:0:10} ${now:11:5} · 1:00 [warning icon]\""
+  ev "$TRACK" >/dev/null
+  # Recent-list churn: entries come and go, the newest four stay.
+  entries=("$finished" "${entries[@]:0:3}")
+done
+# Overlapping reads: replaces faster than the Shell reads them.
+for i in $(seq 100); do write_status "{\"version\":1,\"recording\":null,\"recent\":[$(recent "burst-$i" "Burst $i" "$now" 1 false null '[]')]}"; done
+until_menu '"Burst 100 · '
+ev "$TRACK" >/dev/null
+echo "  recorded: $(ev "$(count "__soak.map(([category]) => category)")")"
+gnome-extensions disable "$UUID"
+echo "  disabled again: none of them is left"
+expect "$(there)" '"none"'
+after_rss=$(awk '/^VmRSS/ {print $2}' "/proc/$shell_pid/status")
+check "gnome-shell's RSS $((baseline_rss / 1024)) MB -> $((after_rss / 1024)) MB, within 32 MB" test $((after_rss - baseline_rss)) -lt 32768
 
 echo "== shell log"
 if grep -E 'JS ERROR|JS WARNING' "$OUT/shell.log"; then fail "JS errors in $OUT/shell.log"; else echo "  ok: no JS errors"; fi
