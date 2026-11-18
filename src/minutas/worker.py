@@ -198,17 +198,8 @@ def claim_next(worker_lock: IO[str]) -> tuple[str, int] | None:
     return recording_id, index
 
 
-def run_log(recording_id: str, index: int) -> Path:
-    return store.recording_dir(recording_id) / f"run-{index}.log"
-
-
-def written_log(recording_id: str, index: int) -> str | None:
-    log = run_log(recording_id, index)
-    return log.name if log.is_file() else None
-
-
 def interrupted(recording_id: str, index: int) -> Outcome:
-    return failed(INTERRUPTED, written_log(recording_id, index))
+    return failed(INTERRUPTED, store.written_log(recording_id, index))
 
 
 def cancel(recording_id: str, index: int) -> None:
@@ -219,7 +210,10 @@ def cancel(recording_id: str, index: int) -> None:
         if status not in {"queued", "running"}:
             return
         cancelled = Outcome(
-            status="cancelled", error=None, details=written_log(recording_id, index), output=None
+            status="cancelled",
+            error=None,
+            details=store.written_log(recording_id, index),
+            output=None,
         )
         runs[index] = ended(runs[index], cancelled)
         store.save_runs(recording_id, runs)
@@ -242,7 +236,7 @@ def transcribe(recording_id: str, index: int) -> Outcome:
     # The speech environment has no minutas installed; it imports the one running here.
     package_root = str(Path(minutas.__file__).parent.parent)
     python_path = os.pathsep.join(filter(None, [package_root, os.environ.get("PYTHONPATH")]))
-    log = run_log(recording_id, index)
+    log = store.run_log(recording_id, index)
     with log.open("w") as stderr:
         result = subprocess.run(  # noqa: S603 - this module's own argument list
             command,

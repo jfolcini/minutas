@@ -156,6 +156,16 @@ def mark_stopped(recording_id: str, stopped: datetime, *, incomplete: bool) -> N
         write_json(recording_dir(recording_id) / "recording.json", recording)
 
 
+def run_log(recording_id: str, index: int) -> Path:
+    return recording_dir(recording_id) / f"run-{index}.log"
+
+
+def written_log(recording_id: str, index: int) -> str | None:
+    """The run's log file name, when its tool got far enough to write one."""
+    log = run_log(recording_id, index)
+    return log.name if log.is_file() else None
+
+
 def set_typed_name(recording_id: str, name: str) -> None:
     """A typed name is kept for good: nothing automatic replaces it."""
     with lock():

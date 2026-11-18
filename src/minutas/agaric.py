@@ -273,7 +273,7 @@ def fail_running(recording_id: str, runs: list[store.Run], error: str) -> None:
         if run["action"] == ACTION and run["status"] == "running":
             run["status"] = "failed"
             run["error"] = error
-            run["details"] = existing_log(recording_id, index)
+            run["details"] = store.written_log(recording_id, index)
 
 
 def fail_left_running(recording_id: str, error: str) -> None:
@@ -291,15 +291,6 @@ def end_run(recording_id: str, index: int, run: PublishRun) -> None:
         runs[index] = run
         store.save_runs(recording_id, runs)
     store.write_status()
-
-
-def run_log(recording_id: str, index: int) -> Path:
-    return store.recording_dir(recording_id) / f"run-{index}.log"
-
-
-def existing_log(recording_id: str, index: int) -> str | None:
-    log = run_log(recording_id, index)
-    return log.name if log.is_file() else None
 
 
 def interrupt(_signal: int, _frame: FrameType | None) -> None:
@@ -324,7 +315,9 @@ def publish(recording_id: str, published: datetime, *, page: str | None = None) 
     )
     on_term = signal.signal(signal.SIGTERM, interrupt)
     try:
-        page_id, title, note = send(recording_id, previous, page, run_log(recording_id, index))
+        page_id, title, note = send(
+            recording_id, previous, page, store.run_log(recording_id, index)
+        )
     except AgaricError as error:
         run["error"] = str(error)
         if error.choice is not None:
@@ -335,7 +328,7 @@ def publish(recording_id: str, published: datetime, *, page: str | None = None) 
             run["note"] = note
     finally:
         signal.signal(signal.SIGTERM, on_term)
-    run["details"] = existing_log(recording_id, index)
+    run["details"] = store.written_log(recording_id, index)
     end_run(recording_id, index, run)
     return run["status"] == "succeeded"
 
