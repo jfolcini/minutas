@@ -45,6 +45,8 @@ dev = [
     "typos>=1.52.2",
     "zizmor>=1.32.0",
 ]
+# torchaudio and torchcodec come in through pyannote; they are listed so that
+# [tool.uv.sources] takes their CPU builds from the PyTorch index along with torch.
 speech = [
     "nemo-toolkit[asr]>=3.0.0",
     "pyannote-audio>=4",
