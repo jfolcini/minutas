@@ -70,7 +70,7 @@ step_speech_environment() {
     return
   fi
   UV_PROJECT_ENVIRONMENT=$speech_env "$uv_bin" sync --project "$repo_dir" \
-    --frozen --managed-python --no-install-project --no-dev --group speech \
+    --frozen --managed-python --no-install-project --no-dev --extra speech \
     || fail "Speech environment" "uv sync failed (see above). Fix that, then run install.sh again."
   cp "$repo_dir/uv.lock" "$speech_env/uv.lock"
   report "Speech environment" "synced $speech_env from uv.lock"
@@ -96,7 +96,8 @@ step_huggingface_token() {
 }
 
 # The list is copied in only once every download finished: snapshot_download's offline check
-# accepts the README-only snapshot folder that a refused gated download leaves behind.
+# accepts the README-only snapshot folder that a refused gated download leaves behind. The
+# transcriber finds Parakeet through it.
 step_models() {
   local revisions=$models_dir/revisions
   if printf '%s\n' "${models[@]}" | cmp -s - "$revisions"; then

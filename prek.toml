@@ -199,7 +199,7 @@ stages = ["pre-commit"]
 [[repos.hooks]]
 id = "pip-audit"
 name = "pip-audit (uv.lock)"
-entry = "bash -c 'uv export --color never --frozen --no-emit-project --all-groups --format requirements-txt | sed s/+cpu// | uv run --frozen pip-audit --disable-pip --require-hashes --requirement /dev/stdin \"$@\"' --"
+entry = "bash -c 'uv export --color never --frozen --no-emit-project --all-groups --all-extras --format requirements-txt | sed s/+cpu// | uv run --frozen pip-audit --disable-pip --require-hashes --requirement /dev/stdin \"$@\"' --"
 # Advisories no upgrade can fix yet; drop each when its holder lifts the bound.
 args = [
     # WHY: nemo-toolkit caps lightning at 2.4.0, which caps fsspec below 2026.0
