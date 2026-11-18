@@ -9,13 +9,17 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import tempfile
 from collections.abc import Generator, Mapping
 from contextlib import contextmanager
 from datetime import date, datetime
 from pathlib import Path
+from types import FrameType
 from typing import NotRequired, TypedDict, cast
+
+from keyring.errors import KeyringError
 
 from minutas import settings, store
 
@@ -39,7 +43,10 @@ NO_SPACE = (
     "`minutas settings agaric --space <id>`"
 )
 BRIDGE_MISSING = "agaric-mcp not found: install Agaric, or put its agaric-mcp on the PATH"
-UPDATE_AGARIC = "Update Agaric: agaric-mcp has no `call` command"
+UPDATE_AGARIC = (
+    "Update agaric-mcp: the one on the PATH has no `call` command; put the one that ships with "
+    "Agaric in its place"
+)
 NOT_RUNNING = "Agaric isn't running: start it, turn on Settings → Agent access and press Retry"
 TOKEN_REFUSED = (
     f"The agent token was revoked: add an agent in Agaric's Settings → Agent access, then {KEEP_IT}"
@@ -47,10 +54,12 @@ TOKEN_REFUSED = (
 TOO_BIG = "The meeting's audio is over Agaric's 50 MB attachment cap"
 UNEXPECTED = "Agaric answered without a page: see Details"
 GSTREAMER_MISSING = "gst-launch-1.0 not found: run install.sh"
+AUDIO_LEFT_OUT = "Published without the audio: its tracks were deleted"
 
 # Agaric's messages, on the bridge's stderr, for the failures that have a fix of their own.
 KNOWN_FAILURES = (
-    ("unknown argument: call", UPDATE_AGARIC),
+    # A copy from before `call` refuses it; one from before agents refuses --token first.
+    ("agaric-mcp: unknown argument: ", UPDATE_AGARIC),
     ("Agaric MCP not running", NOT_RUNNING),
     ("no agent has this token", TOKEN_REFUSED),
     ("was revoked; add an agent", TOKEN_REFUSED),
@@ -64,8 +73,10 @@ NAME_TAKEN = re.compile(
 
 
 class Choice(TypedDict):
+    # name_taken offers Use that page or Rename; rename_taken only Rename, since the page that
+    # was renamed already holds the files.
     kind: str
-    page_id: str
+    page_id: NotRequired[str]
 
 
 class PublishRun(store.Run):
@@ -73,6 +84,8 @@ class PublishRun(store.Run):
     title: NotRequired[str]
     # A failed run that waits for the person to choose how to go on.
     choice: NotRequired[Choice]
+    # A succeeded run's line for the person, such as AUDIO_LEFT_OUT.
+    note: NotRequired[str]
 
 
 class AgaricError(Exception):
@@ -112,7 +125,8 @@ def call(token: str, tool: str, arguments: Mapping[str, object], log: Path) -> o
     with log.open("a") as out:
         out.write(f"$ {BRIDGE} call {tool} {request}\n")
         try:
-            # The bridge is found on PATH like any desktop command; no shell is involved.
+            # The bridge is found on PATH like any desktop command; no shell is involved. It takes
+            # the token only as an argument, and only this user can reach Agaric's socket.
             result = subprocess.run(  # noqa: S603
                 [BRIDGE, "--token", token, "call", tool, request],
                 capture_output=True,
@@ -189,42 +203,56 @@ def meeting_files(folder: Path, log: Path) -> Generator[dict[str, str]]:
         yield files
 
 
-def send(
-    recording_id: str, previous: PublishRun | None, page: str | None, log: Path
-) -> tuple[str, str]:
-    """Makes the page, adds the files to page, or renames the page made before.
-
-    Returns the page's id and the title it now has.
-    """
-    token = settings.agaric_token()
+def agent_token() -> str:
+    try:
+        token = settings.agaric_token()
+    except KeyringError as error:
+        # Raised when the person dismisses the keyring's unlock prompt, for one.
+        reason = f"Could not read the Agaric agent token from the keyring: {error}"
+        raise AgaricError(reason) from None
     if token is None:
         raise AgaricError(NO_TOKEN)
+    return token
+
+
+def send(
+    recording_id: str, previous: PublishRun | None, page: str | None, log: Path
+) -> tuple[str, str, str | None]:
+    """Makes the page, adds the files to page, or renames the page made before.
+
+    Returns the page's id, the title it now has, and a note for the person or None.
+    """
+    token = agent_token()
     space_id = settings.agaric_space_id()
     if space_id is None:
         raise AgaricError(NO_SPACE)
     recording = store.load_recording(recording_id)
     day = datetime.fromisoformat(recording["started_at"]).date()
     title = page_title(recording["name"], day)
-    try:
-        if page is None and previous is not None:
-            page_id = cast("str", previous["output"]).removeprefix(PAGE_LINK)
-            if previous.get("title") != title:
-                rename = {"space_id": space_id, "block_id": page_id, "content": title}
+    taken = f"Agaric already has a page named {title}"
+    if page is None and previous is not None:
+        page_id = cast("str", previous["output"]).removeprefix(PAGE_LINK)
+        if previous.get("title") != title:
+            rename = {"space_id": space_id, "block_id": page_id, "content": title}
+            try:
                 call(token, "update_block_content", rename, log)
-            return page_id, title
-        target = (
-            {"title": recording["name"], "date": day.isoformat()}
-            if page is None
-            else {"page": page}
-        )
+            except NameTakenError:
+                raise AgaricError(taken, Choice(kind="rename_taken")) from None
+        return page_id, title, None
+    target = (
+        {"title": recording["name"], "date": day.isoformat()} if page is None else {"page": page}
+    )
+    # The cheapest call that proves the bridge, Agaric and the token, so their failures come
+    # back at once rather than after mixing a long meeting.
+    call(token, "list_spaces", {}, log)
+    try:
         with meeting_files(store.recording_dir(recording_id), log) as files:
             answer = call(token, "add_meeting", {"space_id": space_id, **target, **files}, log)
-        return page_id_in(answer), title
     except NameTakenError:
         found = call(token, "resolve", {"space_id": space_id, "names": [title]}, log)
         holder = page_id_in(cast("list[object]", found)[0])
-        error = f"Agaric already has a page named {title}"
-        raise AgaricError(error, Choice(kind="name_taken", page_id=holder)) from None
+        raise AgaricError(taken, Choice(kind="name_taken", page_id=holder)) from None
+    return page_id_in(answer), title, None if "audio_path" in files else AUDIO_LEFT_OUT
 
 
 def start_run(recording_id: str, queued_at: str) -> tuple[int, PublishRun | None]:
@@ -272,10 +300,15 @@ def existing_log(recording_id: str, index: int) -> str | None:
     return log.name if log.is_file() else None
 
 
+def interrupt(_signal: int, _frame: FrameType | None) -> None:
+    raise AgaricError(INTERRUPTED)
+
+
 def publish(recording_id: str, published: datetime, *, page: str | None = None) -> bool:
     """Publishes the recording, or adds its files to page, as a run in its log.
 
-    Returns whether the run succeeded.
+    Returns whether the run succeeded. SIGTERM, at logout or shutdown, fails the run as
+    interrupted: the bridge or the mix is killed and the files made for Agaric are removed.
     """
     queued_at = published.isoformat(timespec="seconds")
     index, previous = start_run(recording_id, queued_at)
@@ -287,14 +320,19 @@ def publish(recording_id: str, published: datetime, *, page: str | None = None) 
         details=None,
         output=None,
     )
+    on_term = signal.signal(signal.SIGTERM, interrupt)
     try:
-        page_id, title = send(recording_id, previous, page, run_log(recording_id, index))
+        page_id, title, note = send(recording_id, previous, page, run_log(recording_id, index))
     except AgaricError as error:
         run["error"] = str(error)
         if error.choice is not None:
             run["choice"] = error.choice
     else:
         run.update(status="succeeded", output=f"{PAGE_LINK}{page_id}", title=title)
+        if note is not None:
+            run["note"] = note
+    finally:
+        signal.signal(signal.SIGTERM, on_term)
     run["details"] = existing_log(recording_id, index)
     end_run(recording_id, index, run)
     return run["status"] == "succeeded"
@@ -302,8 +340,5 @@ def publish(recording_id: str, published: datetime, *, page: str | None = None) 
 
 def list_spaces() -> list[tuple[str, str]]:
     """Every space the agent token may use, as its id and name."""
-    token = settings.agaric_token()
-    if token is None:
-        raise AgaricError(NO_TOKEN)
-    spaces = cast("list[dict[str, str]]", call(token, "list_spaces", {}, Path(os.devnull)))
+    spaces = cast("list[dict[str, str]]", call(agent_token(), "list_spaces", {}, Path(os.devnull)))
     return [(space["id"], space["name"]) for space in spaces]

@@ -116,7 +116,7 @@ def settings_agaric(args: argparse.Namespace) -> int:
     if args.space is None and not args.token_from_stdin and not args.list_spaces:
         return fail("Nothing to do: pass --space, --token-from-stdin or --list-spaces.")
     if args.token_from_stdin:
-        # From stdin, never from the arguments, which other processes can read.
+        # From stdin, never from the arguments, which the shell's history keeps.
         token = sys.stdin.readline().strip()
         if not token:
             return fail("No token on stdin.")

@@ -1,13 +1,16 @@
 import json
+import signal
 import subprocess
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import cast
 
+import keyring
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
+from keyring.errors import KeyringLocked
 
 from minutas import agaric, settings, store
 
@@ -206,10 +209,10 @@ def test_publish_makes_the_page_with_the_mixed_tracks_and_the_transcript(
 
     assert agaric.publish(recording_id, PUBLISHED) is True
 
-    [call] = system.calls
+    [check, call] = system.calls
     audio = Path(cast("str", call.arguments["audio_path"]))
     transcript = Path(cast("str", call.arguments["transcript_path"]))
-    assert call.tool == "add_meeting"
+    assert (check.tool, check.arguments, call.tool) == ("list_spaces", {}, "add_meeting")
     assert call.arguments == {
         "space_id": SPACE,
         "title": "Meeting",
@@ -224,7 +227,7 @@ def test_publish_makes_the_page_with_the_mixed_tracks_and_the_transcript(
         "audio_path": MIX,
         "transcript_path": b"[00:00:01] **Me:** Hola.\n",
     }
-    assert system.commands[0] == [*GST, *track_branch("mic.opus"), *track_branch("call.opus")]
+    assert system.commands[1] == [*GST, *track_branch("mic.opus"), *track_branch("call.opus")]
     assert not audio.parent.exists()
     assert runs(recording_id) == [
         {
@@ -246,18 +249,24 @@ def test_publish_mixes_only_the_tracks_that_hold_audio(system: FakeSystem) -> No
 
     assert agaric.publish(recording_id, PUBLISHED) is True
 
-    assert system.commands[0] == [*GST, *track_branch("call.opus")]
+    assert system.commands[1] == [*GST, *track_branch("call.opus")]
 
 
 @pytest.mark.usefixtures("configured")
-def test_publish_without_tracks_sends_the_transcript_alone(system: FakeSystem) -> None:
+def test_publish_without_tracks_sends_the_transcript_alone_and_says_so(
+    system: FakeSystem,
+) -> None:
     recording_id = recording(tracks=())
 
     assert agaric.publish(recording_id, PUBLISHED) is True
 
-    [call] = system.calls
-    assert sorted(call.arguments) == ["date", "space_id", "title", "transcript_path"]
-    assert [args[0] for args in system.commands] == ["agaric-mcp"]
+    assert sorted(system.calls[1].arguments) == ["date", "space_id", "title", "transcript_path"]
+    assert [args[0] for args in system.commands] == ["agaric-mcp", "agaric-mcp"]
+    run = runs(recording_id)[0]
+    assert (run["status"], run.get("note")) == (
+        "succeeded",
+        "Published without the audio: its tracks were deleted",
+    )
 
 
 @pytest.mark.usefixtures("configured")
@@ -266,7 +275,7 @@ def test_publish_without_a_transcript_sends_the_audio_alone(system: FakeSystem) 
 
     assert agaric.publish(recording_id, PUBLISHED) is True
 
-    assert sorted(system.calls[0].arguments) == ["audio_path", "date", "space_id", "title"]
+    assert sorted(system.calls[1].arguments) == ["audio_path", "date", "space_id", "title"]
 
 
 @pytest.mark.usefixtures("configured")
@@ -276,7 +285,7 @@ def test_publish_dates_the_page_by_the_local_start_date(system: FakeSystem) -> N
 
     agaric.publish(recording_id, PUBLISHED)
 
-    assert system.calls[0].arguments["date"] == "2026-11-18"
+    assert system.calls[1].arguments["date"] == "2026-11-18"
     assert runs(recording_id)[0]["title"] == "Meeting 2026-11-18"
 
 
@@ -287,7 +296,7 @@ def test_publish_names_the_page_by_the_recordings_name(system: FakeSystem) -> No
 
     agaric.publish(recording_id, PUBLISHED)
 
-    assert system.calls[0].arguments["title"] == "Weekly sync"
+    assert system.calls[1].arguments["title"] == "Weekly sync"
     assert runs(recording_id)[0]["title"] == "Weekly sync 2026-11-18"
 
 
@@ -351,7 +360,7 @@ def test_a_taken_name_stops_and_offers_the_page_that_holds_it(system: FakeSystem
 
     assert agaric.publish(recording_id, PUBLISHED) is False
 
-    assert [(call.tool, call.arguments) for call in system.calls[1:]] == [
+    assert [(call.tool, call.arguments) for call in system.calls[2:]] == [
         ("resolve", {"space_id": SPACE, "names": ["Meeting 2026-11-18"]})
     ]
     assert runs(recording_id) == [
@@ -369,7 +378,7 @@ def test_a_taken_name_stops_and_offers_the_page_that_holds_it(system: FakeSystem
 
 
 @pytest.mark.usefixtures("configured")
-def test_a_rename_to_a_taken_name_stops_and_offers_that_page(system: FakeSystem) -> None:
+def test_a_rename_to_a_taken_name_asks_only_for_another_name(system: FakeSystem) -> None:
     recording_id = recording()
     put_runs(recording_id, [succeeded_run()])
     store.set_typed_name(recording_id, "Weekly sync")
@@ -378,11 +387,12 @@ def test_a_rename_to_a_taken_name_stops_and_offers_that_page(system: FakeSystem)
     assert agaric.publish(recording_id, PUBLISHED) is False
 
     run = runs(recording_id)[1]
-    assert (run["error"], run.get("choice")) == (
+    assert (run["status"], run["error"], run.get("choice")) == (
+        "failed",
         "Agaric already has a page named Weekly sync 2026-11-18",
-        {"kind": "name_taken", "page_id": OTHER_PAGE},
+        {"kind": "rename_taken"},
     )
-    assert system.calls[1].arguments["names"] == ["Weekly sync 2026-11-18"]
+    assert [call.tool for call in system.calls] == ["update_block_content"]
 
 
 @pytest.mark.usefixtures("configured")
@@ -414,7 +424,7 @@ def test_publish_to_a_page_adds_the_files_to_it(system: FakeSystem) -> None:
 
     assert agaric.publish(recording_id, PUBLISHED, page=OTHER_PAGE) is True
 
-    [call] = system.calls
+    call = system.calls[1]
     assert sorted(call.arguments) == ["audio_path", "page", "space_id", "transcript_path"]
     assert (call.arguments["page"], call.arguments["space_id"]) == (OTHER_PAGE, SPACE)
     assert runs(recording_id)[0]["output"] == f"agaric://page/{OTHER_PAGE}"
@@ -428,7 +438,7 @@ def test_publish_to_a_page_after_a_success_still_adds_the_files(system: FakeSyst
 
     agaric.publish(recording_id, PUBLISHED, page=OTHER_PAGE)
 
-    assert [call.tool for call in system.calls] == ["add_meeting"]
+    assert [call.tool for call in system.calls] == ["list_spaces", "add_meeting"]
 
 
 AGARIC_FAILURES = [
@@ -471,6 +481,11 @@ AGARIC_FAILURES = [
         agaric.UPDATE_AGARIC,
     ),
     (
+        "agaric-mcp: unknown argument: --token\nTry `agaric-mcp --help` for usage.\n",
+        2,
+        agaric.UPDATE_AGARIC,
+    ),
+    (
         "agaric-mcp: Not found: space '01HZWORKSPACE0000000000000' not found\n",
         1,
         "Not found: space '01HZWORKSPACE0000000000000' not found",
@@ -502,14 +517,45 @@ def test_an_agaric_failure_fails_the_run_with_the_fix(
 
 
 @pytest.mark.usefixtures("configured")
+@pytest.mark.parametrize(
+    ("stderr", "returncode", "error"),
+    [
+        failure
+        for failure in AGARIC_FAILURES
+        if failure[2] in {agaric.NOT_RUNNING, agaric.TOKEN_REFUSED, agaric.UPDATE_AGARIC}
+    ],
+)
+def test_agaric_out_of_reach_fails_the_run_before_the_mix(
+    system: FakeSystem, stderr: str, returncode: int, error: str
+) -> None:
+    recording_id = recording()
+    system.answers["list_spaces"] = [Answer(returncode, stderr=stderr)]
+
+    assert agaric.publish(recording_id, PUBLISHED) is False
+
+    assert runs(recording_id)[0]["error"] == error
+    assert [args[4] for args in system.commands] == ["list_spaces"]
+    assert sorted(path.name for path in store.recording_dir(recording_id).iterdir()) == [
+        "call.opus",
+        "mic.opus",
+        "recording.json",
+        "run-0.log",
+        "runs.json",
+        "transcript.md",
+    ]
+
+
+@pytest.mark.usefixtures("configured")
 def test_the_log_holds_each_call_and_its_output_but_not_the_token(system: FakeSystem) -> None:
     recording_id = recording(tracks=(), transcript=False)
     system.answers["add_meeting"] = [Answer(1, stdout="partial\n", stderr="agaric-mcp: boom\n")]
 
     agaric.publish(recording_id, PUBLISHED)
 
+    spaces = json.dumps(usual_result("list_spaces"))
     arguments = json.dumps({"space_id": SPACE, "title": "Meeting", "date": "2026-11-18"})
     assert log_text(recording_id) == (
+        f"$ agaric-mcp call list_spaces {{}}\n{spaces}\nexit status 0\n"
         f"$ agaric-mcp call add_meeting {arguments}\npartial\nagaric-mcp: boom\nexit status 1\n"
     )
 
@@ -548,6 +594,29 @@ def test_publish_without_a_token_fails_with_how_to_set_it(system: FakeSystem) ->
     assert failed_in_status(recording_id) == ["publish_agaric"]
 
 
+def test_a_locked_keyring_fails_the_run(
+    system: FakeSystem, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings.set_agaric_space_id(SPACE)
+    recording_id = recording()
+
+    def dismissed(_service: str, _username: str) -> str | None:
+        reason = "Failed to unlock the item!"
+        raise KeyringLocked(reason)
+
+    monkeypatch.setattr(keyring, "get_password", dismissed)
+
+    assert agaric.publish(recording_id, PUBLISHED) is False
+
+    run = runs(recording_id)[0]
+    assert (run["status"], run["error"]) == (
+        "failed",
+        "Could not read the Agaric agent token from the keyring: Failed to unlock the item!",
+    )
+    assert system.commands == []
+    assert failed_in_status(recording_id) == ["publish_agaric"]
+
+
 def test_publish_without_a_space_fails_with_how_to_set_it(system: FakeSystem) -> None:
     settings.set_agaric_token(TOKEN)
     recording_id = recording()
@@ -571,7 +640,7 @@ def test_a_failed_mix_fails_the_run_and_leaves_no_file(system: FakeSystem) -> No
         "run-0.log",
     )
     assert "Additional debug info:\ngsttypefindelement.c\nexit status 1\n" in log_text(recording_id)
-    assert system.calls == []
+    assert [call.tool for call in system.calls] == ["list_spaces"]
     assert sorted(path.name for path in store.recording_dir(recording_id).iterdir()) == [
         "call.opus",
         "mic.opus",
@@ -620,7 +689,7 @@ def test_publish_fails_a_run_a_crash_left_running(system: FakeSystem) -> None:
         transcribing,
     ]
     assert runs(recording_id)[2]["status"] == "succeeded"
-    assert system.calls[0].tool == "add_meeting"
+    assert system.calls[1].tool == "add_meeting"
 
 
 @pytest.mark.usefixtures("configured")
@@ -636,6 +705,33 @@ def test_a_crashed_run_without_a_log_has_no_details(system: FakeSystem) -> None:
 
 
 @pytest.mark.usefixtures("configured")
+def test_sigterm_fails_the_run_as_interrupted_and_removes_the_files(system: FakeSystem) -> None:
+    recording_id = recording()
+    before = signal.getsignal(signal.SIGTERM)
+
+    def logout() -> None:
+        if system.calls[-1].tool == "add_meeting":
+            signal.raise_signal(signal.SIGTERM)
+
+    system.during_call = logout
+
+    assert agaric.publish(recording_id, PUBLISHED) is False
+
+    run = runs(recording_id)[0]
+    assert (run["status"], run["error"], run["details"]) == ("failed", "interrupted", "run-0.log")
+    assert failed_in_status(recording_id) == ["publish_agaric"]
+    assert sorted(path.name for path in store.recording_dir(recording_id).iterdir()) == [
+        "call.opus",
+        "mic.opus",
+        "recording.json",
+        "run-0.log",
+        "runs.json",
+        "transcript.md",
+    ]
+    assert signal.getsignal(signal.SIGTERM) == before
+
+
+@pytest.mark.usefixtures("configured")
 def test_the_run_is_running_and_status_rewritten_while_it_publishes(system: FakeSystem) -> None:
     recording_id = recording()
     put_runs(recording_id, [{**succeeded_run(), "status": "failed", "output": None}])
@@ -646,7 +742,7 @@ def test_the_run_is_running_and_status_rewritten_while_it_publishes(system: Fake
 
     agaric.publish(recording_id, PUBLISHED)
 
-    assert seen == ["running", []]
+    assert seen == ["running", [], "running", []]
 
 
 def test_list_spaces_gives_each_space_id_and_name(system: FakeSystem) -> None:
@@ -660,7 +756,7 @@ def test_list_spaces_fails_with_agarics_reason(system: FakeSystem) -> None:
     settings.set_agaric_token(TOKEN)
     system.answers["list_spaces"] = [Answer(2, stderr="agaric-mcp: unknown argument: call\n")]
 
-    with pytest.raises(agaric.AgaricError, match=r"^Update Agaric"):
+    with pytest.raises(agaric.AgaricError, match=r"^Update agaric-mcp: "):
         agaric.list_spaces()
 
 
