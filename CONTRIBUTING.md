@@ -15,25 +15,31 @@ uv sync                 # the virtualenv, the package and the whole toolchain
 uv run prek install     # wires the pre-commit, commit-msg, prepare-commit-msg and pre-push hooks
 ```
 
-### Optional: `just` task runner
+### The `just` task runner
 
-The [`justfile`](justfile) wraps the commands below (`just --list`). Nothing needs it; every recipe is one `uv run` line you can type yourself.
+`uv sync` installs [`just`](https://just.systems/) into the virtualenv with the rest of the toolchain; run `uv run just --list` (or `just --list` with the venv active) for the recipes in the [`justfile`](justfile). Each recipe is a few `uv run` lines you can also type yourself.
 
 ## Development workflow
 
-| Task | Command |
-| --- | --- |
-| Run the tests with coverage | `uv run pytest` |
-| Lint, fixing what can be fixed | `uv run ruff check --fix` |
-| Format | `uv run ruff format` |
-| Type-check | `uv run ty check` |
-| Every hook over the whole tree (CI's lint job) | `uv run prek run --all-files` |
+| Task | `just` | Command |
+| --- | --- | --- |
+| The inner loop: lint, types, import contracts, related tests | `just check` | |
+| Run the tests with coverage | `just test` | `uv run pytest` |
+| Every changed line covered | `just cov-diff` | `uv run diff-cover coverage.xml --compare-branch=origin/main --fail-under=100` |
+| Lint and format, fixing what can be fixed | `just fmt` | `uv run ruff check --fix && uv run ruff format` |
+| Type-check | `just typecheck` | `uv run ty check` |
+| Module boundaries and declared dependencies | `just imports` | `uv run lint-imports && uv run deptry src` |
+| Mutation testing (report only) | `just mutate` | `uv run mutmut run` |
+| Every hook over the whole tree (CI's lint job) | `just lint` | `uv run prek run --all-files` |
+| Everything CI checks | `just verify` | |
+| Push and confirm the remote has the commit | `just push` | |
+| Is a PR ready to merge | `just merge-ready <pr>` | needs `gh` |
 
 - **At commit**, the hooks fix whitespace, formatting and fixable lint findings in place and abort the commit once: re-stage and commit again. They also run ty, typos, the Markdown, shell and workflow linters, and gitleaks.
 - **At push**, the hooks run the test suite with its coverage floor and `pip-audit` over `uv.lock`, and refuse a direct push to `main`.
 - **CI** runs the same hooks (`.github/workflows/_validate.yml`), the tests, and a link check over the Markdown.
 
-Coverage is measured with branches, and `pytest` fails under the floor set in `pyproject.toml` (`[tool.coverage.report] fail_under`).
+Coverage is measured with branches, and `pytest` fails under the floor set in `pyproject.toml` (`[tool.coverage.report] fail_under`); on a pull request every changed line must be covered. The tests run in random order (pytest-randomly; rerun a failure with the `--randomly-seed=…` it prints), with a per-test timeout, with every annotation checked at run time by beartype, and with warnings as errors.
 
 ## Patch submission
 

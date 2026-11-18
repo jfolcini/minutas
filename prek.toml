@@ -107,6 +107,26 @@ types_or = ["python", "pyi", "toml"]
 pass_filenames = false
 stages = ["pre-commit"]
 
+# WHY: a module reaching across the boundaries docs/design.md keeps (summarizer, publisher, recorder, calendar, top bar)
+[[repos.hooks]]
+id = "import-linter"
+name = "import contracts (import-linter)"
+entry = "uv run --frozen lint-imports"
+language = "system"
+types_or = ["python", "toml"]
+pass_filenames = false
+stages = ["pre-commit"]
+
+# WHY: an import missing from pyproject.toml works locally and breaks a fresh install; a declared dependency nothing imports
+[[repos.hooks]]
+id = "deptry"
+name = "dependencies match imports (deptry)"
+entry = "uv run --frozen deptry src"
+language = "system"
+types_or = ["python", "toml"]
+pass_filenames = false
+stages = ["pre-commit"]
+
 # WHY: typos in code and docs reaching review
 [[repos.hooks]]
 id = "typos"

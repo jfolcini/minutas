@@ -20,13 +20,23 @@ Issues = "https://github.com/jfolcini/minutas/issues"
 # with `uv run`, so `uv sync` is the whole toolchain install.
 dev = [
     "actionlint-py>=1.7.12.25",
+    "beartype>=0.23.1",
     "conventional-pre-commit>=4.5.0",
+    "deptry>=0.25.1",
+    "diff-cover>=11.0.3",
+    "hypothesis>=6.170.15",
+    "import-linter>=2.17",
+    "mutmut>=3.8.1",
     "pip-audit>=2.10.1",
     "prek>=0.5.11",
     "pytest>=9.2.0",
+    "pytest-beartype>=0.3.0",
     "pytest-cov>=7.1.0",
+    "pytest-randomly>=5.1.0",
+    "pytest-timeout>=2.4.0",
     "ruff>=0.17.5",
     "rumdl>=0.3.4",
+    "rust-just>=1.59.0",
     "shellcheck-py>=0.11.0.1",
     "shfmt-py>=4.2.0",
     "ty>=0.0.105",
@@ -85,6 +95,18 @@ addopts = [
 ]
 xfail_strict = true
 filterwarnings = ["error"]
+# A hung child process (pw-record, glab, devin) fails its test instead of the CI job.
+timeout = 60
+# Every annotation in the package is checked at run time while the tests run.
+beartype_packages = "minutas"
+
+[tool.mutmut]
+source_paths = ["src/minutas/"]
+# mutmut's trampolines skew coverage and runtime type checks; the gates run elsewhere.
+pytest_add_cli_args = ["--no-cov", "-o", "beartype_packages="]
+
+[tool.deptry]
+known_first_party = ["minutas"]
 
 [tool.coverage.run]
 branch = true
@@ -97,3 +119,11 @@ fail_under = 90
 show_missing = true
 skip_covered = true
 exclude_also = ["if TYPE_CHECKING:", "raise NotImplementedError"]
+
+[tool.importlinter]
+root_package = "minutas"
+
+[[tool.importlinter.contracts]]
+name = "layers"
+type = "layers"
+layers = ["minutas.cli", "(minutas.recorder)", "(minutas.store)"]

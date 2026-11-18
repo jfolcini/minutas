@@ -1,9 +1,11 @@
 name: Validate
 
 # Reusable: the checks `prek run --all-files` runs locally, plus the test suite.
-#   - lint         — every prek hook in both stages (tests run in `test`), and
-#                    lychee over the Markdown links.
-#   - test         — pytest with branch coverage and the floor in pyproject.toml.
+#   - lint         — every prek hook in both stages (tests run in `test`), zizmor's
+#                    online audits, and lychee over the Markdown links.
+#   - test         — pytest with branch coverage and the floor in pyproject.toml, on
+#                    the floor Python and the newest one, plus a leg on the lowest
+#                    versions pyproject.toml allows; on a PR, every changed line covered.
 #   - validate-all — one stable check name for branch protection; fails unless
 #                    every job above succeeded.
 
@@ -44,6 +46,13 @@ jobs:
           SKIP: no-commit-to-branch,pytest
         run: uv run prek run --all-files --hook-stage pre-push
 
+      # The audits that ask GitHub (known-vulnerable actions, pins that are not
+      # real commits); the prek hook runs offline.
+      - name: zizmor (online audits)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: uv run zizmor --min-severity=low .github/
+
       - name: Markdown links (lychee)
         uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
         with:
@@ -51,17 +60,41 @@ jobs:
           fail: true
 
   test:
+    name: test (${{ matrix.python }}${{ matrix.resolution && format(', {0}', matrix.resolution) || '' }})
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    strategy:
+      fail-fast: ${{ github.event_name == 'pull_request' }}
+      matrix:
+        include:
+          # The floor (Ubuntu 24.04's system Python), with the lock.
+          - python: '3.12'
+            coverage-diff: true
+          # The newest Python, to see deprecations before Ubuntu ships it.
+          - python: '3.14'
+          # The lowest versions pyproject.toml allows, so its floors stay true.
+          - python: '3.12'
+            resolution: lowest-direct
+    env:
+      UV_PYTHON: ${{ matrix.python }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # diff-cover compares against origin/main.
+          fetch-depth: 0
 
       - name: Install uv
         uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: false
+
+      - name: Re-lock at the lowest allowed versions
+        if: matrix.resolution
+        env:
+          UV_FROZEN: 'false'
+          RESOLUTION: ${{ matrix.resolution }}
+        run: uv lock --resolution "$RESOLUTION"
 
       - name: Install
         run: uv sync
@@ -69,8 +102,15 @@ jobs:
       - name: pytest (coverage gate)
         run: uv run pytest --cov-report=xml
 
+      # Every line a PR adds or changes is covered, whatever the project total.
+      - name: Changed lines covered (diff-cover)
+        if: matrix.coverage-diff && github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: uv run diff-cover coverage.xml --compare-branch="origin/$BASE_REF" --fail-under=100
+
       - name: Upload the coverage report
-        if: always()
+        if: always() && matrix.coverage-diff
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage
