@@ -91,6 +91,7 @@ A test that cannot fail covers nothing. Before calling a test done, break the co
 - **Pre-commit:** `prek.toml` is the list. Formatters and fixers rewrite files and abort the commit once; re-stage and commit again.
 - **Pre-push:** the full test suite with the coverage floor, `pip-audit`, and no direct push to `main`.
 - **CI:** `.github/workflows/_validate.yml` runs every hook in both stages plus zizmor's online audits and a link check (`lint`), the suite on Python 3.12, the newest Python and the lowest allowed dependency versions with diff coverage on PRs (`test`), and the aggregate `validate-all`. The required contexts on `main` are `dco` and `validate / validate-all`.
+- **Claude Code Review:** `claude-code-review.yml` reviews every non-draft PR that changes more than Markdown, and approves or requests changes. It is advisory: nothing requires it. A push does not re-run it; adding the `re-review` label does.
 - **Commits:** Conventional Commits subjects and a DCO `Signed-off-by:` on every commit; the hooks enforce both locally, CI on the PR.
 
 ### Guards earn their keep
