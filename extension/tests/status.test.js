@@ -7,6 +7,7 @@ import {
     formatClock,
     hasWarning,
     lastLine,
+    mayNeedRepair,
     notificationsFor,
     parseStatus,
     recentLabel,
@@ -157,6 +158,28 @@ test('hasWarning marks a failed run or an incomplete recording', () => {
 
 test('lastLine takes the last non-empty line of stderr', () => {
     assertEqual([lastLine('warning: x\nerror: already recording\n\n'), lastLine('')], ['error: already recording', '']);
+});
+
+test('mayNeedRepair: an active recording, or a transcription queued or running, may be left over', () => {
+    assertEqual(
+        [
+            mayNeedRepair(status(ACTIVE, [])),
+            mayNeedRepair(status(null, [entry(), entry({transcribe: 'queued'})])),
+            mayNeedRepair(status(null, [entry({transcribe: 'running'})])),
+        ],
+        [true, true, true]
+    );
+});
+
+test('mayNeedRepair: nothing in progress needs no repair', () => {
+    assertEqual(
+        [
+            mayNeedRepair(EMPTY_STATUS),
+            mayNeedRepair(status(null, [entry(), entry({transcribe: 'failed', failed: ['transcribe']}),
+                entry({transcribe: 'cancelled'}), entry({transcribe: null, incomplete: true})])),
+        ],
+        [false, false]
+    );
 });
 
 let failures = 0;

@@ -133,12 +133,13 @@ One Python program does the work and draws the history window; the GNOME extensi
 
 ### Between the extension and the program
 
-The extension holds no state of its own: it runs three commands and watches one file. `DATA` is `${XDG_DATA_HOME:-~/.local/share}/minutas`, and each recording is a folder `DATA/recordings/<id>`, named by its local start time (`2026-11-18T13-05-42`).
+The extension holds no state of its own: it runs the commands below and watches one file. `DATA` is `${XDG_DATA_HOME:-~/.local/share}/minutas`, and each recording is a folder `DATA/recordings/<id>`, named by its local start time (`2026-11-18T13-05-42`).
 
 | Command | Does |
 | --- | --- |
 | `minutas record start` | Starts the recorder unit, waits until both tracks receive audio, and prints `{"id": …, "started_at": …}`; exits 1 with the reason on stderr when already recording or no audio arrives |
 | `minutas record stop` | Stops the recorder; exits 1 when nothing is recording |
+| `minutas repair` | Marks a recording whose recorder is gone stopped and incomplete, and starts the transcription worker, which fails a run left running as interrupted and takes the queued ones; leaves a running recorder and a running worker alone; exits 1 when the worker won't start. The extension runs it at its first read of `status.json` after enabling (at login, and after unlocking) when that shows a recording, or a transcription queued or running |
 | `minutas history [--recording <id>]` | Opens the history window, on that recording when one is given; with the window already open, brings it forward and shows that recording |
 
 The program rewrites `DATA/status.json` atomically after every change, and the extension reads it with a file monitor:

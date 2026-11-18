@@ -515,6 +515,51 @@ def test_transcribe_reports_a_worker_that_will_not_start(
     assert [run["status"] for run in store.load_runs(recording_id)] == ["failed"]
 
 
+@pytest.mark.usefixtures("fake_recorder")
+def test_repair_closes_a_recording_whose_recorder_is_gone_and_starts_the_worker(
+    fake_worker: FakeWorker,
+) -> None:
+    abandoned_id = abandoned_recording()
+    store.write_status()
+
+    assert main(["repair"]) == 0
+
+    abandoned = store.load_recording(abandoned_id)
+    assert (abandoned["stopped_at"], abandoned["incomplete"]) == ("2026-11-18T13:06:12+00:00", True)
+    assert read_status()["recording"] is None
+    assert fake_worker.starts == 1
+
+
+def test_repair_leaves_a_recording_whose_recorder_is_running(
+    fake_recorder: FakeRecorder, fake_worker: FakeWorker
+) -> None:
+    fake_recorder.running = True
+    recording = store.create_recording(START)
+
+    assert main(["repair"]) == 0
+
+    assert store.load_recording(recording["id"])["stopped_at"] is None
+    assert read_status()["recording"] == {"id": recording["id"], "started_at": START.isoformat()}
+    assert fake_worker.starts == 1
+
+
+@pytest.mark.usefixtures("fake_recorder")
+def test_repair_reports_a_worker_that_will_not_start_and_keeps_the_queue(
+    fake_worker: FakeWorker, capsys: pytest.CaptureFixture[str]
+) -> None:
+    recording_id = with_audio(store.create_recording(START)["id"])
+    store.mark_stopped(recording_id, START + timedelta(seconds=90), incomplete=False)
+    store.write_json(
+        store.recording_dir(recording_id) / "runs.json", [queued("2026-11-18T13:07:12+00:00")]
+    )
+    fake_worker.error = worker.WorkerError("Failed to connect to bus")
+
+    assert main(["repair"]) == 1
+
+    assert capsys.readouterr().err == "Could not start transcribing: Failed to connect to bus\n"
+    assert store.load_runs(recording_id) == [queued("2026-11-18T13:07:12+00:00")]
+
+
 def test_worker_runs_the_queue(fake_worker: FakeWorker) -> None:
     assert main(["worker"]) == 0
 

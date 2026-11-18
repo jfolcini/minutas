@@ -205,6 +205,20 @@ gnome-extensions enable "$UUID"
 expect "$MENU" '["Record","---","Standup · '
 expect "$NOTES" "'[\"Transcript ready | Standup, ${now:0:10} ${now:11:5}\"]'"
 
+echo "== enable runs minutas repair once when a recording or a transcription may be left over (a crash, a logout)"
+check "no repair on the enables with nothing in progress" test "$(grep -cxF repair "$WORK/minutas.log")" -eq 0
+gnome-extensions disable "$UUID"
+expect "$B === undefined" "'true'"
+write_status "{\"version\":1,\"recording\":{\"id\":\"$id2\",\"started_at\":\"$now\"},\"recent\":[$meeting]}"
+gnome-extensions enable "$UUID"
+expect "$MENU" '["Stop",'
+sleep 1
+expect_log repair
+write_status "{\"version\":1,\"recording\":{\"id\":\"$id2\",\"started_at\":\"$now\"},\"recent\":[]}"
+expect "$MENU" '["Stop","---","---","Open history"]'
+sleep 1
+check "only the first status read after enable repairs" test "$(grep -cxF repair "$WORK/minutas.log")" -eq 1
+
 echo "== soak: status churn, notifications, the timer and disable/enable cycles leave nothing behind"
 gnome-extensions disable "$UUID"
 expect "$B === undefined" "'true'"

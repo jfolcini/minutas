@@ -15,6 +15,7 @@ import {
     formatClock,
     hasWarning,
     lastLine,
+    mayNeedRepair,
     notificationsFor,
     parseStatus,
     recentLabel,
@@ -31,6 +32,9 @@ export default class MinutasExtension extends Extension {
         // what happened meanwhile (a transcript, a failed run) is announced after unlocking.
         this._status ??= EMPTY_STATUS;
         this._statusReads = 0;
+        // Enable runs at login, where a crash or a logout may have left something to repair; the
+        // first status read after it decides.
+        this._repairChecked = false;
         this._timerId = null;
         this._source = null;
 
@@ -110,6 +114,11 @@ export default class MinutasExtension extends Extension {
                 this._notify(title, body, recordingId);
             this._status = status;
             this._render();
+            if (!this._repairChecked) {
+                this._repairChecked = true;
+                if (mayNeedRepair(status))
+                    this._run(['repair'], "Couldn't start transcribing");
+            }
         });
     }
 

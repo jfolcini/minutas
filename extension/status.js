@@ -130,6 +130,16 @@ export function hasWarning(recording) {
     return recording.incomplete || recording.failed.length > 0;
 }
 
+/**
+ * What a crash or a logout can leave behind: a recording whose recorder is gone, a transcription
+ * no worker is on. `minutas repair` tells those from live ones.
+ * @param {Status} status
+ */
+export function mayNeedRepair(status) {
+    return status.recording !== null ||
+        status.recent.some(r => r.transcribe === 'queued' || r.transcribe === 'running');
+}
+
 /** @param {string} text */
 export function lastLine(text) {
     const trimmed = text.trim();
