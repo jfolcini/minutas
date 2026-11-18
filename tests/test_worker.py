@@ -14,12 +14,11 @@ from typing import TextIO, cast
 import pytest
 
 import minutas
-from minutas import store, worker
+from minutas import store, transcriber, worker
 
 START = datetime(2026, 11, 18, 13, 5, 42, tzinfo=UTC)
 FIRST = "2026-11-18T13-05-42"
-SRC = str(Path(minutas.__file__).parent.parent)
-TRANSCRIBER = "minutas.transcriber"
+TRANSCRIBER = str(Path(minutas.__file__).with_name("transcriber.py"))
 KILL = ["systemctl", "--user", "kill", "--signal=SIGUSR1", "minutas-transcribe.service"]
 
 
@@ -81,7 +80,7 @@ class FakeSystem:
         return [args for args, _ in self.calls]
 
     def transcribed(self) -> list[str]:
-        return [Path(args[3]).name for args in self.commands() if args[1:3] == ["-m", TRANSCRIBER]]
+        return [Path(args[3]).name for args in self.commands() if args[1:3] == ["-P", TRANSCRIBER]]
 
     def kills(self) -> list[list[str]]:
         return [args for args in self.commands() if args[0] == "systemctl"]
@@ -124,7 +123,6 @@ def system(monkeypatch: pytest.MonkeyPatch) -> FakeSystem:
 def speech(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> FakeSpeechPython:
     fake = FakeSpeechPython(tmp_path / "home" / ".local/share/minutas/speech/bin/python")
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
-    monkeypatch.delenv("PYTHONPATH", raising=False)
     fake.install()
     return fake
 
@@ -331,13 +329,12 @@ def test_work_transcribes_and_records_success(system: FakeSystem, tmp_path: Path
     assert system.commands() == [
         [
             str(tmp_path / "home/.local/share/minutas/speech/bin/python"),
-            "-m",
-            "minutas.transcriber",
+            "-P",
+            TRANSCRIBER,
             str(folder),
         ]
     ]
     kwargs = system.calls[0][1]
-    assert cast("dict[str, str]", kwargs["env"]).get("PYTHONPATH") == SRC
     assert kwargs["stdin"] == subprocess.DEVNULL
     assert kwargs["stdout"] == subprocess.DEVNULL
     assert seen == [("running", [])]
@@ -351,12 +348,55 @@ def test_work_transcribes_and_records_success(system: FakeSystem, tmp_path: Path
     assert worker_lock_held() is False
 
 
+# Stands in for the transcriber: an empty transcript, unless the speech Python reached a module
+# installed beside it, which exits with the reason.
+PROBE = """\
+import calendar
+import sys
+from pathlib import Path
+
+try:
+    import app_only
+except ModuleNotFoundError:
+    Path(sys.argv[1], "transcript.json").write_text("[]")
+"""
+
+
+@pytest.mark.usefixtures("sigterm")
+def test_the_speech_python_reaches_nothing_installed_beside_the_transcriber(
+    speech: FakeSpeechPython, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Installed, minutas sits in the app's site-packages, among packages built for Ubuntu's Python.
+    site_packages = tmp_path / "app/lib/python3.12/site-packages"
+    package = site_packages / "minutas"
+    package.mkdir(parents=True)
+    (package / "__init__.py").touch()
+    (package / "transcriber.py").write_text(PROBE)
+    (package / "calendar.py").write_text(
+        "raise SystemExit(\"minutas' calendar took the standard library's place\")\n"
+    )
+    (site_packages / "app_only.py").write_text(
+        'raise SystemExit("The speech Python imported the app\'s packages")\n'
+    )
+    monkeypatch.setattr(minutas, "__file__", str(package / "__init__.py"))
+    monkeypatch.setattr(transcriber, "__file__", str(package / "transcriber.py"))
+    speech.path.unlink()
+    speech.path.symlink_to(sys.executable)
+    recording_id = recording()
+    put_runs(recording_id, [queued_run(START)])
+
+    worker.work()
+
+    runs = store.load_runs(recording_id)
+    assert [(run["status"], run["error"]) for run in runs] == [("succeeded", None)]
+
+
 @pytest.mark.usefixtures("speech", "sigterm", "system")
 def test_work_writes_the_transcript_under_the_names_the_speakers_already_have() -> None:
     recording_id = recording()
     # An earlier transcription found the speaker, and a person named it.
     write_transcript(
-        ["python", "-m", TRANSCRIBER, str(store.recording_dir(recording_id))], sys.stderr
+        ["python", "-P", TRANSCRIBER, str(store.recording_dir(recording_id))], sys.stderr
     )
     store.write_transcript(recording_id)
     store.set_speaker_name(recording_id, "Speaker 1", "Ana Díaz")
@@ -367,20 +407,6 @@ def test_work_writes_the_transcript_under_the_names_the_speakers_already_have() 
     transcript = store.recording_dir(recording_id) / "transcript.md"
     assert transcript.read_text(encoding="utf-8") == "[00:00:01] **Ana Díaz:** Hola.\n"
     assert store.load_recording(recording_id).get("speakers") == {"Speaker 1": "Ana Díaz"}
-
-
-@pytest.mark.usefixtures("speech", "sigterm")
-def test_work_puts_the_package_first_on_an_existing_python_path(
-    system: FakeSystem, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    recording_id = recording()
-    put_runs(recording_id, [queued_run(START)])
-    monkeypatch.setenv("PYTHONPATH", "/opt/lib")
-
-    worker.work()
-
-    env = cast("dict[str, str]", system.calls[0][1]["env"])
-    assert env["PYTHONPATH"] == f"{SRC}:/opt/lib"
 
 
 @pytest.mark.usefixtures("speech", "sigterm")
