@@ -18,7 +18,7 @@ from minutas.window_view import (
 )
 
 STATUSES = ("queued", "running", "succeeded", "failed", "cancelled")
-SHOWN_ACTIONS = ("transcribe", "publish_agaric")
+SHOWN_ACTIONS = ("transcribe", "summarize", "publish_agaric")
 
 
 def recording(**changes: object) -> store.Recording:
@@ -54,9 +54,16 @@ def shown(
     changes: dict[str, object] | None = None,
     *,
     tracks: tuple[str, ...] = store.TRACKS,
-    publishing: bool = False,
+    running: tuple[str, ...] = (),
+    summarizer_missing: str = "",
 ) -> RowView:
-    return row(recording(**(changes or {})), runs, tracks, publishing=publishing)
+    return row(
+        recording(**(changes or {})),
+        runs,
+        tracks,
+        running=running,
+        summarizer_missing=summarizer_missing,
+    )
 
 
 def test_a_stopped_recording_shows_its_name_its_tracks_and_what_can_run() -> None:
@@ -74,6 +81,7 @@ def test_a_stopped_recording_shows_its_name_its_tracks_and_what_can_run() -> Non
         transcribe=action("Not run yet", "Transcribe"),
         speakers=(),
         attendees=(),
+        summarize=action("Not summarized", "", menu="Summarize", disabled="Transcribe first"),
         publish=action("Not published", "Publish"),
     )
 
@@ -115,6 +123,12 @@ def test_a_name_from_the_calendar_says_so() -> None:
     assert (view.name, view.name_source) == ("Weekly sync", "Calendar event")
 
 
+def test_a_name_from_the_summary_says_so() -> None:
+    view = shown([], {"name": "Release plan", "name_source": "summary"})
+
+    assert (view.name, view.name_source) == ("Release plan", "Proposed by the summary")
+
+
 def test_a_recording_in_progress_offers_nothing_but_its_name() -> None:
     view = shown([], {"stopped_at": None})
 
@@ -126,6 +140,9 @@ def test_a_recording_in_progress_offers_nothing_but_its_name() -> None:
     assert view.delete_disabled == "Still recording"
     assert view.transcribe == action(
         "Starts when the recording stops", "Transcribe", disabled="Still recording"
+    )
+    assert view.summarize == action(
+        "Not summarized", "", menu="Summarize", disabled="Still recording"
     )
     assert view.publish == action("Not published", "Publish", disabled="Still recording")
 
@@ -339,6 +356,123 @@ def test_publish_shows_its_last_result_and_the_next_step(
     assert shown(runs).publish == expected
 
 
+TRANSCRIBED = run("transcribe", "succeeded", output="transcript.md")
+SUMMARIZED = run("summarize", "succeeded", output="summary.md", prompt="Summarize this meeting.")
+
+
+@pytest.mark.parametrize(
+    ("runs", "expected"),
+    [
+        ([TRANSCRIBED], action("Not summarized", "", menu="Summarize")),
+        (
+            [TRANSCRIBED, SUMMARIZED],
+            action(
+                "Succeeded",
+                "",
+                menu="Summarize again",
+                output="summary.md",
+                prompt="Summarize this meeting.",
+            ),
+        ),
+        # Retry sends the failed run's prompt again; the menu offers another.
+        (
+            [
+                TRANSCRIBED,
+                run(
+                    "summarize",
+                    "failed",
+                    error="Error: not logged in",
+                    details="run-1.log",
+                    prompt="Only the blockers.",
+                ),
+            ],
+            action(
+                "Failed: Error: not logged in",
+                "Retry",
+                failed=True,
+                details="run-1.log",
+                menu="Summarize",
+                prompt="Only the blockers.",
+            ),
+        ),
+        (
+            [
+                TRANSCRIBED,
+                SUMMARIZED,
+                run("summarize", "failed", error="interrupted", prompt="Only the blockers."),
+            ],
+            action(
+                "Failed: interrupted",
+                "Retry",
+                failed=True,
+                menu="Summarize again",
+                output="summary.md",
+                prompt="Only the blockers.",
+            ),
+        ),
+        # A transcription that failed after one that succeeded leaves its transcript.
+        (
+            [TRANSCRIBED, run("transcribe", "failed", error="Out of memory")],
+            action("Not summarized", "", menu="Summarize"),
+        ),
+    ],
+)
+def test_summarize_shows_its_last_result_the_presets_menu_and_retry(
+    runs: list[store.Run], expected: ActionView
+) -> None:
+    assert shown(runs).summarize == expected
+
+
+MISSING = "devin not found: install the Devin CLI"
+
+
+@pytest.mark.parametrize(
+    ("runs", "expected"),
+    [
+        (
+            [TRANSCRIBED],
+            action(f"Not summarized · {MISSING}", "", menu="Summarize", disabled=MISSING),
+        ),
+        (
+            [TRANSCRIBED, SUMMARIZED, run("summarize", "failed", error="boom", prompt="P")],
+            action(
+                f"Failed: boom · {MISSING}",
+                "Retry",
+                failed=True,
+                menu="Summarize again",
+                output="summary.md",
+                prompt="P",
+                disabled=MISSING,
+            ),
+        ),
+        # A missing summarizer is the reason, whether or not there is a transcript yet.
+        ([], action(f"Not summarized · {MISSING}", "", menu="Summarize", disabled=MISSING)),
+    ],
+)
+def test_without_its_summarizer_summarize_says_how_to_install_it(
+    runs: list[store.Run], expected: ActionView
+) -> None:
+    assert shown(runs, summarizer_missing=MISSING).summarize == expected
+
+
+def test_still_recording_outranks_a_missing_summarizer() -> None:
+    view = shown([], {"stopped_at": None}, summarizer_missing=MISSING)
+
+    assert view.summarize.disabled == "Still recording"
+
+
+def test_summarizing_needs_a_transcript() -> None:
+    runs = [run("transcribe", "failed", error="Out of memory")]
+
+    assert shown(runs).summarize.disabled == "Transcribe first"
+
+
+def test_while_the_window_summarizes_nothing_else_can_be_pressed() -> None:
+    assert shown([TRANSCRIBED, SUMMARIZED], running=("summarize",)).summarize == action(
+        "Running", "", menu="Summarize again", disabled="Summarizing", output="summary.md"
+    )
+
+
 def test_publishing_needs_no_audio() -> None:
     assert shown([], tracks=()).publish == action("Not published", "Publish")
 
@@ -398,15 +532,15 @@ def test_the_question_goes_with_the_run_that_asked_it(later: store.Run) -> None:
 
 
 def test_while_the_window_publishes_nothing_else_can_be_pressed() -> None:
-    assert shown([TAKEN], publishing=True).publish == action(
+    assert shown([TAKEN], running=("publish_agaric",)).publish == action(
         "Running", "Publish", disabled="Publishing"
     )
-    assert shown([run("publish_agaric", "running")], publishing=True).publish == action(
+    assert shown([run("publish_agaric", "running")], running=("publish_agaric",)).publish == action(
         "Running", "Publish", disabled="Publishing"
     )
     # The page published before can still be opened meanwhile.
     published = run("publish_agaric", "succeeded", output="agaric://page/01HX")
-    assert shown([published], publishing=True).publish == action(
+    assert shown([published], running=("publish_agaric",)).publish == action(
         "Running", "Publish", disabled="Publishing", output="agaric://page/01HX"
     )
 
@@ -420,6 +554,8 @@ def test_while_the_window_publishes_nothing_else_can_be_pressed() -> None:
         ([run("transcribe", "failed"), run("transcribe", "queued")], False),
         ([run("transcribe", "cancelled"), run("publish_agaric", "succeeded")], False),
         ([run("transcribe", "succeeded"), run("publish_agaric", "failed")], True),
+        ([run("summarize", "failed")], True),
+        ([run("summarize", "failed"), run("summarize", "succeeded")], False),
     ],
 )
 def test_a_warning_marks_a_recording_whose_last_run_of_an_action_failed(
@@ -481,7 +617,23 @@ def test_a_clean_name_has_no_stray_space_and_cleans_to_itself(typed: str) -> Non
 def test_a_publish_command_that_died_without_a_failed_run_is_reported(
     *, exited_ok: bool, runs: list[store.Run], stderr: str, message: str | None
 ) -> None:
-    assert unrecorded_failure(runs, stderr, exited_ok=exited_ok, known=0) == message
+    assert unrecorded_failure(runs, "publish_agaric", stderr, exited_ok=exited_ok, known=0) == (
+        message
+    )
+
+
+def test_a_summarize_command_that_died_says_so_and_ignores_publish_runs() -> None:
+    runs = [run("publish_agaric", "failed"), run("summarize", "running")]
+
+    assert unrecorded_failure(
+        runs, "summarize", "Traceback:\nRuntimeError: boom\n", exited_ok=False, known=0
+    ) == ("Summarize stopped: RuntimeError: boom")
+    assert (
+        unrecorded_failure(
+            [*runs, run("summarize", "failed")], "summarize", "", exited_ok=False, known=0
+        )
+        is None
+    )
 
 
 def test_an_earlier_failed_publish_does_not_hide_a_retry_that_died() -> None:
@@ -490,19 +642,24 @@ def test_an_earlier_failed_publish_does_not_hide_a_retry_that_died() -> None:
     earlier = [run("publish_agaric", "failed", error="Agaric isn't running")]
 
     assert unrecorded_failure(
-        earlier, "ModuleNotFoundError: No module named 'keyring'\n", exited_ok=False, known=1
+        earlier,
+        "publish_agaric",
+        "ModuleNotFoundError: No module named 'keyring'\n",
+        exited_ok=False,
+        known=1,
     ) == ("Publish to Agaric stopped: ModuleNotFoundError: No module named 'keyring'")
 
 
 def a_run() -> st.SearchStrategy[store.Run]:
     return st.builds(
-        lambda action, status, error, details, output, choice: run(
+        lambda action, status, error, details, output, choice, prompt: run(
             action,
             status,
             error=error if status == "failed" else None,
             details=details,
             output=output if status == "succeeded" else None,
             choice=choice if status == "failed" else None,
+            prompt=prompt,
         ),
         st.sampled_from(store.ACTIONS),
         st.sampled_from(STATUSES),
@@ -517,10 +674,14 @@ def a_run() -> st.SearchStrategy[store.Run]:
                 {"kind": "rename_taken"},
             ]
         ),
+        st.sampled_from(["Summarize this meeting.", "Only the blockers."]),
     )
 
 
-def a_row() -> st.SearchStrategy[tuple[store.Recording, list[store.Run], tuple[str, ...], bool]]:
+Row = tuple[store.Recording, list[store.Run], tuple[str, ...], tuple[str, ...], str]
+
+
+def a_row() -> st.SearchStrategy[Row]:
     return st.tuples(
         st.builds(
             lambda stopped, incomplete: recording(
@@ -531,7 +692,8 @@ def a_row() -> st.SearchStrategy[tuple[store.Recording, list[store.Run], tuple[s
         ),
         st.lists(a_run(), max_size=8),
         st.sets(st.sampled_from(store.TRACKS)).map(lambda names: tuple(sorted(names))),
-        st.booleans(),
+        st.sets(st.sampled_from(["publish_agaric", "summarize"])).map(tuple),
+        st.sampled_from(["", MISSING]),
     )
 
 
@@ -541,14 +703,20 @@ def latest(runs: list[store.Run], action: str) -> tuple[int, store.Run] | None:
 
 
 @given(a_row())
-def test_every_row_keeps_the_rules(
-    case: tuple[store.Recording, list[store.Run], tuple[str, ...], bool],
-) -> None:
-    a_recording, runs, tracks, publishing = case
+def test_every_row_keeps_the_rules(case: Row) -> None:
+    a_recording, runs, tracks, running, missing = case
+    publishing, summarizing = "publish_agaric" in running, "summarize" in running
     stopped = a_recording["stopped_at"] is not None
     transcription, publication = latest(runs, "transcribe"), latest(runs, "publish_agaric")
+    summary = latest(runs, "summarize")
 
-    view = row(a_recording, runs, tracks, publishing=publishing)
+    view = row(
+        a_recording,
+        runs,
+        tracks,
+        running=running,
+        summarizer_missing=missing,
+    )
 
     # Cancel is for the latest Transcribe run, while it is queued or running, and only then.
     transcribing = transcription is not None and transcription[1]["status"] in {"queued", "running"}
@@ -566,20 +734,31 @@ def test_every_row_keeps_the_rules(
         [name for name in store.TRACKS if name in tracks] if stopped else []
     )
     # A failure is shown, with its reason, exactly when the latest run of the action failed.
-    for shown_action, last in ((view.transcribe, transcription), (view.publish, publication)):
+    for shown_action, last, running in (
+        (view.transcribe, transcription, False),
+        (view.summarize, summary, summarizing),
+        (view.publish, publication, publishing),
+    ):
         failed = last is not None and last[1]["status"] == "failed"
-        if not (publishing and shown_action is view.publish):
+        if not running:
             assert shown_action.failed is failed
             if failed and last is not None:
-                assert shown_action.result == f"Failed: {last[1]['error']}"
+                assert shown_action.result.removesuffix(f" · {MISSING}") == (
+                    f"Failed: {last[1]['error']}"
+                )
                 assert shown_action.details == last[1]["details"]
             else:
                 assert shown_action.details is None
     assert view.warning is any(
-        last is not None and last[1]["status"] == "failed" for last in (transcription, publication)
+        last is not None and last[1]["status"] == "failed"
+        for last in (transcription, summary, publication)
     )
     # The link is the newest output the action ever produced.
-    for shown_action, name in ((view.transcribe, "transcribe"), (view.publish, "publish_agaric")):
+    for shown_action, name in (
+        (view.transcribe, "transcribe"),
+        (view.summarize, "summarize"),
+        (view.publish, "publish_agaric"),
+    ):
         outputs = [r["output"] for r in runs if r["action"] == name and r["status"] == "succeeded"]
         assert shown_action.output == (outputs[-1] if outputs else None)
     # Rename, and Use that page when the run names one, answer the latest publish run, and
@@ -589,18 +768,44 @@ def test_every_row_keeps_the_rules(
     assert view.publish.renames is (asked is not None)
     assert view.publish.taken_by == (None if asked is None else asked.get("page_id"))
     assert (view.publish.disabled == "") is (stopped and not publishing)
+    # Summarize needs a transcript, from a transcription that succeeded, and is pressed once at
+    # a time; Retry, with the same prompt, follows a run that failed or was cancelled.
+    transcribed = any(r["action"] == "transcribe" and r["status"] == "succeeded" for r in runs)
+    assert (view.summarize.disabled == "") is (
+        stopped and transcribed and not summarizing and not missing
+    )
+    # Without its summarizer, the row says how to install it, whatever it shows besides.
+    assert view.summarize.result.endswith(f" · {MISSING}") is (bool(missing) and not summarizing)
+    retries = summary is not None and summary[1]["status"] in {"failed", "cancelled"}
+    assert view.summarize.label == ("Retry" if retries and not summarizing else "")
+    if retries and not summarizing and summary is not None:
+        assert view.summarize.prompt == summary[1].get("prompt")
+    assert view.summarize.menu == (
+        "Summarize again" if view.summarize.output is not None else "Summarize"
+    )
+    assert (view.transcribe.menu, view.publish.menu) == (None, None)
 
 
 @given(a_row(), st.lists(a_run(), max_size=4))
-def test_runs_of_other_actions_change_nothing_in_a_row(
-    case: tuple[store.Recording, list[store.Run], tuple[str, ...], bool], others: list[store.Run]
-) -> None:
-    a_recording, runs, tracks, publishing = case
+def test_runs_of_other_actions_change_nothing_in_a_row(case: Row, others: list[store.Run]) -> None:
+    a_recording, runs, tracks, running, missing = case
     shown_runs = [r for r in runs if r["action"] in SHOWN_ACTIONS]
     other_runs = [r for r in others if r["action"] not in SHOWN_ACTIONS]
 
-    with_others = row(a_recording, other_runs + shown_runs, tracks, publishing=publishing)
-    without = row(a_recording, shown_runs, tracks, publishing=publishing)
+    with_others = row(
+        a_recording,
+        other_runs + shown_runs,
+        tracks,
+        running=running,
+        summarizer_missing=missing,
+    )
+    without = row(
+        a_recording,
+        shown_runs,
+        tracks,
+        running=running,
+        summarizer_missing=missing,
+    )
 
     # Only the place in the log moves: the run Cancel stops is that many entries further on.
     cancels = without.transcribe.cancels

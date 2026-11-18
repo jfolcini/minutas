@@ -1,7 +1,9 @@
 """Publishes a recording to Agaric with its agaric-mcp bridge: `agaric-mcp call <tool> <json>`.
 
-The first publish makes the meeting page with add_meeting. Once one has succeeded, publishing
-again only renames that page when the recording's name changed: it never makes a second page.
+The first publish makes the meeting page with add_meeting, with the summary if there is one.
+Once one has succeeded, publishing again never makes a second page: it renames that page when the
+recording's name changed, and adds a summary newer than the one it holds above the recording's
+block, the one that holds its files.
 """
 
 import json
@@ -17,19 +19,19 @@ from contextlib import contextmanager
 from datetime import date, datetime
 from pathlib import Path
 from types import FrameType
-from typing import NotRequired, cast
+from typing import NamedTuple, NotRequired, cast
 
 from keyring.errors import KeyringError
 
 from minutas import settings, store
 
 ACTION = "publish_agaric"
+SUMMARIZE = "summarize"
 BRIDGE = "agaric-mcp"
 GST_LAUNCH = "gst-launch-1.0"
 TRANSCRIPT = "transcript.md"
 DEFAULT_NAME = "Meeting"
 PAGE_LINK = "agaric://page/"
-INTERRUPTED = "interrupted"
 # The tracks' own format; Opus at 32 kbps keeps about three hours under Agaric's 50 MB cap.
 MIX_CAPS = "audio/x-raw,rate=16000,channels=1"
 
@@ -75,6 +77,21 @@ NAME_TAKEN = re.compile(
 class PublishRun(store.Run):
     # The page's title as the run left it, so publishing again knows when the name changed.
     title: NotRequired[str]
+    # The Summarize run whose summary the page holds, so publishing again adds only a newer one.
+    summary_run: NotRequired[int]
+    # The block holding the recording's files, which a later summary goes above: on a page that
+    # holds other recordings too, the page's first block holding a file may be another's.
+    recording_block: NotRequired[str]
+
+
+class Published(NamedTuple):
+    """What a publish left in Agaric."""
+
+    page_id: str
+    title: str
+    recording_block: str | None
+    summary_run: int | None
+    note: str | None = None
 
 
 class AgaricError(Exception):
@@ -133,14 +150,14 @@ def call(token: str, tool: str, arguments: Mapping[str, object], log: Path) -> o
         raise AgaricError(UNEXPECTED) from None
 
 
-def page_id_in(answer: object) -> str:
+def id_in(answer: object, key: str) -> str:
     try:
-        page_id = cast("dict[str, object]", answer)["page_id"]
+        found = cast("dict[str, object]", answer)[key]
     except (KeyError, TypeError):
-        page_id = None
-    if not isinstance(page_id, str):
+        found = None
+    if not isinstance(found, str):
         raise AgaricError(UNEXPECTED)
-    return page_id
+    return found
 
 
 def mix(folder: Path, work: Path, log: Path) -> Path:
@@ -204,12 +221,21 @@ def agent_token() -> str:
     return token
 
 
-def send(
-    recording_id: str, previous: PublishRun | None, page: str | None, log: Path
-) -> tuple[str, str, str | None]:
-    """Makes the page, adds the files to page, or renames the page made before.
+def latest_success(runs: list[store.Run], action: str) -> int | None:
+    return next(
+        (
+            index
+            for index, run in reversed(list(enumerate(runs)))
+            if run["action"] == action and run["status"] == "succeeded"
+        ),
+        None,
+    )
 
-    Returns the page's id, the title it now has, and a note for the person or None.
+
+def send(recording_id: str, runs: list[store.Run], page: str | None, log: Path) -> Published:
+    """Makes the page, adds the files to page, or brings the page made before up to date.
+
+    runs is the log before this run.
     """
     token = agent_token()
     space_id = settings.agaric_space_id()
@@ -219,7 +245,14 @@ def send(
     day = datetime.fromisoformat(recording["started_at"]).date()
     title = page_title(recording["name"], day)
     taken = f"Agaric already has a page named {title}"
-    if page is None and previous is not None:
+    summary_run = latest_success(runs, SUMMARIZE)
+    summary: dict[str, str] = {}
+    if summary_run is not None:
+        summary_file = store.recording_dir(recording_id) / store.SUMMARY
+        summary["summary_markdown"] = summary_file.read_text(encoding="utf-8")
+    published = latest_success(runs, ACTION)
+    if page is None and published is not None:
+        previous = cast("PublishRun", runs[published])
         page_id = cast("str", previous["output"]).removeprefix(PAGE_LINK)
         if previous.get("title") != title:
             rename = {"space_id": space_id, "block_id": page_id, "content": title}
@@ -227,7 +260,12 @@ def send(
                 call(token, "update_block_content", rename, log)
             except NameTakenError:
                 raise AgaricError(taken, store.Choice(kind="rename_taken")) from None
-        return page_id, title, None
+        block = previous.get("recording_block")
+        if summary_run is not None and summary_run != previous.get("summary_run"):
+            # A run from before blocks were kept knows only the page.
+            target = {"page": page_id} if block is None else {"block_id": block}
+            call(token, "add_meeting", {"space_id": space_id, **target, **summary}, log)
+        return Published(page_id, title, block, summary_run)
     target = (
         {"title": recording["name"], "date": day.isoformat()} if page is None else {"page": page}
     )
@@ -236,65 +274,20 @@ def send(
     call(token, "list_spaces", {}, log)
     try:
         with meeting_files(store.recording_dir(recording_id), log) as files:
-            answer = call(token, "add_meeting", {"space_id": space_id, **target, **files}, log)
+            answer = call(
+                token, "add_meeting", {"space_id": space_id, **target, **files, **summary}, log
+            )
     except NameTakenError:
         found = call(token, "resolve", {"space_id": space_id, "names": [title]}, log)
-        holder = page_id_in(cast("list[object]", found)[0])
+        holder = id_in(cast("list[object]", found)[0], "page_id")
         raise AgaricError(taken, store.Choice(kind="name_taken", page_id=holder)) from None
-    return page_id_in(answer), title, None if "audio_path" in files else AUDIO_LEFT_OUT
-
-
-def start_run(recording_id: str, queued_at: str) -> tuple[int, PublishRun | None]:
-    """Appends a running run; returns its index and the latest publish that succeeded.
-
-    A publish still running is one a crash left behind: it fails as interrupted.
-    """
-    with store.lock():
-        runs = store.load_runs(recording_id)
-        fail_running(recording_id, runs, INTERRUPTED)
-        succeeded = [r for r in runs if r["action"] == ACTION and r["status"] == "succeeded"]
-        runs.append(
-            store.Run(
-                action=ACTION,
-                status="running",
-                queued_at=queued_at,
-                error=None,
-                details=None,
-                output=None,
-            )
-        )
-        store.save_runs(recording_id, runs)
-    store.write_status()
-    return len(runs) - 1, cast("PublishRun", succeeded[-1]) if succeeded else None
-
-
-def fail_running(recording_id: str, runs: list[store.Run], error: str) -> None:
-    for index, run in enumerate(runs):
-        if run["action"] == ACTION and run["status"] == "running":
-            run["status"] = "failed"
-            run["error"] = error
-            run["details"] = store.written_log(recording_id, index)
-
-
-def fail_left_running(recording_id: str, error: str) -> None:
-    """Fails the run of a publisher that died before it could end it."""
-    with store.lock():
-        runs = store.load_runs(recording_id)
-        fail_running(recording_id, runs, error)
-        store.save_runs(recording_id, runs)
-    store.write_status()
-
-
-def end_run(recording_id: str, index: int, run: PublishRun) -> None:
-    with store.lock():
-        runs = store.load_runs(recording_id)
-        runs[index] = run
-        store.save_runs(recording_id, runs)
-    store.write_status()
+    note = None if "audio_path" in files else AUDIO_LEFT_OUT
+    page_id, block = id_in(answer, "page_id"), id_in(answer, "recording_block_id")
+    return Published(page_id, title, block, summary_run, note)
 
 
 def interrupt(_signal: int, _frame: FrameType | None) -> None:
-    raise AgaricError(INTERRUPTED)
+    raise AgaricError(store.INTERRUPTED)
 
 
 def publish(recording_id: str, published: datetime, *, page: str | None = None) -> bool:
@@ -304,7 +297,17 @@ def publish(recording_id: str, published: datetime, *, page: str | None = None) 
     interrupted: the bridge or the mix is killed and the files made for Agaric are removed.
     """
     queued_at = published.isoformat(timespec="seconds")
-    index, previous = start_run(recording_id, queued_at)
+    index, runs = store.start_run(
+        recording_id,
+        store.Run(
+            action=ACTION,
+            status="running",
+            queued_at=queued_at,
+            error=None,
+            details=None,
+            output=None,
+        ),
+    )
     run = PublishRun(
         action=ACTION,
         status="failed",
@@ -315,21 +318,23 @@ def publish(recording_id: str, published: datetime, *, page: str | None = None) 
     )
     on_term = signal.signal(signal.SIGTERM, interrupt)
     try:
-        page_id, title, note = send(
-            recording_id, previous, page, store.run_log(recording_id, index)
-        )
+        left = send(recording_id, runs[:index], page, store.run_log(recording_id, index))
     except AgaricError as error:
         run["error"] = str(error)
         if error.choice is not None:
             run["choice"] = error.choice
     else:
-        run.update(status="succeeded", output=f"{PAGE_LINK}{page_id}", title=title)
-        if note is not None:
-            run["note"] = note
+        run.update(status="succeeded", output=f"{PAGE_LINK}{left.page_id}", title=left.title)
+        if left.note is not None:
+            run["note"] = left.note
+        if left.recording_block is not None:
+            run["recording_block"] = left.recording_block
+        if left.summary_run is not None:
+            run["summary_run"] = left.summary_run
     finally:
         signal.signal(signal.SIGTERM, on_term)
     run["details"] = store.written_log(recording_id, index)
-    end_run(recording_id, index, run)
+    store.end_run(recording_id, index, run)
     return run["status"] == "succeeded"
 
 

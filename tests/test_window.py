@@ -1,6 +1,7 @@
 import fcntl
 import gc
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -18,7 +19,7 @@ gi.require_version("Adw", "1")
 gi.require_version("Gtk", "4.0")
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Graphene, Gtk  # noqa: E402
 
-from minutas import store, window, worker  # noqa: E402
+from minutas import settings, store, summarizer, window, worker  # noqa: E402
 
 pytestmark = pytest.mark.usefixtures("no_handler_raised")
 
@@ -31,15 +32,18 @@ DISMISSED = GLib.Error(
 )
 NO_HANDLER = GLib.Error("No application handles this", "g-io-error-quark", Gio.IOErrorEnum.FAILED)
 
-# What `minutas publish agaric` does, as far as the window can tell: it appends the run its plan
-# holds to the recording's log, says what the plan has it say, and exits as the plan has it exit.
+# What `minutas publish agaric` or `minutas summarize` does, as far as the window can tell: it
+# appends the run its plan holds to the recording's log, says what the plan has it say, and exits
+# as the plan has it exit.
 FAKE_PUBLISH = """
 import json, os, sys
 from pathlib import Path
 plan_file, *arguments = sys.argv[1:]
 plan = json.loads(Path(plan_file).read_text())
 Path(plan_file).with_name("called.json").write_text(json.dumps(arguments))
-log = Path(os.environ["XDG_DATA_HOME"], "minutas", "recordings", arguments[2], "runs.json")
+recordings = Path(os.environ["XDG_DATA_HOME"], "minutas", "recordings")
+recording_id = next(argument for argument in arguments if (recordings / argument).is_dir())
+log = recordings / recording_id / "runs.json"
 if plan["run"] is not None:
     log.write_text(json.dumps([*json.loads(log.read_text()), plan["run"]]))
 sys.stderr.write(plan["stderr"])
@@ -209,7 +213,7 @@ def pickers(row: Gtk.Widget) -> dict[str, Gtk.MenuButton]:
     return {
         line.get_title(): picker
         for line in descendants(row)
-        if isinstance(line, Adw.ActionRow)
+        if isinstance(line, Adw.ActionRow) and line.get_title().startswith("Speaker ")
         for picker in descendants(line)
         if isinstance(picker, Gtk.MenuButton)
     }
@@ -299,6 +303,17 @@ def systemd(monkeypatch: pytest.MonkeyPatch) -> FakeSystemd:
     fake = FakeSystemd()
     monkeypatch.setattr(subprocess, "run", fake)
     return fake
+
+
+@pytest.fixture(autouse=True)
+def devin_installed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    """A devin on PATH, never run: the window offers Summarize only when there is one."""
+    folder = tmp_path_factory.mktemp("bin")
+    (folder / "devin").write_text("#!/bin/sh\nexit 1\n")
+    (folder / "devin").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{folder}{os.pathsep}{os.environ['PATH']}")
 
 
 class FakePublish:
@@ -490,7 +505,7 @@ def test_the_recordings_are_read_inside_the_store_lock(monkeypatch: pytest.Monke
 
     monkeypatch.setattr(store, "load_recording", spy)
 
-    assert [view.recording_id for view in window.load_views(())] == [FIRST]
+    assert [view.recording_id for view in window.load_views({})] == [FIRST]
     assert held == [True]
 
 
@@ -513,6 +528,7 @@ def test_a_row_expands_to_its_name_its_tracks_and_its_actions(
         ("Call", ""),
         ("Audio files", ""),
         ("Transcribe", "Not run yet"),
+        ("Summarize", "Not summarized"),
         ("Publish to Agaric", "Not published"),
     ]
     assert list(buttons(row)) == [
@@ -581,7 +597,7 @@ def test_edit_changes_nothing_when_cancelled_or_left_empty(
     assert shown.get_visible_dialog() is None
 
 
-def test_the_speakers_sit_between_the_transcription_and_the_publishing(
+def test_the_speakers_sit_between_the_transcription_and_the_summary(
     history: Callable[[], window.HistoryWindow],
 ) -> None:
     transcribed()
@@ -594,6 +610,7 @@ def test_the_speakers_sit_between_the_transcription_and_the_publishing(
         ("Transcribe", "Succeeded"),
         ("Speaker 1", "Ana Díaz"),
         ("Speaker 2", ""),
+        ("Summarize", "Not summarized"),
         ("Publish to Agaric", "Not published"),
     ]
     # An attendee's "_" is a letter of the name, not the mark of a shortcut key.
@@ -700,6 +717,7 @@ def test_the_speakers_follow_each_transcription(
     row = expand(shown)
     assert lines(row)[5:] == [
         ("Transcribe", "Not run yet"),
+        ("Summarize", "Not summarized"),
         ("Publish to Agaric", "Not published"),
     ]
 
@@ -710,6 +728,7 @@ def test_the_speakers_follow_each_transcription(
         ("Transcribe", "Succeeded"),
         ("Speaker 1", ""),
         ("Speaker 2", ""),
+        ("Summarize", "Not summarized"),
         ("Publish to Agaric", "Not published"),
     ]
 
@@ -720,6 +739,7 @@ def test_the_speakers_follow_each_transcription(
     assert lines(row)[5:] == [
         ("Transcribe", "Succeeded"),
         ("Speaker 1", ""),
+        ("Summarize", "Not summarized"),
         ("Publish to Agaric", "Not published"),
     ]
 
@@ -883,9 +903,9 @@ def test_play_puts_a_player_for_the_track_in_its_row(
     assert desktop_calls.stopped == [str(store.recording_dir(FIRST) / "call.opus")]
     assert [widget for widget in descendants(row) if isinstance(widget, Gtk.MediaControls)] == []
     assert list(buttons(call.row)) == ["Play", "Save a copy"]
-    # Expanded again it is the same seven lines, not a second set.
+    # Expanded again it is the same eight lines, not a second set.
     expand(shown)
-    assert len(lines(row)) == 7
+    assert len(lines(row)) == 8
 
 
 def test_save_a_copy_writes_the_track_where_the_person_chose(
@@ -1145,6 +1165,244 @@ def test_a_publish_command_that_dies_mid_run_fails_its_run(
     assert store.load_runs(FIRST)[-1] == run("publish_agaric", "failed", error=reason)
     assert ("Publish to Agaric", f"Failed: {reason}") in lines(row)
     assert list(buttons(shown.details[FIRST].publish.row)) == ["Open in Agaric", "Retry"]
+    assert row.warning.get_visible() is True
+
+
+def menu_entries(model: Gio.MenuModel, within: str = "") -> dict[str, tuple[str, GLib.Variant]]:
+    """A menu's items, by label, with the action each activates; a submenu's under its label."""
+    entries: dict[str, tuple[str, GLib.Variant]] = {}
+    for index in range(model.get_n_items()):
+        label = model.get_item_attribute_value(index, "label", GLib.VariantType("s"))
+        section = model.get_item_link(index, Gio.MENU_LINK_SECTION)
+        submenu = model.get_item_link(index, Gio.MENU_LINK_SUBMENU)
+        if section is not None:
+            entries |= menu_entries(section, within)
+        elif submenu is not None and label is not None:
+            entries |= menu_entries(submenu, f"{within}{label.get_string()} > ")
+        else:
+            action = model.get_item_attribute_value(index, "action", GLib.VariantType("s"))
+            target = model.get_item_attribute_value(index, "target", None)
+            assert label is not None
+            assert action is not None
+            assert target is not None
+            entries[f"{within}{label.get_string()}"] = (action.get_string(), target)
+    return entries
+
+
+def presets_menu(shown: window.HistoryWindow) -> dict[str, tuple[str, GLib.Variant]]:
+    """What the Summarize menu offers once opened."""
+    presets = shown.details[FIRST].presets
+    presets.popup()
+    settle()
+    model = presets.get_menu_model()
+    presets.popdown()
+    settle()
+    assert model is not None
+    return menu_entries(model)
+
+
+def choose_preset(shown: window.HistoryWindow, label: str) -> None:
+    """Picks an item of the Summarize menu, as a click on it would."""
+    action, target = presets_menu(shown)[label]
+    assert shown.details[FIRST].presets.activate_action(action, target) is True
+    settle()
+
+
+TRANSCRIBED = run("transcribe", "succeeded", output="transcript.md")
+
+
+def test_summarize_offers_the_presets_and_runs_the_one_chosen(
+    history: Callable[[], window.HistoryWindow],
+    publish: FakePublish,
+    desktop_calls: Desktop,
+) -> None:
+    recording([TRANSCRIBED])
+    settings.save_preset("Retro_2026", "Summarize this retrospective.")
+    publish.will(
+        run("summarize", "succeeded", output="summary.md", prompt=summarizer.presets()["Standup"])
+    )
+    shown = history()
+    row = expand(shown)
+    presets = shown.details[FIRST].presets
+    assert (presets.get_label(), presets.get_sensitive()) == ("Summarize", True)
+    # A typed name's "_" is shown, not taken for a keyboard shortcut.
+    assert list(presets_menu(shown)) == [
+        "General",
+        "Standup",
+        "1:1",
+        "Stakeholder call",
+        "Retro__2026",
+        "Custom…",
+        "Delete a preset > Retro__2026",
+    ]
+
+    choose_preset(shown, "Standup")
+
+    assert ("Summarize", "Running") in lines(row)
+    assert (presets.get_sensitive(), presets.get_tooltip_text()) == (False, "Summarizing")
+
+    wait_until(lambda: not shown.summarizing)
+
+    assert publish.called() == ["summarize", FIRST, f"--prompt={summarizer.presets()['Standup']}"]
+    assert ("Summarize", "Succeeded") in lines(row)
+    assert presets.get_label() == "Summarize again"
+    assert list(buttons(shown.details[FIRST].summarize.row)) == ["Open summary"]
+
+    press(row, "Open summary")
+
+    assert desktop_calls.opened == [str(store.recording_dir(FIRST) / "summary.md")]
+
+
+def test_without_devin_summarize_says_how_to_install_it(
+    history: Callable[[], window.HistoryWindow], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    recording([TRANSCRIBED])
+    monkeypatch.setenv("PATH", str(tmp_path / "nowhere"))
+    shown = history()
+    row = expand(shown)
+
+    install = (
+        "devin not found: install the Devin CLI with "
+        "`curl -fsSL https://cli.devin.ai/install.sh | bash`, then log in with `devin auth login`"
+    )
+    presets = shown.details[FIRST].presets
+    assert (presets.get_sensitive(), presets.get_tooltip_text()) == (False, install)
+    assert ("Summarize", f"Not summarized · {install}") in lines(row)
+
+
+def test_summarize_waits_for_a_transcript(history: Callable[[], window.HistoryWindow]) -> None:
+    recording([run("transcribe", "failed", error="Out of memory")])
+    shown = history()
+    expand(shown)
+
+    presets = shown.details[FIRST].presets
+    assert (presets.get_sensitive(), presets.get_tooltip_text()) == (False, "Transcribe first")
+
+
+def custom_prompt_dialog(
+    shown: window.HistoryWindow,
+) -> tuple[Adw.AlertDialog, Gtk.TextView, Gtk.Entry]:
+    choose_preset(shown, "Custom…")
+    dialog = open_dialog(shown)
+    assert isinstance(dialog, Adw.AlertDialog)
+    [prompt] = [widget for widget in descendants(dialog) if isinstance(widget, Gtk.TextView)]
+    [name] = [widget for widget in descendants(dialog) if isinstance(widget, Gtk.Entry)]
+    return dialog, prompt, name
+
+
+def test_custom_sends_the_typed_prompt_and_saves_it_as_a_preset(
+    history: Callable[[], window.HistoryWindow], publish: FakePublish
+) -> None:
+    recording([TRANSCRIBED])
+    shown = history()
+    expand(shown)
+
+    dialog, prompt, name = custom_prompt_dialog(shown)
+    assert dialog.get_heading() == "Custom summary"
+    prompt.get_buffer().set_text("  Only the blockers.\n")
+    name.set_text(" Blockers ")
+    press(dialog, "Summarize")
+    wait_until(lambda: not shown.summarizing)
+
+    assert publish.called() == ["summarize", FIRST, "--prompt=Only the blockers."]
+    assert settings.saved_presets() == {"Blockers": "Only the blockers."}
+    assert "Blockers" in presets_menu(shown)
+
+
+@pytest.mark.parametrize(
+    ("typed", "answer"), [("Only the blockers.", "Cancel"), (" \n", "Summarize")]
+)
+def test_custom_runs_nothing_when_cancelled_or_left_empty(
+    history: Callable[[], window.HistoryWindow], publish: FakePublish, typed: str, answer: str
+) -> None:
+    recording([TRANSCRIBED])
+    shown = history()
+    expand(shown)
+
+    dialog, prompt, name = custom_prompt_dialog(shown)
+    prompt.get_buffer().set_text(typed)
+    name.set_text("Blockers")
+    press(dialog, answer)
+    settle()
+
+    assert (shown.summarizing, publish.called()) == ({}, [])
+    assert settings.saved_presets() == {}
+
+
+def test_custom_without_a_name_saves_no_preset(
+    history: Callable[[], window.HistoryWindow], publish: FakePublish
+) -> None:
+    recording([TRANSCRIBED])
+    shown = history()
+    expand(shown)
+
+    dialog, prompt, _ = custom_prompt_dialog(shown)
+    prompt.get_buffer().set_text("Only the blockers.")
+    press(dialog, "Summarize")
+    wait_until(lambda: not shown.summarizing)
+
+    assert publish.called() == ["summarize", FIRST, "--prompt=Only the blockers."]
+    assert settings.saved_presets() == {}
+
+
+def test_a_saved_preset_can_be_deleted_and_a_built_in_one_cannot(
+    history: Callable[[], window.HistoryWindow],
+) -> None:
+    recording([TRANSCRIBED])
+    settings.save_preset("Retro", "Summarize this retrospective.")
+    settings.save_preset("Planning", "List the plans.")
+    shown = history()
+    expand(shown)
+
+    choose_preset(shown, "Delete a preset > Retro")
+
+    assert settings.saved_presets() == {"Planning": "List the plans."}
+    assert [label for label in presets_menu(shown) if label.startswith("Delete")] == [
+        "Delete a preset > Planning"
+    ]
+
+    choose_preset(shown, "Delete a preset > Planning")
+
+    assert list(presets_menu(shown)) == ["General", "Standup", "1:1", "Stakeholder call", "Custom…"]
+
+
+def test_retry_sends_the_failed_runs_prompt_again(
+    history: Callable[[], window.HistoryWindow], publish: FakePublish
+) -> None:
+    failed = run("summarize", "failed", error="Error: not logged in", prompt="Only the blockers.")
+    recording([TRANSCRIBED, failed])
+    publish.will(run("summarize", "succeeded", output="summary.md", prompt="Only the blockers."))
+    shown = history()
+    row = expand(shown)
+    assert ("Summarize", "Failed: Error: not logged in") in lines(row)
+    assert list(buttons(shown.details[FIRST].summarize.row)) == ["Retry"]
+    assert shown.details[FIRST].presets.get_label() == "Summarize"
+
+    press(row, "Retry")
+    wait_until(lambda: not shown.summarizing)
+
+    assert publish.called() == ["summarize", FIRST, "--prompt=Only the blockers."]
+    assert ("Summarize", "Succeeded") in lines(row)
+
+
+def test_a_summarize_command_that_dies_mid_run_fails_its_run(
+    history: Callable[[], window.HistoryWindow], publish: FakePublish
+) -> None:
+    recording([TRANSCRIBED])
+    traceback = "Traceback (most recent call last):\n  ...\nRuntimeError: boom\n"
+    publish.will(run("summarize", "running", prompt="Summarize."), exit_status=1, stderr=traceback)
+    shown = history()
+    row = expand(shown)
+
+    choose_preset(shown, "General")
+    wait_until(lambda: not shown.summarizing)
+
+    reason = "Summarize stopped: RuntimeError: boom"
+    assert store.load_runs(FIRST)[-1] == run(
+        "summarize", "failed", error=reason, prompt="Summarize."
+    )
+    assert reason in texts(shown)
+    assert ("Summarize", f"Failed: {reason}") in lines(row)
     assert row.warning.get_visible() is True
 
 

@@ -95,7 +95,7 @@ agaric-mcp --token agt_… call add_meeting '{"space_id":"…","title":"Weekly s
 | `template` | Not sent: meeting pages get no template. If one is added later, its `<% recording %>` block becomes the recording block |
 | `audio_path` | The two tracks mixed into one Opus file at publish time; `.opus`, `.ogg`, `.mp3`, `.m4a`, `.wav`, `.webm` and `.flac` are accepted, at most 50 MB a file |
 | `transcript_path` | Markdown, stored as `<name>.transcript.md` |
-| `page` + `summary_markdown` | Publish to Agaric run again after Summarize; the summary is written just above the recording block |
+| `block_id` + `summary_markdown` | Publish to Agaric run again after Summarize: `block_id` is the recording block the first publish's result named, the one holding this recording's files, and the summary is written just above it; a newer summary goes there too, and the older one stays until removed in Agaric |
 
 The transcript is one paragraph per segment; Agaric makes each timestamp seek the player.
 
@@ -127,7 +127,7 @@ One Python program does the work and draws the history window; the GNOME extensi
 | Transcriber | Runs on stop, and again on Retry or Run again: one pass per turn, same-speaker turns merged up to about 30 s, with the meeting's word list. Writes `transcript.json`: each turn's start, end and text under its speaker's key, `Me` or `Speaker 1`, `Speaker 2`… in the order they first speak | NeMo, Parakeet TDT 0.6B v3, phrase boosting |
 | Speaker naming | Each speaker set to a calendar attendee or a custom name in the history window, kept with the recording and through Run again; voice memory later | Calendar attendees; community-1 speaker embeddings later |
 | Formatter | Writes `transcript.md`, `[hh:mm:ss] **Name:** text`, from `transcript.json` and the current names, after every transcription and every naming | Python standard library |
-| Summarize | A built-in preset (General, Standup, 1:1, Stakeholder call) or a saved one, or Custom typed at run time and savable as a preset; always in English. Every prompt gets one added instruction: start with a line `Title: <a few words, no date>`, which becomes the proposed page name and is cut from `summary.md` | Devin CLI, `devin -p --prompt-file` |
+| Summarize | A built-in preset (General, Standup, 1:1, Stakeholder call) or a saved one, or Custom typed at run time and savable as a preset; always in English. Every prompt gets one added instruction: start with a line `Title: <a few words, no date>`, which becomes the proposed page name and is cut from `summary.md`. The transcript is other people's speech, so Devin gets it inside the prompt, in an empty temporary folder with an empty home (none of the person's MCP servers, rules or skills), and a config of its own that takes away every tool that reaches a file, a command or the web, and denies any such tool it adds later: nothing said in a meeting can make it read a file, run a command or fetch a page | Devin CLI, `devin -p --prompt-file` |
 | Publish to Agaric | The page, audio and transcript; the summary once it exists; renames the page when its automatic name changed; output `agaric://page/<id>` | `agaric-mcp call add_meeting`, `update_block_content` |
 | Publish to GitLab | Asks for a link; uploads transcript and audio, posts the summary with their links as a comment or a new issue titled `<name> <YYYY-MM-DD>`; output the comment or issue link; enabled once a summary exists | `glab api` (uploads, issues, notes) |
 | Scorer | Word error rate on the test set for every change | `jiwer` |
@@ -205,9 +205,9 @@ Every recording is a row, newest first; expanding it shows its speakers, its aud
 
 - **Name:** the row's name says where it came from (calendar, summary or default) and has Edit; a typed name is kept for good, and the next Publish to Agaric applies it.
 - **Speakers:** the call's speakers are listed under Transcribe once it has run, numbered in the order they first speak; each one is set to a calendar attendee or a custom name, and the transcript is written again with it; a transcript already published keeps the names it went with.
-- **Actions:** Transcribe (runs on stop; Run again re-transcribes, for example after the word list changes), Summarize, Publish to Agaric and Publish to GitLab. Every run is kept with its time, status and output link; Publish to Agaric run again adds what the page lacks, such as the summary, and applies a changed name.
+- **Actions:** Transcribe (runs on stop; Run again re-transcribes, for example after the word list changes), Summarize, Publish to Agaric and Publish to GitLab. Every run is kept with its time, status and output link; Publish to Agaric run again adds what the page lacks, such as the summary or a newer one, and applies a changed name.
 - **Failed runs:** show the reason and the fix, with Retry and Details; see *When an action fails* below.
-- **Summarize:** the menu lists built-in presets, saved presets, then Custom; Custom opens a text box with Save as preset. Saved presets can be deleted, built-in ones can't.
+- **Summarize:** the menu lists built-in presets, saved presets, then Custom; Custom opens a text box with Save as preset. Saved presets can be deleted from the menu's Delete a preset, built-in ones can't. Without the Devin CLI on the PATH, Summarize is disabled and says how to install it.
 - **Publish to GitLab:** enabled once a summary exists; before posting, the dialog says whether the link will get a comment or a new issue.
 - **Audio files:** the mic and call tracks, each with Play and Save a copy; Delete now removes both, and Open folder opens the recording's folder.
 - **Deleting:** asks first; the history entry and its outputs stay. Without the tracks, Run again is disabled, and publishing leaves the audio out and says so.
@@ -237,7 +237,7 @@ A run still marked Running when the app starts again, after a logout or a crash,
 | --- | --- | --- |
 | Recording | The recorder dies, an audio device disappears, the disk fills | Keeps what was captured, marks the recording incomplete with the time it stopped, and still offers Transcribe |
 | Transcribe | Out of memory, a model fails to load, a crash | Failed with the log; Retry runs again from the tracks |
-| Summarize | Devin not logged in, a non-zero exit, empty output | Failed with Devin's message; the run keeps the prompt it used, Custom included, so Retry sends the same one |
+| Summarize | Devin not logged in, a non-zero exit, empty output, no answer at all | Failed with Devin's output in Details; a Devin that stalls is stopped after a generous timeout; the run keeps the prompt it used, Custom included, so Retry sends the same one |
 | Publish to Agaric | Agaric not running, the agent token revoked, a file over 50 MB, the name already taken by another page | Failed with Agaric's message; `add_meeting` is one transaction, so a failed call leaves nothing behind. A taken name stops the run and asks: Use that page (adds the files to it) or Rename; a rename to a taken name asks for another name |
 | Publish to GitLab | `glab` not logged in for that server, no access to the link, an upload over the server's limit, network down | Failed at the step that broke, with the fix (for example `glab auth login --hostname <host>`); finished uploads are kept in the run, so Retry carries on without uploading again |
 

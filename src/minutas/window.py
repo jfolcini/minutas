@@ -9,8 +9,9 @@ everything in it, for good.
 """
 
 import contextlib
+import shutil
 import sys
-from collections.abc import Callable, Collection, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import override
 
@@ -20,8 +21,8 @@ gi.require_version("Adw", "1")
 gi.require_version("Gtk", "4.0")
 from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402 - after the versions are chosen
 
-from minutas import agaric, store, window_view, worker  # noqa: E402
-from minutas.window_view import PUBLISH, TRANSCRIBE, ActionView, RowView  # noqa: E402
+from minutas import settings, store, summarizer, window_view, worker  # noqa: E402
+from minutas.window_view import PUBLISH, SUMMARIZE, TRANSCRIBE, ActionView, RowView  # noqa: E402
 
 APP_ID = "io.github.jfolcini.Minutas"
 # The program itself, as the recorder's and the worker's units run it.
@@ -33,8 +34,12 @@ DELETE_WARNING = (
 CUSTOM_NAME = "Custom name…"
 
 
-def load_views(publishing: Collection[str]) -> list[RowView]:
-    """Every recording's row, newest first."""
+def load_views(running: Mapping[str, Collection[str]]) -> list[RowView]:
+    """Every recording's row, newest first; running holds the recordings of each action whose
+    command the window is running."""
+    # Looked for at each refresh: one installed while the window is open is found.
+    found = shutil.which(summarizer.DEVIN) is not None
+    summarizer_missing = "" if found else summarizer.DEVIN_MISSING
     # Inside the lock, so a recording being discarded is seen whole or not at all.
     with store.lock():
         logs = worker.runs_by_recording()
@@ -47,7 +52,8 @@ def load_views(publishing: Collection[str]) -> list[RowView]:
                     for name in store.TRACKS
                     if store.has_audio(store.recording_dir(recording_id) / name)
                 ],
-                publishing=recording_id in publishing,
+                running=[action for action, ids in running.items() if recording_id in ids],
+                summarizer_missing=summarizer_missing,
             )
             for recording_id in sorted(logs, reverse=True)
         ]
@@ -62,6 +68,13 @@ def button(label: str, pressed: Callable[..., None], *arguments: object) -> Gtk.
     made = Gtk.Button(label=label, valign=Gtk.Align.CENTER)
     made.connect("clicked", pressed, *arguments)
     return made
+
+
+def menu_item(label: str, action: str, target: GLib.Variant) -> Gio.MenuItem:
+    # A typed preset name's "_" is shown, not taken for a keyboard shortcut.
+    item = Gio.MenuItem.new(label.replace("_", "__"), None)
+    item.set_action_and_target_value(action, target)
+    return item
 
 
 def warning_icon() -> Gtk.Image:
@@ -164,7 +177,7 @@ class ActionControls:
         self.output.set_visible(view.output is not None)
         self.use_page.set_visible(view.taken_by is not None)
         self.rename.set_visible(view.renames)
-        self.next_step.set_visible(not view.renames)
+        self.next_step.set_visible(not view.renames and bool(view.label))
         self.next_step.set_label(view.label)
         self.next_step.set_sensitive(not view.disabled)
         self.next_step.set_tooltip_text(view.disabled or None)
@@ -191,6 +204,13 @@ class Details:
         self.transcribe = ActionControls(
             "Transcribe", "Open transcript", TRANSCRIBE, recording_id, window
         )
+        self.summarize = ActionControls(
+            "Summarize", "Open summary", SUMMARIZE, recording_id, window
+        )
+        # Filled each time it opens, so it lists the presets as they are then.
+        self.presets = Gtk.MenuButton(valign=Gtk.Align.CENTER)
+        self.presets.set_create_popup_func(window.list_presets, recording_id)
+        self.summarize.row.add_suffix(self.presets)
         self.publish = ActionControls(
             "Publish to Agaric", "Open in Agaric", PUBLISH, recording_id, window
         )
@@ -199,23 +219,23 @@ class Details:
             *(controls.row for controls in self.tracks.values()),
             self.files,
             self.transcribe.row,
+            self.summarize.row,
             self.publish.row,
         ):
             expander.add_row(row)
 
     def list_speakers(self, view: RowView) -> None:
-        """Puts the speakers a transcription found after it, and before the publishing."""
+        """Puts the speakers a transcription found after it, and before Summarize."""
         speakers = [speaker.key for speaker in view.speakers]
         if speakers == list(self.speakers):
             return
-        # An expander row only adds at its end: Publish steps out, and back in after them.
-        for controls in self.speakers.values():
-            self.expander.remove(controls.row)
-        self.expander.remove(self.publish.row)
+        # An expander row only adds at its end: the rows below step out, and back in after them.
+        below = (self.summarize.row, self.publish.row)
+        for row in [*(controls.row for controls in self.speakers.values()), *below]:
+            self.expander.remove(row)
         self.speakers = {key: SpeakerControls(view.recording_id, key) for key in speakers}
-        for controls in self.speakers.values():
-            self.expander.add_row(controls.row)
-        self.expander.add_row(self.publish.row)
+        for row in [*(controls.row for controls in self.speakers.values()), *below]:
+            self.expander.add_row(row)
 
     def display(self, view: RowView) -> None:
         self.name.set_title(view.name)
@@ -233,6 +253,12 @@ class Details:
         self.list_speakers(view)
         for speaker in view.speakers:
             self.speakers[speaker.key].display(speaker.name, view.attendees)
+        self.summarize.display(view.summarize)
+        # Each new label is a new box and label inside the button, even an unchanged one.
+        if self.presets.get_label() != view.summarize.menu:
+            self.presets.set_label(view.summarize.menu or "")
+        self.presets.set_sensitive(not view.summarize.disabled)
+        self.presets.set_tooltip_text(view.summarize.disabled or None)
         self.publish.display(view.publish)
 
     def stop_playing(self) -> None:
@@ -263,10 +289,21 @@ class HistoryWindow(Adw.ApplicationWindow):
         self.rows: dict[str, RecordingRow] = {}
         # Built when a row is first expanded: most never are.
         self.details: dict[str, Details] = {}
-        # The publish commands this window is running, by recording.
+        # The commands this window is running, by recording.
         self.publishing: dict[str, Gio.Subprocess] = {}
-        # How many runs each recording had when its publish started (unrecorded_failure).
-        self.runs_before_publish: dict[str, int] = {}
+        self.summarizing: dict[str, Gio.Subprocess] = {}
+        self.running = {PUBLISH: self.publishing, SUMMARIZE: self.summarizing}
+        # How many runs a recording had when the window started its command for an action
+        # (unrecorded_failure).
+        self.runs_before: dict[tuple[str, str], int] = {}
+        for name, parameter, activated in (
+            ("summarize", "(ss)", self.summarize_with),
+            ("custom-summary", "s", self.write_prompt),
+            ("delete-preset", "s", self.delete_preset),
+        ):
+            action = Gio.SimpleAction(name=name, parameter_type=GLib.VariantType(parameter))
+            action.connect("activate", activated)
+            self.add_action(action)
         self.list = Gtk.ListBox(
             selection_mode=Gtk.SelectionMode.NONE,
             css_classes=["boxed-list"],
@@ -316,7 +353,7 @@ class HistoryWindow(Adw.ApplicationWindow):
 
     def refresh(self) -> None:
         """Brings the rows up to date; a row whose recording did not change is left alone."""
-        views = load_views(self.publishing.keys())
+        views = load_views(self.running)
         for recording_id in self.rows.keys() - {view.recording_id for view in views}:
             self.list.remove(self.rows.pop(recording_id))
             self.details.pop(recording_id, None)
@@ -347,7 +384,8 @@ class HistoryWindow(Adw.ApplicationWindow):
 
     def shown(self, recording_id: str, action: str) -> ActionView:
         view = self.rows[recording_id].view
-        return view.transcribe if action == TRANSCRIBE else view.publish
+        actions = {TRANSCRIBE: view.transcribe, SUMMARIZE: view.summarize, PUBLISH: view.publish}
+        return actions[action]
 
     def say(self, problem: str) -> None:
         self.toasts.add_toast(Adw.Toast(title=problem, use_markup=False))
@@ -450,11 +488,13 @@ class HistoryWindow(Adw.ApplicationWindow):
             self.refresh()
 
     def next_step(self, _button: Gtk.Button, recording_id: str, action: str) -> None:
-        cancels = self.shown(recording_id, action).cancels
+        shown = self.shown(recording_id, action)
         if action == PUBLISH:
             self.publish(recording_id)
-        elif cancels is not None:
-            worker.cancel(recording_id, cancels)
+        elif action == SUMMARIZE:
+            self.summarize(recording_id, str(shown.prompt))
+        elif shown.cancels is not None:
+            worker.cancel(recording_id, shown.cancels)
         else:
             # A worker that does not start leaves a failed run, which says why.
             with contextlib.suppress(worker.WorkerError):
@@ -498,31 +538,112 @@ class HistoryWindow(Adw.ApplicationWindow):
         self.publish(recording_id, f"--name={name}")
 
     def publish(self, recording_id: str, *options: str) -> None:
+        self.start(PUBLISH, recording_id, ["publish", "agaric", recording_id, *options])
+
+    def list_presets(self, presets: Gtk.MenuButton, recording_id: str) -> None:
+        """The built-in and saved presets, Custom, and the saved ones to delete."""
+        chosen = Gio.Menu()
+        for name, prompt in summarizer.presets().items():
+            target = GLib.Variant("(ss)", (recording_id, prompt))
+            chosen.append_item(menu_item(name, "win.summarize", target))
+        others = Gio.Menu()
+        others.append_item(
+            menu_item("Custom…", "win.custom-summary", GLib.Variant("s", recording_id))
+        )
+        saved = settings.saved_presets()
+        if saved:
+            deletable = Gio.Menu()
+            for name in saved:
+                target = GLib.Variant("s", name)
+                deletable.append_item(menu_item(name, "win.delete-preset", target))
+            others.append_submenu("Delete a preset", deletable)
+        menu = Gio.Menu()
+        menu.append_section(None, chosen)
+        menu.append_section(None, others)
+        presets.set_menu_model(menu)
+
+    def summarize_with(self, _action: Gio.SimpleAction, target: GLib.Variant) -> None:
+        recording_id, prompt = target.unpack()
+        self.summarize(recording_id, prompt)
+
+    def write_prompt(self, _action: Gio.SimpleAction, target: GLib.Variant) -> None:
+        prompt = Gtk.TextView(
+            wrap_mode=Gtk.WrapMode.WORD_CHAR,
+            accepts_tab=False,
+            top_margin=8,
+            bottom_margin=8,
+            left_margin=8,
+            right_margin=8,
+        )
+        name = Gtk.Entry(placeholder_text="Save as preset: its name", activates_default=True)
+        fields = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        fields.append(
+            Gtk.ScrolledWindow(child=prompt, min_content_height=120, css_classes=["card"])
+        )
+        fields.append(name)
+        dialog = Adw.AlertDialog(
+            heading="Custom summary",
+            body="What should the summary cover?",
+            extra_child=fields,
+            default_response="summarize",
+            close_response="cancel",
+        )
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("summarize", "Summarize")
+        dialog.set_response_appearance("summarize", Adw.ResponseAppearance.SUGGESTED)
+        dialog.choose(self, None, self.prompt_written, prompt, name, target.get_string())
+
+    def prompt_written(
+        self,
+        dialog: Adw.AlertDialog,
+        result: Gio.AsyncResult,
+        prompt: Gtk.TextView,
+        name: Gtk.Entry,
+        recording_id: str,
+    ) -> None:
+        text = prompt.get_buffer().props.text.strip()
+        if dialog.choose_finish(result) != "summarize" or not text:
+            return
+        preset = window_view.clean_name(name.get_text())
+        if preset is not None:
+            settings.save_preset(preset, text)
+        self.summarize(recording_id, text)
+
+    def delete_preset(self, _action: Gio.SimpleAction, target: GLib.Variant) -> None:
+        settings.delete_preset(target.get_string())
+
+    def summarize(self, recording_id: str, prompt: str) -> None:
+        # With "=": a prompt that starts with a dash is still the prompt, never another option.
+        self.start(SUMMARIZE, recording_id, ["summarize", recording_id, f"--prompt={prompt}"])
+
+    def start(self, action: str, recording_id: str, arguments: list[str]) -> None:
+        """Runs the minutas command that does the action, and follows it until it exits."""
         # Counted before the spawn, whose command may record its run first.
-        self.runs_before_publish[recording_id] = len(store.load_runs(recording_id))
+        self.runs_before[recording_id, action] = len(store.load_runs(recording_id))
         command = Gio.Subprocess.new(
-            [*MINUTAS, "publish", "agaric", recording_id, *options],
+            [*MINUTAS, *arguments],
             Gio.SubprocessFlags.STDOUT_SILENCE | Gio.SubprocessFlags.STDERR_PIPE,
         )
-        self.publishing[recording_id] = command
-        command.communicate_utf8_async(None, None, self.published, recording_id)
+        self.running[action][recording_id] = command
+        command.communicate_utf8_async(None, None, self.ended, action, recording_id)
         self.refresh()
 
-    def published(
-        self, command: Gio.Subprocess, result: Gio.AsyncResult, recording_id: str
+    def ended(
+        self, command: Gio.Subprocess, result: Gio.AsyncResult, action: str, recording_id: str
     ) -> None:
         _, _, stderr = command.communicate_utf8_finish(result)
-        del self.publishing[recording_id]
+        del self.running[action][recording_id]
         # The command records its own run, failure included; only one that died could not.
         problem = window_view.unrecorded_failure(
             store.load_runs(recording_id),
+            action,
             stderr or "",
             exited_ok=command.get_successful(),
-            known=self.runs_before_publish.pop(recording_id),
+            known=self.runs_before.pop((recording_id, action)),
         )
         if problem is not None:
             # One that died after starting its run left it running: it fails, and says why.
-            agaric.fail_left_running(recording_id, problem)
+            store.fail_left_running(recording_id, action, problem)
             self.say(problem)
         self.refresh()
 

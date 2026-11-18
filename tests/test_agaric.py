@@ -239,6 +239,7 @@ def test_publish_makes_the_page_with_the_mixed_tracks_and_the_transcript(
             "details": "run-0.log",
             "output": f"agaric://page/{PAGE}",
             "title": "Meeting 2026-11-18",
+            "recording_block": "01JREC",
         }
     ]
     assert failed_in_status(recording_id) == []
@@ -362,6 +363,158 @@ def test_publish_again_renames_the_page_the_latest_success_left(system: FakeSyst
     agaric.publish(recording_id, PUBLISHED)
 
     assert system.calls[0].arguments["block_id"] == OTHER_PAGE
+
+
+SUMMARY = "## Decisions\n\n- Ship on Friday.\n"
+
+
+def summarize_run(status: str = "succeeded") -> dict[str, object]:
+    return {
+        "action": "summarize",
+        "status": status,
+        "queued_at": "2026-11-18T13:40:00+00:00",
+        "error": None if status == "succeeded" else "boom",
+        "details": "run-1.log",
+        "output": "summary.md" if status == "succeeded" else None,
+        "prompt": "Summarize this meeting.",
+    }
+
+
+def with_summary(recording_id: str, text: str = SUMMARY) -> None:
+    (store.recording_dir(recording_id) / "summary.md").write_text(text)
+
+
+@pytest.mark.usefixtures("configured")
+def test_publish_puts_the_summary_on_the_new_page(system: FakeSystem) -> None:
+    recording_id = recording()
+    put_runs(recording_id, [summarize_run("failed"), summarize_run()])
+    with_summary(recording_id)
+
+    assert agaric.publish(recording_id, PUBLISHED) is True
+
+    call = system.calls[1]
+    assert (call.tool, call.arguments.get("summary_markdown")) == ("add_meeting", SUMMARY)
+    assert sorted(call.arguments) == [
+        "audio_path",
+        "date",
+        "space_id",
+        "summary_markdown",
+        "title",
+        "transcript_path",
+    ]
+    assert runs(recording_id)[2].get("summary_run") == 1
+
+
+@pytest.mark.usefixtures("configured")
+def test_publish_to_a_page_adds_the_summary_with_the_files(system: FakeSystem) -> None:
+    recording_id = recording()
+    put_runs(recording_id, [summarize_run()])
+    with_summary(recording_id)
+
+    agaric.publish(recording_id, PUBLISHED, page=OTHER_PAGE)
+
+    call = system.calls[1]
+    assert (call.arguments["page"], call.arguments.get("summary_markdown")) == (
+        OTHER_PAGE,
+        SUMMARY,
+    )
+    assert runs(recording_id)[1].get("summary_run") == 0
+    # The block that holds this recording's files, which need not be the page's first.
+    assert runs(recording_id)[1].get("recording_block") == "01JREC"
+
+
+@pytest.mark.usefixtures("configured")
+def test_publish_again_after_summarize_adds_the_summary_and_the_proposed_name(
+    system: FakeSystem,
+) -> None:
+    recording_id = recording()
+    put_runs(recording_id, [{**succeeded_run(), "recording_block": "01JMINE"}, summarize_run()])
+    with_summary(recording_id)
+    store.set_summary_name(recording_id, "Release plan")
+
+    assert agaric.publish(recording_id, PUBLISHED) is True
+
+    assert [(call.tool, call.arguments) for call in system.calls] == [
+        (
+            "update_block_content",
+            {"space_id": SPACE, "block_id": PAGE, "content": "Release plan 2026-11-18"},
+        ),
+        ("add_meeting", {"space_id": SPACE, "block_id": "01JMINE", "summary_markdown": SUMMARY}),
+    ]
+    assert runs(recording_id)[2] == {
+        **succeeded_run(title="Release plan 2026-11-18"),
+        "queued_at": "2026-11-18T14:00:00+00:00",
+        "details": "run-2.log",
+        "recording_block": "01JMINE",
+        "summary_run": 1,
+    }
+
+
+@pytest.mark.usefixtures("configured")
+def test_a_page_published_before_its_block_was_kept_gets_the_summary_by_page(
+    system: FakeSystem,
+) -> None:
+    recording_id = recording()
+    put_runs(recording_id, [succeeded_run(), summarize_run()])
+    with_summary(recording_id)
+
+    assert agaric.publish(recording_id, PUBLISHED) is True
+
+    assert [(call.tool, call.arguments) for call in system.calls] == [
+        ("add_meeting", {"space_id": SPACE, "page": PAGE, "summary_markdown": SUMMARY}),
+    ]
+    assert "recording_block" not in runs(recording_id)[2]
+
+
+@pytest.mark.usefixtures("configured")
+def test_publish_again_adds_a_newer_summary_and_never_the_same_one_twice(
+    system: FakeSystem,
+) -> None:
+    recording_id = recording()
+    put_runs(
+        recording_id,
+        [
+            {**succeeded_run(), "summary_run": 0, "recording_block": "01JMINE"},
+            summarize_run(),
+            summarize_run("failed"),
+        ],
+    )
+    with_summary(recording_id, "The newer summary.\n")
+
+    agaric.publish(recording_id, PUBLISHED)
+
+    assert [call.arguments for call in system.calls] == [
+        {"space_id": SPACE, "block_id": "01JMINE", "summary_markdown": "The newer summary.\n"}
+    ]
+    assert runs(recording_id)[3].get("summary_run") == 1
+
+    agaric.publish(recording_id, PUBLISHED)
+
+    assert len(system.calls) == 1
+    assert (
+        runs(recording_id)[4].get("summary_run"),
+        runs(recording_id)[4].get("recording_block"),
+    ) == (
+        1,
+        "01JMINE",
+    )
+
+
+@pytest.mark.usefixtures("configured")
+def test_a_summary_that_did_not_reach_the_page_is_added_by_the_next_publish(
+    system: FakeSystem,
+) -> None:
+    recording_id = recording()
+    put_runs(recording_id, [succeeded_run(), summarize_run()])
+    with_summary(recording_id)
+    system.answers["add_meeting"] = [Answer(1, stderr="Agaric MCP not running\n")]
+
+    assert agaric.publish(recording_id, PUBLISHED) is False
+    assert "summary_run" not in runs(recording_id)[2]
+
+    assert agaric.publish(recording_id, PUBLISHED) is True
+
+    assert [call.arguments.get("summary_markdown") for call in system.calls] == [SUMMARY, SUMMARY]
 
 
 @pytest.mark.usefixtures("configured")
@@ -572,8 +725,13 @@ def test_the_log_holds_each_call_and_its_output_but_not_the_token(system: FakeSy
 
 
 @pytest.mark.usefixtures("configured")
-@pytest.mark.parametrize("stdout", ["not json\n", '{"recording_block_id": "01JREC"}\n', "[]\n"])
-def test_an_answer_without_a_page_fails_the_run(system: FakeSystem, stdout: str) -> None:
+@pytest.mark.parametrize(
+    "stdout",
+    ["not json\n", '{"recording_block_id": "01JREC"}\n', '{"page_id": "01JPAGE"}\n', "[]\n"],
+)
+def test_an_answer_without_the_page_or_its_recording_block_fails_the_run(
+    system: FakeSystem, stdout: str
+) -> None:
     recording_id = recording()
     system.answers["add_meeting"] = [Answer(stdout=stdout)]
 
@@ -713,41 +871,6 @@ def test_a_crashed_run_without_a_log_has_no_details(system: FakeSystem) -> None:
     agaric.publish(recording_id, PUBLISHED)
 
     assert runs(recording_id)[0]["details"] is None
-
-
-def test_fail_left_running_fails_the_publish_a_dead_publisher_left_running() -> None:
-    recording_id = recording()
-    (store.recording_dir(recording_id) / "run-1.log").write_text("$ agaric-mcp call …\n")
-    published = succeeded_run()
-    stale = {**published, "status": "running", "details": None, "output": None}
-    del stale["title"]
-    transcribing = {**stale, "action": "transcribe"}
-    put_runs(recording_id, [published, stale, transcribing])
-    store.write_status()
-
-    agaric.fail_left_running(recording_id, "Publish to Agaric stopped: RuntimeError: boom")
-
-    assert runs(recording_id) == [
-        published,
-        {
-            **stale,
-            "status": "failed",
-            "error": "Publish to Agaric stopped: RuntimeError: boom",
-            "details": "run-1.log",
-        },
-        transcribing,
-    ]
-    assert failed_in_status(recording_id) == ["publish_agaric"]
-
-
-def test_fail_left_running_leaves_a_log_with_no_running_publish() -> None:
-    recording_id = recording()
-    put_runs(recording_id, [succeeded_run()])
-
-    agaric.fail_left_running(recording_id, "Publish to Agaric stopped without saying why")
-
-    assert runs(recording_id) == [succeeded_run()]
-    assert failed_in_status(recording_id) == []
 
 
 @pytest.mark.usefixtures("configured")
