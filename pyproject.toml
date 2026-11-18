@@ -8,6 +8,7 @@ license-files = ["LICENSE"]
 requires-python = ">=3.12"
 dependencies = [
     "jiwer>=4.0.0",
+    "keyring>=25.7.0",
 ]
 
 [project.optional-dependencies]
@@ -173,7 +174,12 @@ root_package = "minutas"
 [[tool.importlinter.contracts]]
 name = "layers"
 type = "layers"
-layers = ["minutas.cli", "(minutas.recorder) | (minutas.worker)", "(minutas.store)"]
+layers = [
+    "minutas.cli",
+    "(minutas.recorder) | (minutas.worker) | (minutas.agaric)",
+    "minutas.settings",
+    "minutas.store",
+]
 
 [[tool.importlinter.contracts]]
 name = "the transcriber runs in the speech environment and shares no code with the app"

@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from importlib.metadata import version
 from typing import cast
 
-from minutas import recorder, store, worker
+from minutas import agaric, recorder, settings, store, worker
 
 
 def now() -> datetime:
@@ -101,6 +101,37 @@ def history(args: argparse.Namespace) -> int:
     return subprocess.run(["gio", "open", str(folder)], check=False).returncode  # noqa: S603, S607
 
 
+def publish_agaric(args: argparse.Namespace) -> int:
+    if not store.is_recording(args.recording_id):
+        return fail(f"No recording {args.recording_id}.")
+    if args.name is not None:
+        name = args.name.strip()
+        if not name:
+            return fail("A name can't be blank.")
+        store.set_typed_name(args.recording_id, name)
+    return 0 if agaric.publish(args.recording_id, now(), page=args.page) else 1
+
+
+def settings_agaric(args: argparse.Namespace) -> int:
+    if args.space is None and not args.token_from_stdin and not args.list_spaces:
+        return fail("Nothing to do: pass --space, --token-from-stdin or --list-spaces.")
+    if args.token_from_stdin:
+        # From stdin, never from the arguments, which other processes can read.
+        token = sys.stdin.readline().strip()
+        if not token:
+            return fail("No token on stdin.")
+        settings.set_agaric_token(token)
+    if args.space is not None:
+        settings.set_agaric_space_id(args.space)
+    if args.list_spaces:
+        try:
+            spaces = agaric.list_spaces()
+        except agaric.AgaricError as error:
+            return fail(str(error))
+        sys.stdout.writelines(f"{space_id}\t{name}\n" for space_id, name in spaces)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="minutas",
@@ -130,6 +161,28 @@ def build_parser() -> argparse.ArgumentParser:
     history_command = commands.add_parser("history", help="open the recordings")
     history_command.add_argument("--recording", metavar="ID", help="open this recording")
     history_command.set_defaults(handler=history)
+
+    publish = commands.add_parser("publish", help="publish a recording")
+    publish_commands = publish.add_subparsers(title="commands", required=True)
+    agaric_command = publish_commands.add_parser("agaric", help="publish a recording to Agaric")
+    agaric_command.add_argument("recording_id")
+    agaric_command.add_argument("--page", metavar="ID", help="add the files to this page instead")
+    agaric_command.add_argument("--name", help="name the recording first; the name is kept")
+    agaric_command.set_defaults(handler=publish_agaric)
+
+    settings_command = commands.add_parser("settings", help="change the settings")
+    settings_commands = settings_command.add_subparsers(title="commands", required=True)
+    agaric_settings = settings_commands.add_parser("agaric", help="the Agaric space and token")
+    agaric_settings.add_argument("--space", metavar="ID", help="publish to this space")
+    agaric_settings.add_argument(
+        "--token-from-stdin",
+        action="store_true",
+        help="read the agent token from stdin and keep it in the keyring",
+    )
+    agaric_settings.add_argument(
+        "--list-spaces", action="store_true", help="list the spaces the token may use"
+    )
+    agaric_settings.set_defaults(handler=settings_agaric)
     return parser
 
 

@@ -137,6 +137,13 @@ def mark_stopped(recording_id: str, stopped: datetime, *, incomplete: bool) -> N
     write_json(recording_dir(recording_id) / "recording.json", recording)
 
 
+def set_typed_name(recording_id: str, name: str) -> None:
+    """A typed name is kept for good: nothing automatic replaces it."""
+    path = recording_dir(recording_id) / "recording.json"
+    recording = cast("dict[str, object]", json.loads(path.read_text()))
+    write_json(path, {**recording, "name": name, "name_source": "typed"})
+
+
 def open_recording() -> Recording | None:
     return next((r for r in load_recordings() if r["stopped_at"] is None), None)
 
