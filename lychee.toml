@@ -7,4 +7,7 @@ timeout = 30
 exclude = [
     "^http://localhost(:\\d+)?(/|$)",
     "^http://127\\.0\\.0\\.1(:\\d+)?(/|$)",
+    # The Snap Store answers in about 30 s, often with a 502, so the request races the timeout
+    # and a timeout fails the required lint job (Dependabot #31's run). The glab snap exists.
+    "^https://snapcraft\\.io/",
 ]
