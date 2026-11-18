@@ -38,6 +38,7 @@ Read this section first. It outranks everything below it.
 | --- | --- |
 | `src/minutas/` | The package (src layout; `minutas` console script in `cli.py`) |
 | `tests/` | pytest suite, one `test_<module>.py` per module |
+| `extension/` | The GNOME Shell extension; its pure logic in `status.js`, tested by `gjs -m extension/tests/status.test.js` |
 | `scripts/` | Shell helpers the hooks call |
 | `pyproject.toml` | Metadata, dependencies, and the ruff, ty, pytest and coverage config |
 | `prek.toml` | The git hooks, which CI also runs |
