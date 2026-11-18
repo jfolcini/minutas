@@ -17,7 +17,7 @@ from contextlib import contextmanager
 from datetime import date, datetime
 from pathlib import Path
 from types import FrameType
-from typing import NotRequired, TypedDict, cast
+from typing import NotRequired, cast
 
 from keyring.errors import KeyringError
 
@@ -72,24 +72,13 @@ NAME_TAKEN = re.compile(
 )
 
 
-class Choice(TypedDict):
-    # name_taken offers Use that page or Rename; rename_taken only Rename, since the page that
-    # was renamed already holds the files.
-    kind: str
-    page_id: NotRequired[str]
-
-
 class PublishRun(store.Run):
     # The page's title as the run left it, so publishing again knows when the name changed.
     title: NotRequired[str]
-    # A failed run that waits for the person to choose how to go on.
-    choice: NotRequired[Choice]
-    # A succeeded run's line for the person, such as AUDIO_LEFT_OUT.
-    note: NotRequired[str]
 
 
 class AgaricError(Exception):
-    def __init__(self, error: str, choice: Choice | None = None) -> None:
+    def __init__(self, error: str, choice: store.Choice | None = None) -> None:
         super().__init__(error)
         self.choice = choice
 
@@ -237,7 +226,7 @@ def send(
             try:
                 call(token, "update_block_content", rename, log)
             except NameTakenError:
-                raise AgaricError(taken, Choice(kind="rename_taken")) from None
+                raise AgaricError(taken, store.Choice(kind="rename_taken")) from None
         return page_id, title, None
     target = (
         {"title": recording["name"], "date": day.isoformat()} if page is None else {"page": page}
@@ -251,7 +240,7 @@ def send(
     except NameTakenError:
         found = call(token, "resolve", {"space_id": space_id, "names": [title]}, log)
         holder = page_id_in(cast("list[object]", found)[0])
-        raise AgaricError(taken, Choice(kind="name_taken", page_id=holder)) from None
+        raise AgaricError(taken, store.Choice(kind="name_taken", page_id=holder)) from None
     return page_id_in(answer), title, None if "audio_path" in files else AUDIO_LEFT_OUT
 
 
