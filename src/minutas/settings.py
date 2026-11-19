@@ -85,6 +85,15 @@ def set_summary_model(model: str | None) -> None:
     save({"summary_model": model})
 
 
+def summary_skill() -> str | None:
+    """The path of the skill file Summarize follows; None for the built-in one."""
+    return cast("str | None", load().get("summary_skill"))
+
+
+def set_summary_skill(path: str | None) -> None:
+    save({"summary_skill": path})
+
+
 def agaric_token() -> str | None:
     return keyring.get_password(KEYRING_SERVICE, AGARIC_KEYRING_USERNAME)
 

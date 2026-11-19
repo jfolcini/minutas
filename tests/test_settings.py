@@ -129,3 +129,20 @@ def test_set_summary_model_keeps_it_with_the_other_settings_and_none_clears_it()
 
     assert settings.summary_model() is None
     assert settings.agaric_space_id() == "01HZWORK"
+
+
+def test_no_summary_skill_is_set_until_one_is() -> None:
+    assert settings.summary_skill() is None
+
+
+def test_set_summary_skill_keeps_it_with_the_other_settings_and_none_clears_it() -> None:
+    settings.set_summary_model("swe-2-high")
+
+    settings.set_summary_skill("/home/me/skills/standup/SKILL.md")
+
+    assert settings.summary_skill() == "/home/me/skills/standup/SKILL.md"
+
+    settings.set_summary_skill(None)
+
+    assert settings.summary_skill() is None
+    assert settings.summary_model() == "swe-2-high"

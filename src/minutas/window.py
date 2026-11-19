@@ -1,4 +1,5 @@
-"""The history window: every recording with its name, its audio and its actions.
+"""The Recordings window: every recording with its name, its audio and its actions; and the
+Settings, a dialog over it.
 
 A thin GTK layer: window_view works out what a row shows, and this draws it. It never polls: it
 redraws when status.json changes, which the program rewrites after every change.
@@ -44,14 +45,18 @@ ASK_LINK = "Paste an issue link to comment on it, or a project link to open a ne
 NOT_A_LINK = "Not a GitLab issue or project link"
 AUDIO_LIMITS_NOTE = (
     "Audio over a limit is deleted, oldest first, once it has been transcribed: when you save, "
-    "when a recording stops and when this window opens. The transcripts and everything published "
-    "stay."
-)
-SUMMARY_MODEL_NOTE = (
-    '"devin models" lists the models your account can use. Empty is Devin\'s default.'
+    "when a recording stops and when the Recordings window opens. The transcripts and everything "
+    "published stay."
 )
 ASKING_AGARIC = "Asking Agaric for the spaces the agent may use…"
 PASTE_AGARIC = "Paste the agent's config from Agaric, or its token"
+# The command line's word for opening the Settings; no recording id is a word.
+SETTINGS = "settings"
+DEVIN_CLI = "Devin CLI"
+DEVINS_DEFAULT = "Devin's default"
+ASKING_DEVIN = "Asking Devin for the models your account can use…"
+BUILT_IN_SKILL = "Built-in: meeting notes"
+AUDIO_LIMITS_SAVED = "Audio limits saved"
 
 
 def now() -> datetime:
@@ -128,22 +133,119 @@ def chosen_limit(switch: Adw.ExpanderRow, value: Adw.SpinRow) -> int | None:
     return int(value.get_value()) if switch.get_enable_expansion() else None
 
 
+def last_line(said: str) -> str:
+    lines = said.strip().splitlines()
+    return lines[-1].strip() if lines else ""
+
+
 class SpaceRow(Adw.ComboRow):
     """The spaces the agent may use, by name; shown only when it may use several."""
 
-    def __init__(self) -> None:
+    def __init__(self, chosen: Callable[..., None]) -> None:
         super().__init__(title="Space", visible=False)
         self.ids: tuple[str, ...] = ()
+        self.chosen_handler = self.connect("notify::selected", chosen)
 
     def offer(self, view: AgaricView) -> None:
-        self.ids = tuple(space_id for space_id, _ in view.choices)
-        self.set_model(Gtk.StringList.new([name for _, name in view.choices]))
-        self.set_selected(Gtk.INVALID_LIST_POSITION if view.chosen is None else view.chosen)
+        # A new list selects its first space on the way: only the person's choice is saved.
+        with self.handler_block(self.chosen_handler):
+            self.ids = tuple(space_id for space_id, _ in view.choices)
+            self.set_model(Gtk.StringList.new([name for _, name in view.choices]))
+            self.set_selected(Gtk.INVALID_LIST_POSITION if view.chosen is None else view.chosen)
         self.set_visible(bool(view.choices))
 
     def chosen(self) -> str | None:
         place = self.get_selected()
         return self.ids[place] if place < len(self.ids) else None
+
+
+class SettingsDialog(Adw.PreferencesDialog):
+    """The settings: each change is saved as it is made, but the audio limits, which delete
+    audio, wait for Save."""
+
+    def __init__(self, window: "HistoryWindow") -> None:
+        super().__init__(title="Settings")
+        self.found: list[summarizer.Model] = []
+        # One summarizer for now: shown, so the model and effort below say whose they are.
+        self.summarizer = Adw.ComboRow(title="Summarizer", model=Gtk.StringList.new([DEVIN_CLI]))
+        self.model = Adw.ComboRow(title="Model", subtitle=ASKING_DEVIN, sensitive=False)
+        self.model_handler = self.model.connect("notify::selected", window.model_chosen)
+        self.effort = Adw.ComboRow(title="Effort", visible=False)
+        self.effort_handler = self.effort.connect("notify::selected", window.effort_chosen)
+        # A path is shown as written: its "&" is no markup.
+        self.skill = Adw.ActionRow(title="Skill", subtitle_selectable=True, use_markup=False)
+        self.skill.add_suffix(button("Choose…", window.choose_skill))
+        self.built_in = button("Use built-in", window.use_built_in_skill)
+        self.skill.add_suffix(self.built_in)
+        self.show_skill()
+        summary = Adw.PreferencesGroup(title="Summary")
+        for row in (self.summarizer, self.model, self.effort, self.skill):
+            summary.add(row)
+
+        self.agaric = Adw.PreferencesGroup(title="Agaric", description=ASKING_AGARIC)
+        # Left empty: a stored token is never shown back.
+        self.pasted = Adw.PasswordEntryRow(title=PASTE_AGARIC, show_apply_button=True)
+        self.pasted.connect("apply", window.agaric_pasted)
+        self.space = SpaceRow(window.space_chosen)
+        self.agaric.add(self.pasted)
+        self.agaric.add(self.space)
+
+        age_limit_days, size_limit_gb = settings.audio_limits()
+        self.age = limit_row("Age limit", "Days", age_limit_days, settings.AUDIO_AGE_LIMIT_DAYS)
+        self.size = limit_row("Size limit", "GB", size_limit_gb, settings.AUDIO_SIZE_LIMIT_GB)
+        self.audio = Adw.PreferencesGroup(
+            title="Audio limits", header_suffix=button("Save", window.save_audio_limits)
+        )
+        self.audio.add(self.age[0])
+        self.audio.add(self.size[0])
+
+        page = Adw.PreferencesPage()
+        for group in (summary, self.agaric, self.audio):
+            page.add(group)
+        self.add(page)
+
+    def show_skill(self) -> None:
+        chosen = settings.summary_skill()
+        self.skill.set_subtitle(BUILT_IN_SKILL if chosen is None else chosen)
+        self.built_in.set_visible(chosen is not None)
+
+    def models_unknown(self, problem: str) -> None:
+        self.model.set_subtitle(problem)
+
+    def offer_models(self, found: list[summarizer.Model], saved: str | None) -> None:
+        """Devin's models, the saved one chosen; models() lists every saved one."""
+        self.found = found
+        family, effort = (-1, 0) if saved is None else summarizer.find(found, saved) or (-1, 0)
+        with self.model.handler_block(self.model_handler):
+            names = [DEVINS_DEFAULT, *(model.name for model in found)]
+            self.model.set_model(Gtk.StringList.new(names))
+            self.model.set_selected(family + 1)
+        self.model.set_subtitle("")
+        self.model.set_sensitive(True)
+        self.offer_efforts(effort)
+
+    def efforts(self) -> tuple[tuple[str, str], ...]:
+        family = self.model.get_selected() - 1
+        return self.found[family].efforts if 0 <= family < len(self.found) else ()
+
+    def offer_efforts(self, chosen: int) -> None:
+        """The chosen model's efforts, with one of them chosen; none for Devin's default."""
+        efforts = self.efforts()
+        with self.effort.handler_block(self.effort_handler):
+            self.effort.set_model(Gtk.StringList.new([label for label, _ in efforts]))
+            self.effort.set_selected(chosen)
+        # A model with a single effort has nothing to choose.
+        self.effort.set_visible(len(efforts) > 1)
+
+    def chosen_model(self) -> str | None:
+        """The model and effort chosen, as Devin names them; None for its default."""
+        efforts = self.efforts()
+        return efforts[self.effort.get_selected()][1] if efforts else None
+
+
+def settings_of(widget: Gtk.Widget) -> SettingsDialog:
+    # Found, not held: a handler that held its dialog would keep it for good.
+    return cast("SettingsDialog", widget.get_ancestor(SettingsDialog))
 
 
 class TrackControls:
@@ -355,7 +457,7 @@ class RecordingRow(Adw.ExpanderRow):
 class HistoryWindow(Adw.ApplicationWindow):
     def __init__(self, application: Adw.Application | None = None) -> None:
         super().__init__(
-            application=application, title="Minutas", default_width=760, default_height=640
+            application=application, title="Recordings", default_width=760, default_height=640
         )
         self.rows: dict[str, RecordingRow] = {}
         # Built when a row is first expanded: most never are.
@@ -377,6 +479,9 @@ class HistoryWindow(Adw.ApplicationWindow):
             action = Gio.SimpleAction(name=name, parameter_type=GLib.VariantType(parameter))
             action.connect("activate", activated)
             self.add_action(action)
+        open_settings = Gio.SimpleAction(name=SETTINGS)
+        open_settings.connect("activate", self.open_settings)
+        self.add_action(open_settings)
         self.list = Gtk.ListBox(
             selection_mode=Gtk.SelectionMode.NONE,
             css_classes=["boxed-list"],
@@ -386,19 +491,31 @@ class HistoryWindow(Adw.ApplicationWindow):
             margin_start=12,
             margin_end=12,
         )
-        self.list.set_placeholder(
-            Adw.StatusPage(
-                title="No recordings yet", description="Record a meeting from the top bar."
+        self.viewport = Gtk.Viewport(child=Adw.Clamp(child=self.list))
+        self.scrolled = Gtk.ScrolledWindow(
+            child=self.viewport, hscrollbar_policy=Gtk.PolicyType.NEVER
+        )
+        # The whole window, not a card in the empty list.
+        self.empty = Adw.StatusPage(
+            icon_name="audio-input-microphone-symbolic",
+            title="No recordings yet",
+            description="Record a meeting from the top bar.",
+        )
+        self.pages = Gtk.Stack()
+        self.pages.add_child(self.empty)
+        self.pages.add_child(self.scrolled)
+        self.toasts = Adw.ToastOverlay(child=self.pages)
+        menu = Gio.Menu()
+        menu.append("Settings", f"win.{SETTINGS}")
+        header = Adw.HeaderBar()
+        header.pack_end(
+            Gtk.MenuButton(
+                icon_name="open-menu-symbolic",
+                menu_model=menu,
+                primary=True,
+                tooltip_text="Main Menu",
             )
         )
-        self.viewport = Gtk.Viewport(child=Adw.Clamp(child=self.list))
-        self.toasts = Adw.ToastOverlay(
-            child=Gtk.ScrolledWindow(child=self.viewport, hscrollbar_policy=Gtk.PolicyType.NEVER)
-        )
-        header = Adw.HeaderBar()
-        header.pack_end(button("Audio limits", self.edit_audio_limits))
-        header.pack_end(button("Summary model", self.edit_summary_model))
-        header.pack_end(button("Agaric", self.edit_agaric))
         page = Adw.ToolbarView(content=self.toasts)
         page.add_top_bar(header)
         self.set_content(page)
@@ -449,6 +566,7 @@ class HistoryWindow(Adw.ApplicationWindow):
                 row.display(view)
                 if view.recording_id in self.details:
                     self.details[view.recording_id].display(view)
+        self.pages.set_visible_child(self.scrolled if self.rows else self.empty)
 
     def reveal(self, recording_id: str) -> None:
         row = self.rows.get(recording_id)
@@ -574,77 +692,82 @@ class HistoryWindow(Adw.ApplicationWindow):
             store.delete_tracks(recording_id)
             self.refresh()
 
-    def edit_audio_limits(self, _button: Gtk.Button) -> None:
-        age_limit_days, size_limit_gb = settings.audio_limits()
+    def open_settings(self, *_activated: object) -> None:
+        if isinstance(self.get_visible_dialog(), SettingsDialog):
+            return
+        dialog = SettingsDialog(self)
+        self.show_kept_audio(dialog)
+        dialog.present(self)
+        try:
+            # Devin is asked, and Agaric below, through commands: the window never waits on them.
+            command = Gio.Subprocess.new(
+                summarizer.LIST_MODELS,
+                Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE,
+            )
+        except GLib.Error:
+            dialog.models_unknown(summarizer.DEVIN_MISSING)
+        else:
+            command.communicate_utf8_async(None, None, self.models_listed, dialog)
+        self.ask_agaric(["--list-spaces"], None, self.spaces_listed, dialog)
+
+    def models_listed(
+        self, command: Gio.Subprocess, result: Gio.AsyncResult, dialog: SettingsDialog
+    ) -> None:
+        _, listed, said = command.communicate_utf8_finish(result)
+        if not command.get_successful():
+            status = command.get_exit_status()
+            dialog.models_unknown(last_line(said or "") or f"devin exited with status {status}")
+            return
+        saved = settings.summary_model()
+        try:
+            dialog.offer_models(summarizer.models(listed or "", saved), saved)
+        except summarizer.SummarizerError as error:
+            dialog.models_unknown(str(error))
+
+    def model_chosen(self, row: Adw.ComboRow, _property: object) -> None:
+        dialog = settings_of(row)
+        # The model's own first effort, as Devin lists it.
+        dialog.offer_efforts(0)
+        settings.set_summary_model(dialog.chosen_model())
+
+    def effort_chosen(self, row: Adw.ComboRow, _property: object) -> None:
+        settings.set_summary_model(settings_of(row).chosen_model())
+
+    def choose_skill(self, chooser: Gtk.Button) -> None:
+        markdown = Gtk.FileFilter(name="Markdown", patterns=["*.md"], mime_types=["text/markdown"])
+        dialog = Gtk.FileDialog(title="Summary skill", default_filter=markdown)
+        dialog.open(self, None, self.skill_chosen, settings_of(chooser))
+
+    def skill_chosen(
+        self, dialog: Gtk.FileDialog, result: Gio.AsyncResult, shown: SettingsDialog
+    ) -> None:
+        try:
+            path = dialog.open_finish(result).get_path()
+        except GLib.Error as error:
+            if not error.matches(Gtk.dialog_error_quark(), Gtk.DialogError.DISMISSED):
+                shown.add_toast(Adw.Toast(title=error.message, use_markup=False))
+            return
+        # Only a file on this computer has a path to keep.
+        if path is not None:
+            settings.set_summary_skill(path)
+            shown.show_skill()
+
+    def use_built_in_skill(self, built_in: Gtk.Button) -> None:
+        settings.set_summary_skill(None)
+        settings_of(built_in).show_skill()
+
+    def show_kept_audio(self, dialog: SettingsDialog) -> None:
+        _, size_limit_gb = settings.audio_limits()
         kept = GLib.format_size(sum(store.audio_size(recording_id) for recording_id in self.rows))
         against = "" if size_limit_gb is None else f" of {size_limit_gb} GB"
-        age = limit_row("Age limit", "Days", age_limit_days, settings.AUDIO_AGE_LIMIT_DAYS)
-        size = limit_row("Size limit", "GB", size_limit_gb, settings.AUDIO_SIZE_LIMIT_GB)
-        rows = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE, css_classes=["boxed-list"])
-        rows.append(age[0])
-        rows.append(size[0])
-        dialog = Adw.AlertDialog(
-            heading="Audio limits",
-            body=f"Kept audio: {kept}{against}.\n\n{AUDIO_LIMITS_NOTE}",
-            extra_child=rows,
-            default_response="save",
-            close_response="cancel",
-        )
-        dialog.add_response("cancel", "Cancel")
-        dialog.add_response("save", "Save")
-        dialog.set_response_appearance("save", Adw.ResponseAppearance.SUGGESTED)
-        dialog.choose(self, None, self.audio_limits_chosen, age, size)
+        dialog.audio.set_description(f"Kept audio: {kept}{against}.\n\n{AUDIO_LIMITS_NOTE}")
 
-    def audio_limits_chosen(
-        self,
-        dialog: Adw.AlertDialog,
-        result: Gio.AsyncResult,
-        age: tuple[Adw.ExpanderRow, Adw.SpinRow],
-        size: tuple[Adw.ExpanderRow, Adw.SpinRow],
-    ) -> None:
-        if dialog.choose_finish(result) == "save":
-            settings.set_audio_limits(chosen_limit(*age), chosen_limit(*size))
-            self.delete_audio_over_limits()
-
-    def edit_summary_model(self, _button: Gtk.Button) -> None:
-        entry = Gtk.Entry(text=settings.summary_model() or "", activates_default=True)
-        dialog = Adw.AlertDialog(
-            heading="Summary model",
-            body=SUMMARY_MODEL_NOTE,
-            extra_child=entry,
-            default_response="save",
-            close_response="cancel",
-        )
-        dialog.add_response("cancel", "Cancel")
-        dialog.add_response("save", "Save")
-        dialog.set_response_appearance("save", Adw.ResponseAppearance.SUGGESTED)
-        dialog.choose(self, None, self.summary_model_chosen, entry)
-
-    def summary_model_chosen(
-        self, dialog: Adw.AlertDialog, result: Gio.AsyncResult, entry: Gtk.Entry
-    ) -> None:
-        if dialog.choose_finish(result) == "save":
-            settings.set_summary_model(entry.get_text().strip() or None)
-
-    def edit_agaric(self, _button: Gtk.Button) -> None:
-        # Left empty: a stored token is never shown back.
-        pasted = Adw.PasswordEntryRow(title=PASTE_AGARIC, activates_default=True)
-        space = SpaceRow()
-        rows = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE, css_classes=["boxed-list"])
-        rows.append(pasted)
-        rows.append(space)
-        dialog = Adw.AlertDialog(
-            heading="Agaric",
-            body=ASKING_AGARIC,
-            extra_child=rows,
-            default_response="save",
-            close_response="cancel",
-        )
-        dialog.add_response("cancel", "Cancel")
-        dialog.add_response("save", "Save")
-        dialog.set_response_appearance("save", Adw.ResponseAppearance.SUGGESTED)
-        dialog.choose(self, None, self.agaric_chosen, pasted, space)
-        self.ask_agaric(["--list-spaces"], None, self.spaces_listed, dialog, space)
+    def save_audio_limits(self, save: Gtk.Button) -> None:
+        dialog = settings_of(save)
+        settings.set_audio_limits(chosen_limit(*dialog.age), chosen_limit(*dialog.size))
+        self.delete_audio_over_limits()
+        self.show_kept_audio(dialog)
+        dialog.add_toast(Adw.Toast(title=AUDIO_LIMITS_SAVED))
 
     def ask_agaric(
         self,
@@ -663,40 +786,29 @@ class HistoryWindow(Adw.ApplicationWindow):
         )
         command.communicate_utf8_async(pasted, None, answered, *arguments)
 
-    def agaric_answer(self, command: Gio.Subprocess, result: Gio.AsyncResult) -> AgaricView:
+    def spaces_listed(
+        self, command: Gio.Subprocess, result: Gio.AsyncResult, dialog: SettingsDialog
+    ) -> None:
+        """Says where the token publishes, or why it can't, and offers its spaces."""
         _, listed, said = command.communicate_utf8_finish(result)
         # Read once it exited: it may have chosen the space.
-        return window_view.agaric(listed or "", said or "", settings.agaric_space_id())
+        view = window_view.agaric(listed or "", said or "", settings.agaric_space_id())
+        # A group's description is always markup; a space's name is not.
+        dialog.agaric.set_description(GLib.markup_escape_text(view.said))
+        dialog.space.offer(view)
 
-    def spaces_listed(
-        self,
-        command: Gio.Subprocess,
-        result: Gio.AsyncResult,
-        dialog: Adw.AlertDialog,
-        space: SpaceRow,
-    ) -> None:
-        view = self.agaric_answer(command, result)
-        dialog.set_body(view.said)
-        space.offer(view)
-
-    def agaric_chosen(
-        self,
-        dialog: Adw.AlertDialog,
-        result: Gio.AsyncResult,
-        pasted: Adw.PasswordEntryRow,
-        space: SpaceRow,
-    ) -> None:
-        if dialog.choose_finish(result) != "save":
-            return
+    def space_chosen(self, space: SpaceRow, _property: object) -> None:
         chosen = space.chosen()
         if chosen is not None:
             settings.set_agaric_space_id(chosen)
-        # The command takes the token out of what was pasted, or refuses it.
-        if pasted.get_text().strip():
-            self.ask_agaric(["--token-from-stdin"], pasted.get_text(), self.token_kept)
 
-    def token_kept(self, command: Gio.Subprocess, result: Gio.AsyncResult) -> None:
-        self.say(self.agaric_answer(command, result).said)
+    def agaric_pasted(self, pasted: Adw.PasswordEntryRow) -> None:
+        text = pasted.get_text()
+        # Gone once taken: a token is never shown back.
+        pasted.set_text("")
+        # The command takes the token out of what was pasted, or refuses it.
+        if text.strip():
+            self.ask_agaric(["--token-from-stdin"], text, self.spaces_listed, settings_of(pasted))
 
     def next_step(self, _button: Gtk.Button, recording_id: str, action: str) -> None:
         shown = self.shown(recording_id, action)
@@ -910,11 +1022,16 @@ class History(Adw.Application):
         if self.window is None:
             self.window = HistoryWindow(self)
         self.window.present()
-        for recording_id in command_line.get_arguments()[1:]:
-            self.window.reveal(recording_id)
+        for argument in command_line.get_arguments()[1:]:
+            if argument == SETTINGS:
+                self.window.open_settings()
+            else:
+                self.window.reveal(argument)
         return 0
 
 
-def run(recording_id: str | None) -> int:
-    """Opens the window, or the one already open, on that recording if one is given."""
-    return History().run(["minutas", *([] if recording_id is None else [recording_id])])
+def run(recording_id: str | None, *, open_settings: bool = False) -> int:
+    """Opens the window, or the one already open, on that recording if one is given, and the
+    Settings over it if asked."""
+    arguments = [] if recording_id is None else [recording_id]
+    return History().run(["minutas", *arguments, *([SETTINGS] if open_settings else [])])

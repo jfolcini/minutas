@@ -1,4 +1,4 @@
-"""What a recording's row in the history window shows, worked out from its metadata and runs.
+"""What a recording's row in the Recordings window shows, worked out from its metadata and runs.
 
 No GTK and no files here: the window draws what these functions return.
 """

@@ -38,12 +38,12 @@ MIX_CAPS = "audio/x-raw,rate=16000,channels=1"
 # How Agaric's Settings → Agent access makes an agent's token.
 TOKEN = re.compile(r"\bagt_[0-9a-f]{32}\b")
 
-KEEP_IT = "paste the config it shows under Agaric in Minutas' history window"
+KEEP_IT = "paste the config it shows under Agaric in Minutas' Settings"
 NO_TOKEN = (
     "No Agaric agent token: add an agent with read-write access to the Work space in Agaric's "
     f"Settings → Agent access, then {KEEP_IT}"
 )
-NO_SPACE = "No Agaric space chosen: choose one under Agaric in Minutas' history window"
+NO_SPACE = "No Agaric space chosen: choose one under Agaric in Minutas' Settings"
 BRIDGE_MISSING = "agaric-mcp not found: install Agaric 0.26 or newer and start it once"
 UPDATE_AGARIC = (
     "Update Agaric to 0.26 or newer and start it once: the agaric-mcp Minutas found has no "
