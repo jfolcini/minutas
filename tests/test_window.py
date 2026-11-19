@@ -13,6 +13,7 @@ from types import TracebackType
 from typing import cast
 
 import pytest
+from keyring.errors import KeyringLocked
 
 # Ubuntu builds its PyGObject for its own Python alone: under another, the window cannot run.
 gi = pytest.importorskip("gi", exc_type=ImportError)
@@ -1860,8 +1861,14 @@ def test_the_skill_is_the_built_in_one_until_a_file_is_chosen(
     assert dialog.skill.get_subtitle() == "Built-in: meeting notes"
     assert "Use built-in" not in buttons(dialog.skill)
 
+    press(dialog.skill, "Open")
+    assert desktop_calls.opened == [str(summarizer.BUILT_IN_SKILL)]
+
     desktop_calls.open_from = tmp_path / "standup-notes.md"
     press(dialog.skill, "Choose…")
+    press(dialog.skill, "Open")
+
+    assert desktop_calls.opened[1:] == [str(tmp_path / "standup-notes.md")]
 
     assert desktop_calls.filters == [("Markdown", [(0, "*.md"), (1, "text/markdown")])]
     assert settings.summary_skill() == str(tmp_path / "standup-notes.md")
@@ -1898,25 +1905,75 @@ BOTH_SPACES = f"{PERSONAL}\tPersonal\n{WORK}\tWork\n"
 PUBLISHES_TO_WORK = "The stored agent token publishes to Work."
 LIST_SPACES = ["settings", "agaric", "--list-spaces"]
 PASTED = '{"mcpServers": {"agaric-minutas-vptx4p": {"args": ["--token", "agt_…"]}}}'
+AGENT = "agt_77777777777777777777777777777777"
 
 
-def test_agaric_says_where_the_token_publishes_and_never_shows_the_token(
+@pytest.fixture
+def agent_token_stored() -> None:
+    settings.set_agaric_token(AGENT)
+
+
+def test_agaric_says_the_token_is_stored_and_shows_where_it_publishes_but_never_the_token(
     history: Callable[[], window.HistoryWindow], agaric_settings: FakeSettings
 ) -> None:
-    settings.set_agaric_token("agt_77777777777777777777777777777777")
+    settings.set_agaric_token(AGENT)
     agaric_settings.will("--list-spaces", f"{WORK}\tWork\n", f"{PUBLISHES_TO_WORK}\n", space=WORK)
     shown = history()
 
     dialog = open_settings(shown)
 
     assert agaric_settings.given() == [[LIST_SPACES, ""]]
+    assert dialog.token.get_subtitle() == "Stored in the keyring"
     assert dialog.agaric.get_description() == PUBLISHES_TO_WORK
     assert dialog.pasted.get_text() == ""
-    assert dialog.space.get_visible() is False
+    assert AGENT not in texts(dialog)
+    # The only space it may use shows, chosen.
+    assert (offered(dialog.space), dialog.space.get_selected()) == (["Work"], 0)
+    assert dialog.space.get_visible() is True
     assert settings.agaric_space_id() == WORK
     dialog.close()
 
 
+@pytest.mark.usefixtures("agaric_settings")
+def test_without_a_token_agaric_says_how_to_get_its_config(
+    history: Callable[[], window.HistoryWindow],
+) -> None:
+    shown = history()
+
+    dialog = open_settings(shown)
+
+    assert dialog.token.get_subtitle() == "Not set"
+    assert dialog.agaric.get_description() == (
+        "To connect Agaric: in Agaric, open Settings → Agent access, add an agent with "
+        "read-write access to the Work space, copy the config it shows, and paste it below."
+    )
+    assert dialog.space.get_visible() is False
+    dialog.close()
+
+
+def test_a_keyring_that_cannot_be_read_says_why(
+    history: Callable[[], window.HistoryWindow],
+    agaric_settings: FakeSettings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reason = "The keyring is locked"
+
+    def locked() -> str | None:
+        raise KeyringLocked(reason)
+
+    said = f"Could not read the Agaric agent token from the keyring: {reason}"
+    agaric_settings.will("--list-spaces", "", f"{said}\n", exit_status=1)
+    monkeypatch.setattr(settings, "agaric_token", locked)
+    shown = history()
+
+    dialog = open_settings(shown)
+
+    assert dialog.token.get_subtitle() == "Can't read the keyring: The keyring is locked"
+    assert dialog.agaric.get_description() == said
+    dialog.close()
+
+
+@pytest.mark.usefixtures("agent_token_stored")
 def test_agaric_offers_several_spaces_and_saves_the_one_chosen_at_once(
     history: Callable[[], window.HistoryWindow], agaric_settings: FakeSettings
 ) -> None:
@@ -1933,6 +1990,7 @@ def test_agaric_offers_several_spaces_and_saves_the_one_chosen_at_once(
     dialog.close()
 
 
+@pytest.mark.usefixtures("agent_token_stored")
 def test_agaric_chooses_no_space_for_the_person(
     history: Callable[[], window.HistoryWindow], agaric_settings: FakeSettings
 ) -> None:
@@ -1947,6 +2005,7 @@ def test_agaric_chooses_no_space_for_the_person(
     dialog.close()
 
 
+@pytest.mark.usefixtures("agent_token_stored")
 def test_agaric_out_of_reach_shows_the_fix(
     history: Callable[[], window.HistoryWindow], agaric_settings: FakeSettings
 ) -> None:
@@ -1969,13 +2028,16 @@ def test_a_pasted_config_is_kept_and_the_outcome_said(
     )
     shown = history()
     dialog = open_settings(shown)
-    assert dialog.agaric.get_description() == AGARIC_UNSET
+    assert dialog.token.get_subtitle() == "Not set"
 
     dialog.pasted.set_text(PASTED)
+    # As the command does with what was pasted.
+    settings.set_agaric_token(AGENT)
     dialog.pasted.emit("apply")
 
     assert dialog.pasted.get_text() == ""
     wait_until(lambda: dialog.agaric.get_description() == PUBLISHES_TO_WORK)
+    assert dialog.token.get_subtitle() == "Stored in the keyring"
     assert agaric_settings.given()[1] == [["settings", "agaric", "--token-from-stdin"], PASTED]
     assert settings.agaric_space_id() == WORK
     dialog.close()
@@ -1997,6 +2059,7 @@ def test_a_blank_paste_asks_agaric_nothing(
     dialog.close()
 
 
+@pytest.mark.usefixtures("agent_token_stored")
 def test_names_paths_and_errors_in_the_settings_are_shown_as_written(
     history: Callable[[], window.HistoryWindow],
     agaric_settings: FakeSettings,
@@ -2088,8 +2151,17 @@ def test_audio_limits_show_the_kept_audio_against_the_limits(
     dialog.close()
 
 
+def save_limits(shown: window.HistoryWindow, dialog: window.SettingsDialog) -> Adw.AlertDialog:
+    """The warning Save shows over the Settings."""
+    press(dialog, "Save")
+    warning = open_dialog(shown)
+    assert isinstance(warning, Adw.AlertDialog)
+    assert warning.get_heading() == "Save the audio limits?"
+    return warning
+
+
 @pytest.mark.usefixtures("agaric_settings")
-def test_saved_audio_limits_take_what_is_over_them_at_once(
+def test_saving_audio_limits_says_what_goes_and_takes_it_once_accepted(
     history: Callable[[], window.HistoryWindow],
 ) -> None:
     ten_days_old = with_size(recording([TRANSCRIBED], started=START - timedelta(days=9)), GB)
@@ -2097,10 +2169,21 @@ def test_saved_audio_limits_take_what_is_over_them_at_once(
     shown = history()
     dialog = open_settings(shown)
     age, size = limits(dialog)["Age limit"], limits(dialog)["Size limit"]
-
     age[1].set_value(7)
     size[0].set_enable_expansion(False)
-    press(dialog, "Save")
+
+    warning = save_limits(shown, dialog)
+
+    assert warning.get_body() == (
+        f"The audio of 1 recording, {GLib.format_size(GB)}, is over the new limits and is deleted "
+        "now, for good. The transcripts and everything published stay."
+    )
+    assert warning.get_response_appearance("accept") == Adw.ResponseAppearance.DESTRUCTIVE
+    # Nothing is saved, or deleted, before it is accepted.
+    assert settings.audio_limits() == (30, 5)
+    assert store.holds_audio(ten_days_old) is True
+
+    press(warning, "Accept")
     draw(shown)
 
     assert settings.audio_limits() == (7, None)
@@ -2114,14 +2197,34 @@ def test_saved_audio_limits_take_what_is_over_them_at_once(
 
 
 @pytest.mark.usefixtures("agaric_settings")
-def test_audio_limits_change_nothing_until_saved(
+def test_audio_limits_with_nothing_over_them_say_so(
+    history: Callable[[], window.HistoryWindow],
+) -> None:
+    recording([TRANSCRIBED])
+    shown = history()
+    dialog = open_settings(shown)
+    limits(dialog)["Age limit"][1].set_value(7)
+
+    warning = save_limits(shown, dialog)
+
+    assert warning.get_body() == "No audio is over the new limits, so nothing is deleted now."
+    assert warning.get_response_appearance("accept") == Adw.ResponseAppearance.SUGGESTED
+    press(warning, "Accept")
+    assert settings.audio_limits() == (7, 5)
+    assert store.holds_audio(FIRST) is True
+    dialog.close()
+
+
+@pytest.mark.usefixtures("agaric_settings")
+def test_audio_limits_change_nothing_when_the_warning_is_cancelled_or_not_saved(
     history: Callable[[], window.HistoryWindow],
 ) -> None:
     ten_days_old = recording([TRANSCRIBED], started=START - timedelta(days=9))
     shown = history()
     dialog = open_settings(shown)
-
     limits(dialog)["Age limit"][1].set_value(7)
+
+    press(save_limits(shown, dialog), "Cancel")
     dialog.close()
     settle()
 

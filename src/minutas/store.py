@@ -373,16 +373,23 @@ def audio_over_limits(
     return gone
 
 
+def recordings_over_limits(
+    now: datetime, age_limit_days: int | None, size_limit_gb: int | None
+) -> list[str]:
+    """The recordings whose tracks the limits would delete now."""
+    # By runs.json, which a recording gets only after its recording.json.
+    ids = [path.parent.name for path in recordings_dir().glob("*/runs.json")]
+    recordings = [(load_recording(i), load_runs(i), audio_size(i)) for i in ids]
+    return audio_over_limits(recordings, now, age_limit_days, size_limit_gb)
+
+
 def delete_audio_over_limits(
     now: datetime, age_limit_days: int | None, size_limit_gb: int | None
 ) -> None:
-    """Deletes the tracks of the recordings audio_over_limits picks, as Delete now does."""
+    """Deletes the tracks of the recordings over the limits, as Delete now does."""
     # Inside the lock, where no transcription can be queued between the choice and the delete.
     with lock():
-        # By runs.json, which a recording gets only after its recording.json.
-        ids = [path.parent.name for path in recordings_dir().glob("*/runs.json")]
-        recordings = [(load_recording(i), load_runs(i), audio_size(i)) for i in ids]
-        for recording_id in audio_over_limits(recordings, now, age_limit_days, size_limit_gb):
+        for recording_id in recordings_over_limits(now, age_limit_days, size_limit_gb):
             delete_tracks(recording_id)
 
 

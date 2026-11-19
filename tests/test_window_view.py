@@ -15,6 +15,7 @@ from minutas.window_view import (
     agaric,
     clean_name,
     duration,
+    limits_warning,
     row,
     unrecorded_failure,
 )
@@ -954,10 +955,14 @@ def test_a_row_says_when_the_age_limit_deletes_its_audio_only_when_it_may(
 BOTH_SPACES = "01HZPERSONAL\tPersonal\n01HZWORK\tWork\n"
 
 
-def test_agaric_with_one_space_says_where_it_publishes_and_offers_no_choice() -> None:
+def test_agaric_with_one_space_says_where_it_publishes_and_shows_it_chosen() -> None:
     assert agaric(
         "01HZWORK\tWork\n", "The stored agent token publishes to Work.\n", "01HZWORK"
-    ) == AgaricView(said="The stored agent token publishes to Work.", choices=(), chosen=None)
+    ) == AgaricView(
+        said="The stored agent token publishes to Work.",
+        choices=(("01HZWORK", "Work"),),
+        chosen=0,
+    )
 
 
 @pytest.mark.parametrize(
@@ -983,3 +988,21 @@ def test_agaric_out_of_reach_says_the_fix_it_was_given_last() -> None:
 
 def test_agaric_that_said_nothing_says_so() -> None:
     assert agaric("", "", None).said == "Asking Agaric stopped without saying why"
+
+
+GOES = (
+    "is over the new limits and is deleted now, for good. The transcripts and everything "
+    "published stay."
+)
+
+
+@pytest.mark.parametrize(
+    ("over", "said"),
+    [
+        (0, "No audio is over the new limits, so nothing is deleted now."),
+        (1, f"The audio of 1 recording, 1.2 GB, {GOES}"),
+        (3, f"The audio of 3 recordings, 1.2 GB, {GOES}"),
+    ],
+)
+def test_the_limits_warning_says_how_much_audio_goes_now(over: int, said: str) -> None:
+    assert limits_warning(over, "1.2 GB") == said
