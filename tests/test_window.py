@@ -1747,9 +1747,13 @@ def test_the_main_menu_opens_the_settings_once(
 
 @pytest.mark.usefixtures("agaric_settings")
 def test_the_models_devin_lists_are_offered_with_the_saved_one_chosen(
-    history: Callable[[], window.HistoryWindow], devin_installed: FakeDevin
+    history: Callable[[], window.HistoryWindow],
+    devin_installed: FakeDevin,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     settings.set_summary_model("opus-high-fast")
+    saved: list[str | None] = []
+    monkeypatch.setattr(settings, "set_summary_model", saved.append)
     shown = history()
 
     dialog = open_settings(shown)
@@ -1759,8 +1763,8 @@ def test_the_models_devin_lists_are_offered_with_the_saved_one_chosen(
     assert (offered(dialog.model), dialog.model.get_selected()) == (MODELS, 2)
     assert (offered(dialog.effort), dialog.effort.get_selected()) == (OPUS_EFFORTS, 2)
     assert dialog.effort.get_visible() is True
-    # Showing the saved model saves nothing on the way.
-    assert settings.summary_model() == "opus-high-fast"
+    # Showing the saved model saves nothing, not even on the way.
+    assert saved == []
     dialog.close()
 
 
@@ -1990,6 +1994,28 @@ def test_a_blank_paste_asks_agaric_nothing(
     dialog.pasted.emit("apply")
 
     assert asked == []
+    dialog.close()
+
+
+def test_names_paths_and_errors_in_the_settings_are_shown_as_written(
+    history: Callable[[], window.HistoryWindow],
+    agaric_settings: FakeSettings,
+    devin_installed: FakeDevin,
+    desktop_calls: Desktop,
+    tmp_path: Path,
+) -> None:
+    publishes = "The stored agent token publishes to R&D <main>."
+    agaric_settings.will("--list-spaces", f"{WORK}\tR&D <main>\n", f"{publishes}\n", space=WORK)
+    devin_installed.will("", stderr="Error: <html> & co\n", exit_status=1)
+    shown = history()
+    dialog = open_settings(shown)
+
+    desktop_calls.open_from = tmp_path / "R&D" / "notes.md"
+    press(dialog.skill, "Choose…")
+
+    assert publishes in texts(dialog)
+    assert "Error: <html> & co" in texts(dialog)
+    assert str(tmp_path / "R&D" / "notes.md") in texts(dialog)
     dialog.close()
 
 

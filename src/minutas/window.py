@@ -172,7 +172,8 @@ class SettingsDialog(Adw.PreferencesDialog):
         self.model_handler = self.model.connect("notify::selected", window.model_chosen)
         self.effort = Adw.ComboRow(title="Effort", visible=False)
         self.effort_handler = self.effort.connect("notify::selected", window.effort_chosen)
-        self.skill = Adw.ActionRow(title="Skill", subtitle_selectable=True)
+        # A path is shown as written: its "&" is no markup.
+        self.skill = Adw.ActionRow(title="Skill", subtitle_selectable=True, use_markup=False)
         self.skill.add_suffix(button("Choose…", window.choose_skill))
         self.built_in = button("Use built-in", window.use_built_in_skill)
         self.skill.add_suffix(self.built_in)
@@ -792,7 +793,8 @@ class HistoryWindow(Adw.ApplicationWindow):
         _, listed, said = command.communicate_utf8_finish(result)
         # Read once it exited: it may have chosen the space.
         view = window_view.agaric(listed or "", said or "", settings.agaric_space_id())
-        dialog.agaric.set_description(view.said)
+        # A group's description is always markup; a space's name is not.
+        dialog.agaric.set_description(GLib.markup_escape_text(view.said))
         dialog.space.offer(view)
 
     def space_chosen(self, space: SpaceRow, _property: object) -> None:
