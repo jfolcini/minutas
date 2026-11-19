@@ -128,7 +128,7 @@ ev 'Main.overview.hide()' >/dev/null
 
 echo "== enabled, no status.json yet"
 expect "Main.extensionManager.lookup('$UUID').state" "'1'"
-expect "$MENU" '["Record","---","---","Open history"]'
+expect "$MENU" '["Record","---","---","Recordings","Settings"]'
 
 echo "== Record"
 click Record
@@ -145,7 +145,7 @@ screenshot menu-recording.png
 echo "== Stop"
 click Stop
 expect "$MENU" '["Record","---","Meeting · '
-expect "$MENU" ' · 0:07 · transcribing…","---","Open history"]'
+expect "$MENU" ' · 0:07 · transcribing…","---","Recordings","Settings"]'
 expect "$PANEL" '{"recordingStyle":false,"timerVisible":false}'
 expect_log "record stop"
 read -r id at <"$WORK/active"
@@ -189,12 +189,14 @@ click Record
 expect "$NOTES" "Minutas isn't installed"
 mv "$WORK/minutas.away" "$WORK/bin/minutas"
 
-echo "== a recent recording and Open history open the history"
+echo "== a recent recording and Recordings open the recordings; Settings, the settings"
 click Standup
-click "Open history"
+click Recordings
+click Settings
 sleep 1
 expect_log "history --recording $id2"
 expect_log "history"
+expect_log "settings"
 
 echo "== disable removes everything; enable announces only what changed meanwhile (the lock screen)"
 gnome-extensions disable "$UUID"
@@ -264,7 +266,7 @@ until_menu() {
 
 write_status '{"version":1,"recording":null,"recent":[]}'
 gnome-extensions enable "$UUID"
-until_menu '["Record","---","---","Open history"]'
+until_menu '["Record","---","---","Recordings","Settings"]'
 echo "  idle: no timer"
 expect "$(there "category === 'GLib source'")" '"none"'
 entries=()

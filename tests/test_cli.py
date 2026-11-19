@@ -590,9 +590,11 @@ class FakeWindow:
     def __init__(self) -> None:
         self.exit_status = 0
         self.opened: list[str | None] = []
+        self.settings_opened = 0
 
-    def run(self, recording_id: str | None) -> int:
+    def run(self, recording_id: str | None, *, open_settings: bool = False) -> int:
         self.opened.append(recording_id)
+        self.settings_opened += open_settings
         return self.exit_status
 
 
@@ -640,6 +642,18 @@ def test_history_refuses_a_folder_outside_the_recordings(
 
     assert capsys.readouterr().err == f"No recording {elsewhere}.\n"
     assert fake_window.opened == []
+
+
+def test_settings_alone_opens_the_settings(fake_window: FakeWindow) -> None:
+    assert main(["settings"]) == 0
+
+    assert (fake_window.opened, fake_window.settings_opened) == ([None], 1)
+
+
+def test_history_opens_no_settings(fake_window: FakeWindow) -> None:
+    assert main(["history"]) == 0
+
+    assert fake_window.settings_opened == 0
 
 
 def test_history_passes_on_the_windows_exit_status(fake_window: FakeWindow) -> None:

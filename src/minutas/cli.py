@@ -160,6 +160,12 @@ def history(args: argparse.Namespace) -> int:
     return run(args.recording)
 
 
+def open_settings(_: argparse.Namespace) -> int:
+    from minutas.window import run  # noqa: PLC0415 - only the window needs GTK
+
+    return run(None, open_settings=True)
+
+
 def publish_agaric(args: argparse.Namespace) -> int:
     if not store.is_recording(args.recording_id):
         return fail(f"No recording {args.recording_id}.")
@@ -286,7 +292,7 @@ def build_parser() -> argparse.ArgumentParser:
         "worker", help="transcribe the queued recordings (the transcription unit runs this)"
     ).set_defaults(handler=work)
 
-    history_command = commands.add_parser("history", help="open the history window")
+    history_command = commands.add_parser("history", help="open the Recordings window")
     history_command.add_argument("--recording", metavar="ID", help="open this recording")
     history_command.set_defaults(handler=history)
 
@@ -313,8 +319,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     gitlab_command.set_defaults(handler=publish_gitlab)
 
-    settings_command = commands.add_parser("settings", help="change the settings")
-    settings_commands = settings_command.add_subparsers(title="commands", required=True)
+    settings_command = commands.add_parser(
+        "settings", help="open the Settings, or change one with a command"
+    )
+    settings_command.set_defaults(handler=open_settings)
+    settings_commands = settings_command.add_subparsers(title="commands")
     agaric_settings = settings_commands.add_parser("agaric", help="the Agaric space and token")
     agaric_settings.add_argument("--space", metavar="ID", help="publish to this space")
     agaric_settings.add_argument(

@@ -11,7 +11,10 @@ import shlex
 import signal
 import subprocess
 import tempfile
+from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import datetime
+from importlib import resources
 from pathlib import Path
 from types import FrameType
 
@@ -39,6 +42,8 @@ BUILT_IN_PRESETS = {
         "owners."
     ),
 }
+# How to write the summary, whatever the prompt asks it to cover, until Settings choose another.
+BUILT_IN_SKILL = resources.files("minutas") / "skills" / "meeting-notes" / "SKILL.md"
 # Added to every prompt, built-in, saved or typed.
 INSTRUCTIONS = (
     "Write the summary in English, whatever language the meeting was held in. Start your answer "
@@ -97,6 +102,10 @@ DEVIN_MISSING = (
     "`curl -fsSL https://cli.devin.ai/install.sh | bash`, then log in with `devin auth login`"
 )
 EMPTY = "Devin answered with an empty summary: see Details"
+SKILL_UNREADABLE = "Can't read the summary skill {path}: choose another in Settings"
+# Every model the account can use, for Settings to offer; in-process, as Summarize runs Devin.
+LIST_MODELS = [DEVIN, "models", "list", "--format", "json", "--process-model", "in-process"]
+MODELS_UNREADABLE = "Devin listed its models in a form Minutas can't read"
 TIMED_OUT = (
     f"Devin gave no answer in {DEVIN_TIMEOUT_SECONDS // 60} minutes: see Details, then Retry"
 )
@@ -104,6 +113,62 @@ TIMED_OUT = (
 
 class SummarizerError(Exception):
     pass
+
+
+@dataclass(frozen=True)
+class Model:
+    """A model family Devin offers, and its efforts: each one's label and the model it names."""
+
+    name: str
+    efforts: tuple[tuple[str, str], ...]
+
+
+def models(listed: str, saved: str | None) -> list[Model]:
+    """The families `devin models list --format json` lists, in its order, and the saved model
+    after them when it is none of theirs: one Devin stopped offering still shows while it is set.
+
+    An effort is the model's label without its family's name: "High Fast" of "Claude Opus 5.5".
+    """
+    try:
+        found = [
+            Model(
+                family["family_label"],
+                tuple(
+                    (
+                        variant["label"].removeprefix(family["family_label"]).strip(),
+                        variant["model_uid"],
+                    )
+                    for variant in family["variants"]
+                ),
+            )
+            for family in json.loads(listed)["families"]
+            if family["variants"]
+        ]
+    except (ValueError, KeyError, TypeError, AttributeError) as error:
+        raise SummarizerError(MODELS_UNREADABLE) from error
+    if saved is not None and find(found, saved) is None:
+        found.append(Model(saved, (("", saved),)))
+    return found
+
+
+def find(found: Sequence[Model], model: str) -> tuple[int, int] | None:
+    """Where the model is: its family's place and its effort's."""
+    for place, family in enumerate(found):
+        for effort, (_, named) in enumerate(family.efforts):
+            if named == model:
+                return place, effort
+    return None
+
+
+def skill() -> str:
+    """The skill the summary follows: the file chosen in Settings, else the built-in one."""
+    chosen = settings.summary_skill()
+    if chosen is None:
+        return BUILT_IN_SKILL.read_text(encoding="utf-8")
+    try:
+        return Path(chosen).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        raise SummarizerError(SKILL_UNREADABLE.format(path=chosen)) from None
 
 
 def presets() -> dict[str, str]:
@@ -214,7 +279,8 @@ def summarize(recording_id: str, started: datetime, prompt: str) -> bool:
     on_term = signal.signal(signal.SIGTERM, interrupt)
     try:
         title, summary = ask_devin(
-            f"{prompt}\n\n{INSTRUCTIONS}\n\nThe meeting's transcript:\n\n{transcript}",
+            f"{prompt}\n\nWrite it as this skill says:\n\n{skill()}\n\n{INSTRUCTIONS}\n\n"
+            f"The meeting's transcript:\n\n{transcript}",
             store.run_log(recording_id, index),
         )
     except SummarizerError as error:

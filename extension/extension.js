@@ -47,7 +47,8 @@ export default class MinutasExtension extends Extension {
         this._recentSection = new PopupMenu.PopupMenuSection();
         menu.addMenuItem(this._recentSection);
         menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
-        menu.addAction('Open history', () => this._run(['history'], "Couldn't open history"));
+        menu.addAction('Recordings', () => this._run(['history'], "Couldn't open the recordings"));
+        menu.addAction('Settings', () => this._run(['settings'], "Couldn't open the settings"));
         Main.panel.addToStatusArea(this.uuid, this._button);
 
         const path = GLib.build_filenamev([GLib.get_user_data_dir(), 'minutas', 'status.json']);
@@ -164,7 +165,7 @@ export default class MinutasExtension extends Extension {
     }
 
     _openHistory(recordingId) {
-        this._run(['history', '--recording', recordingId], "Couldn't open history");
+        this._run(['history', '--recording', recordingId], "Couldn't open the recording");
     }
 
     _run(args, failureTitle, onSuccess) {

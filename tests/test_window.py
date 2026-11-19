@@ -2,6 +2,7 @@ import fcntl
 import gc
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -328,15 +329,36 @@ def systemd(monkeypatch: pytest.MonkeyPatch) -> FakeSystemd:
     return fake
 
 
+class FakeDevin:
+    """A devin on PATH: the window offers Summarize only when there is one, and the Settings
+    offer the models it lists. It answers as told, and keeps what it was asked."""
+
+    def __init__(self, folder: Path) -> None:
+        self.folder = folder
+        self.will(LISTED_MODELS)
+
+    def will(self, stdout: str, *, stderr: str = "", exit_status: int = 0) -> None:
+        (self.folder / "stdout").write_text(stdout)
+        (self.folder / "stderr").write_text(stderr)
+        script = self.folder / "devin"
+        quoted = shlex.quote(str(self.folder))
+        script.write_text(
+            f'#!/bin/sh\necho "$@" > {quoted}/asked\ncat {quoted}/stdout\n'
+            f"cat {quoted}/stderr >&2\nexit {exit_status}\n"
+        )
+        script.chmod(0o755)
+
+    def asked(self) -> str:
+        return (self.folder / "asked").read_text()
+
+
 @pytest.fixture(autouse=True)
 def devin_installed(
     monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory
-) -> None:
-    """A devin on PATH, never run: the window offers Summarize only when there is one."""
-    folder = tmp_path_factory.mktemp("bin")
-    (folder / "devin").write_text("#!/bin/sh\nexit 1\n")
-    (folder / "devin").chmod(0o755)
-    monkeypatch.setenv("PATH", f"{folder}{os.pathsep}{os.environ['PATH']}")
+) -> FakeDevin:
+    fake = FakeDevin(tmp_path_factory.mktemp("bin"))
+    monkeypatch.setenv("PATH", f"{fake.folder}{os.pathsep}{os.environ['PATH']}")
+    return fake
 
 
 @pytest.fixture(autouse=True)
@@ -385,6 +407,7 @@ class FakeSettings:
         self.script.write_text(FAKE_SETTINGS)
         self.plan = folder / "settings_plan.json"
         self.plan.write_text("{}")
+        self.will("--list-spaces", "", f"{AGARIC_UNSET}\n", exit_status=1)
 
     def will(
         self,
@@ -421,6 +444,8 @@ class Desktop:
         self.open_error: GLib.Error | None = None
         self.save_as: Path | GLib.Error = DISMISSED
         self.suggested: list[str | None] = []
+        self.open_from: Path | GLib.Error = DISMISSED
+        self.filters: list[object] = []
         self.played: list[str | None] = []
         self.stopped: list[str | None] = []
 
@@ -458,6 +483,24 @@ class Desktop:
             raise self.save_as
         return Gio.File.new_for_path(str(self.save_as))
 
+    def open(
+        self,
+        dialog: Gtk.FileDialog,
+        _parent: Gtk.Window,
+        _cancellable: None,
+        done: Callable[[GObject.Object, Gio.AsyncResult, object], None],
+        shown: object,
+    ) -> None:
+        offered = dialog.get_default_filter()
+        assert offered is not None
+        self.filters.append(offered.to_gvariant().unpack())
+        done(dialog, Gio.Task.new(None, None, None), shown)
+
+    def open_finish(self, _dialog: Gtk.FileDialog, _result: Gio.AsyncResult) -> Gio.File:
+        if isinstance(self.open_from, GLib.Error):
+            raise self.open_from
+        return Gio.File.new_for_path(str(self.open_from))
+
     def play(self, stream: Gtk.MediaFile) -> None:
         self.played.append(path_of(stream.get_file()))
 
@@ -494,6 +537,8 @@ def desktop_calls(monkeypatch: pytest.MonkeyPatch) -> Desktop:
         (Gtk.UriLauncher, "launch_finish"),
         (Gtk.FileDialog, "save"),
         (Gtk.FileDialog, "save_finish"),
+        (Gtk.FileDialog, "open"),
+        (Gtk.FileDialog, "open_finish"),
         (Gtk.MediaStream, "play"),
         (Gtk.MediaStream, "set_playing"),
     ):
@@ -517,11 +562,20 @@ def test_recordings_are_listed_newest_first(history: Callable[[], window.History
     ]
 
 
-def test_an_empty_history_says_so(history: Callable[[], window.HistoryWindow]) -> None:
+def test_an_empty_history_says_so_with_the_whole_window(
+    history: Callable[[], window.HistoryWindow],
+) -> None:
     shown = history()
 
     assert listed(shown) == []
-    assert "No recordings yet" in texts(shown)
+    assert shown.pages.get_visible_child() is shown.empty
+    assert shown.empty.get_title() == "No recordings yet"
+
+    recording()
+    store.write_status()
+    wait_until(lambda: listed(shown) == [f"Meeting | {SUBTITLE}"])
+
+    assert shown.pages.get_visible_child() is shown.scrolled
 
 
 def test_the_window_waits_on_a_folder_that_exists(
@@ -1613,6 +1667,332 @@ def with_size(recording_id: str, size: int) -> str:
     return recording_id
 
 
+AGARIC_UNSET = "No Agaric agent token"
+LISTED_MODELS = json.dumps(
+    {
+        "families": [
+            {
+                "family_label": "Adaptive",
+                "variants": [{"model_uid": "adaptive", "label": "Adaptive"}],
+            },
+            {
+                "family_label": "Claude Opus 5.5",
+                "variants": [
+                    {"model_uid": "claude-opus-5-5-medium", "label": "Claude Opus 5.5 Medium"},
+                    {"model_uid": "claude-opus-5-5-low", "label": "Claude Opus 5.5 Low"},
+                    {"model_uid": "opus-high-fast", "label": "Claude Opus 5.5 High Fast"},
+                ],
+            },
+        ]
+    }
+)
+MODELS = ["Devin's default", "Adaptive", "Claude Opus 5.5"]
+OPUS_EFFORTS = ["Medium", "Low", "High Fast"]
+
+
+def open_settings(shown: window.HistoryWindow) -> window.SettingsDialog:
+    """The Settings, as the main menu opens them, once Devin and Agaric have answered them."""
+    assert shown.activate_action(f"win.{window.SETTINGS}", None) is True
+    dialog = open_dialog(shown)
+    assert isinstance(dialog, window.SettingsDialog)
+    wait_until(
+        lambda: (
+            dialog.model.get_subtitle() != window.ASKING_DEVIN
+            and dialog.agaric.get_description() != window.ASKING_AGARIC
+        )
+    )
+    return dialog
+
+
+def attribute(menu: Gio.MenuModel, name: str) -> str:
+    """The first item's attribute."""
+    value = menu.get_item_attribute_value(0, name, GLib.VariantType("s"))
+    assert value is not None
+    return value.get_string()
+
+
+def offered(row: Adw.ComboRow) -> list[str]:
+    model = row.get_model()
+    assert model is not None
+    return [
+        cast("Gtk.StringObject", model.get_item(place)).get_string()
+        for place in range(model.get_n_items())
+    ]
+
+
+@pytest.mark.usefixtures("agaric_settings")
+def test_the_main_menu_opens_the_settings_once(
+    history: Callable[[], window.HistoryWindow],
+) -> None:
+    shown = history()
+    [main_menu] = [widget for widget in descendants(shown) if isinstance(widget, Gtk.MenuButton)]
+    menu = main_menu.get_menu_model()
+    assert menu is not None
+    assert menu.get_n_items() == 1
+    assert (attribute(menu, "label"), attribute(menu, "action")) == (
+        "Settings",
+        f"win.{window.SETTINGS}",
+    )
+
+    dialog = open_settings(shown)
+    shown.open_settings()
+    settle()
+
+    assert shown.get_visible_dialog() is dialog
+    assert dialog.get_title() == "Settings"
+    assert dialog.summarizer.get_selected_item() is not None
+    assert offered(dialog.summarizer) == ["Devin CLI"]
+    dialog.close()
+
+
+@pytest.mark.usefixtures("agaric_settings")
+def test_the_models_devin_lists_are_offered_with_the_saved_one_chosen(
+    history: Callable[[], window.HistoryWindow], devin_installed: FakeDevin
+) -> None:
+    settings.set_summary_model("opus-high-fast")
+    shown = history()
+
+    dialog = open_settings(shown)
+
+    assert devin_installed.asked() == "models list --format json --process-model in-process\n"
+    assert (dialog.model.get_subtitle(), dialog.model.get_sensitive()) == ("", True)
+    assert (offered(dialog.model), dialog.model.get_selected()) == (MODELS, 2)
+    assert (offered(dialog.effort), dialog.effort.get_selected()) == (OPUS_EFFORTS, 2)
+    assert dialog.effort.get_visible() is True
+    # Showing the saved model saves nothing on the way.
+    assert settings.summary_model() == "opus-high-fast"
+    dialog.close()
+
+
+@pytest.mark.usefixtures("agaric_settings")
+def test_a_model_devin_stopped_offering_still_shows_while_it_is_set(
+    history: Callable[[], window.HistoryWindow],
+) -> None:
+    settings.set_summary_model("swe-1.5")
+    shown = history()
+
+    dialog = open_settings(shown)
+
+    assert (offered(dialog.model), dialog.model.get_selected()) == ([*MODELS, "swe-1.5"], 3)
+    assert dialog.effort.get_visible() is False
+    assert settings.summary_model() == "swe-1.5"
+    dialog.close()
+
+
+@pytest.mark.usefixtures("agaric_settings")
+def test_a_model_is_saved_with_its_first_effort_and_an_effort_on_its_own(
+    history: Callable[[], window.HistoryWindow],
+) -> None:
+    shown = history()
+    dialog = open_settings(shown)
+    assert (dialog.model.get_selected(), dialog.effort.get_visible()) == (0, False)
+
+    dialog.model.set_selected(2)
+    assert settings.summary_model() == "claude-opus-5-5-medium"
+    assert (offered(dialog.effort), dialog.effort.get_selected()) == (OPUS_EFFORTS, 0)
+    assert dialog.effort.get_visible() is True
+
+    dialog.effort.set_selected(1)
+    assert settings.summary_model() == "claude-opus-5-5-low"
+
+    # A model with a single effort has nothing to choose.
+    dialog.model.set_selected(1)
+    assert (settings.summary_model(), dialog.effort.get_visible()) == ("adaptive", False)
+
+    dialog.model.set_selected(0)
+    assert (settings.summary_model(), dialog.effort.get_visible()) == (None, False)
+    dialog.close()
+
+
+@pytest.mark.parametrize(
+    ("answer", "said"),
+    [
+        (("", "Logged in as nobody\nError: not logged in\n", 1), "Error: not logged in"),
+        (("", "", 3), "devin exited with status 3"),
+        (("Available models (50 families)\n", "", 0), summarizer.MODELS_UNREADABLE),
+    ],
+)
+@pytest.mark.usefixtures("agaric_settings")
+def test_models_devin_does_not_list_say_why(
+    history: Callable[[], window.HistoryWindow],
+    devin_installed: FakeDevin,
+    answer: tuple[str, str, int],
+    said: str,
+) -> None:
+    stdout, stderr, exit_status = answer
+    devin_installed.will(stdout, stderr=stderr, exit_status=exit_status)
+    settings.set_summary_model("opus-high-fast")
+    shown = history()
+
+    dialog = open_settings(shown)
+
+    assert (dialog.model.get_subtitle(), dialog.model.get_sensitive()) == (said, False)
+    assert settings.summary_model() == "opus-high-fast"
+    dialog.close()
+
+
+@pytest.mark.usefixtures("agaric_settings")
+def test_without_devin_the_model_says_how_to_install_it(
+    history: Callable[[], window.HistoryWindow], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("PATH", str(tmp_path / "nowhere"))
+    shown = history()
+
+    dialog = open_settings(shown)
+
+    assert (dialog.model.get_subtitle(), dialog.model.get_sensitive()) == (
+        summarizer.DEVIN_MISSING,
+        False,
+    )
+    dialog.close()
+
+
+@pytest.mark.usefixtures("agaric_settings")
+def test_the_skill_is_the_built_in_one_until_a_file_is_chosen(
+    history: Callable[[], window.HistoryWindow], desktop_calls: Desktop, tmp_path: Path
+) -> None:
+    shown = history()
+    dialog = open_settings(shown)
+    assert dialog.skill.get_subtitle() == "Built-in: meeting notes"
+    assert "Use built-in" not in buttons(dialog.skill)
+
+    desktop_calls.open_from = tmp_path / "standup-notes.md"
+    press(dialog.skill, "Choose…")
+
+    assert desktop_calls.filters == [("Markdown", [(0, "*.md"), (1, "text/markdown")])]
+    assert settings.summary_skill() == str(tmp_path / "standup-notes.md")
+    assert dialog.skill.get_subtitle() == str(tmp_path / "standup-notes.md")
+
+    press(dialog.skill, "Use built-in")
+
+    assert settings.summary_skill() is None
+    assert dialog.skill.get_subtitle() == "Built-in: meeting notes"
+    assert "Use built-in" not in buttons(dialog.skill)
+    dialog.close()
+
+
+@pytest.mark.usefixtures("agaric_settings")
+def test_a_skill_file_not_chosen_changes_nothing_and_a_failed_choice_says_why(
+    history: Callable[[], window.HistoryWindow], desktop_calls: Desktop
+) -> None:
+    settings.set_summary_skill("/home/me/notes.md")
+    shown = history()
+    dialog = open_settings(shown)
+
+    press(dialog.skill, "Choose…")
+    desktop_calls.open_from = NO_HANDLER
+    press(dialog.skill, "Choose…")
+    draw(shown)
+
+    assert settings.summary_skill() == "/home/me/notes.md"
+    assert texts(dialog).count("No application handles this") == 1
+    dialog.close()
+
+
+WORK, PERSONAL = "01HZWORK", "01HZPERSONAL"
+BOTH_SPACES = f"{PERSONAL}\tPersonal\n{WORK}\tWork\n"
+PUBLISHES_TO_WORK = "The stored agent token publishes to Work."
+LIST_SPACES = ["settings", "agaric", "--list-spaces"]
+PASTED = '{"mcpServers": {"agaric-minutas-vptx4p": {"args": ["--token", "agt_…"]}}}'
+
+
+def test_agaric_says_where_the_token_publishes_and_never_shows_the_token(
+    history: Callable[[], window.HistoryWindow], agaric_settings: FakeSettings
+) -> None:
+    settings.set_agaric_token("agt_77777777777777777777777777777777")
+    agaric_settings.will("--list-spaces", f"{WORK}\tWork\n", f"{PUBLISHES_TO_WORK}\n", space=WORK)
+    shown = history()
+
+    dialog = open_settings(shown)
+
+    assert agaric_settings.given() == [[LIST_SPACES, ""]]
+    assert dialog.agaric.get_description() == PUBLISHES_TO_WORK
+    assert dialog.pasted.get_text() == ""
+    assert dialog.space.get_visible() is False
+    assert settings.agaric_space_id() == WORK
+    dialog.close()
+
+
+def test_agaric_offers_several_spaces_and_saves_the_one_chosen_at_once(
+    history: Callable[[], window.HistoryWindow], agaric_settings: FakeSettings
+) -> None:
+    settings.set_agaric_space_id(WORK)
+    agaric_settings.will("--list-spaces", BOTH_SPACES, f"{PUBLISHES_TO_WORK}\n")
+    shown = history()
+
+    dialog = open_settings(shown)
+
+    assert dialog.space.get_visible() is True
+    assert (offered(dialog.space), dialog.space.get_selected()) == (["Personal", "Work"], 1)
+    dialog.space.set_selected(0)
+    assert settings.agaric_space_id() == PERSONAL
+    dialog.close()
+
+
+def test_agaric_chooses_no_space_for_the_person(
+    history: Callable[[], window.HistoryWindow], agaric_settings: FakeSettings
+) -> None:
+    agaric_settings.will("--list-spaces", BOTH_SPACES, "Choose the one to publish to.\n")
+    shown = history()
+
+    dialog = open_settings(shown)
+
+    assert dialog.agaric.get_description() == "Choose the one to publish to."
+    assert dialog.space.get_selected() == Gtk.INVALID_LIST_POSITION
+    assert settings.agaric_space_id() is None
+    dialog.close()
+
+
+def test_agaric_out_of_reach_shows_the_fix(
+    history: Callable[[], window.HistoryWindow], agaric_settings: FakeSettings
+) -> None:
+    fix = "Agaric isn't running: start it and turn on Settings → Agent access"
+    agaric_settings.will("--list-spaces", "", f"{fix}\n", exit_status=1)
+    shown = history()
+
+    dialog = open_settings(shown)
+
+    assert dialog.agaric.get_description() == fix
+    assert dialog.space.get_visible() is False
+    dialog.close()
+
+
+def test_a_pasted_config_is_kept_and_the_outcome_said(
+    history: Callable[[], window.HistoryWindow], agaric_settings: FakeSettings
+) -> None:
+    agaric_settings.will(
+        "--token-from-stdin", f"{WORK}\tWork\n", f"{PUBLISHES_TO_WORK}\n", space=WORK
+    )
+    shown = history()
+    dialog = open_settings(shown)
+    assert dialog.agaric.get_description() == AGARIC_UNSET
+
+    dialog.pasted.set_text(PASTED)
+    dialog.pasted.emit("apply")
+
+    assert dialog.pasted.get_text() == ""
+    wait_until(lambda: dialog.agaric.get_description() == PUBLISHES_TO_WORK)
+    assert agaric_settings.given()[1] == [["settings", "agaric", "--token-from-stdin"], PASTED]
+    assert settings.agaric_space_id() == WORK
+    dialog.close()
+
+
+@pytest.mark.usefixtures("agaric_settings")
+def test_a_blank_paste_asks_agaric_nothing(
+    history: Callable[[], window.HistoryWindow], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    shown = history()
+    dialog = open_settings(shown)
+    asked: list[object] = []
+    monkeypatch.setattr(shown, "ask_agaric", lambda *arguments: asked.append(arguments))
+
+    dialog.pasted.set_text("  \n")
+    dialog.pasted.emit("apply")
+
+    assert asked == []
+    dialog.close()
+
+
 def limits(dialog: Adw.Dialog) -> dict[str, tuple[Adw.ExpanderRow, Adw.SpinRow]]:
     """Each limit's switch and value, by the limit's title."""
     return {
@@ -1653,6 +2033,7 @@ def test_opening_the_window_deletes_the_audio_over_the_limits(
         ((7, None), "", {"Age limit": (True, 7.0), "Size limit": (False, 5.0)}),
     ],
 )
+@pytest.mark.usefixtures("agaric_settings")
 def test_audio_limits_show_the_kept_audio_against_the_limits(
     history: Callable[[], window.HistoryWindow],
     saved: tuple[int | None, int | None] | None,
@@ -1667,223 +2048,59 @@ def test_audio_limits_show_the_kept_audio_against_the_limits(
     with_size(store.create_recording(START + timedelta(hours=2))["id"], GB)
     shown = history()
 
-    press(shown, "Audio limits")
-    dialog = open_dialog(shown)
+    dialog = open_settings(shown)
 
-    assert isinstance(dialog, Adw.AlertDialog)
-    assert dialog.get_heading() == "Audio limits"
     kept = GLib.format_size(5 * GB // 2)
-    assert dialog.get_body() == f"Kept audio: {kept}{said}.\n\n{window.AUDIO_LIMITS_NOTE}"
+    assert dialog.audio.get_title() == "Audio limits"
+    assert dialog.audio.get_description() == (
+        f"Kept audio: {kept}{said}.\n\n{window.AUDIO_LIMITS_NOTE}"
+    )
     assert {
         title: (expander.get_enable_expansion(), value.get_value())
         for title, (expander, value) in limits(dialog).items()
     } == shown_limits
-    press(dialog, "Cancel")
+    dialog.close()
 
 
+@pytest.mark.usefixtures("agaric_settings")
 def test_saved_audio_limits_take_what_is_over_them_at_once(
     history: Callable[[], window.HistoryWindow],
 ) -> None:
-    ten_days_old = recording([TRANSCRIBED], started=START - timedelta(days=9))
+    ten_days_old = with_size(recording([TRANSCRIBED], started=START - timedelta(days=9)), GB)
     recording([TRANSCRIBED])
     shown = history()
-
-    press(shown, "Audio limits")
-    dialog = open_dialog(shown)
+    dialog = open_settings(shown)
     age, size = limits(dialog)["Age limit"], limits(dialog)["Size limit"]
+
     age[1].set_value(7)
     size[0].set_enable_expansion(False)
     press(dialog, "Save")
+    draw(shown)
 
     assert settings.audio_limits() == (7, None)
     assert (store.holds_audio(ten_days_old), store.holds_audio(FIRST)) == (False, True)
+    kept = GLib.format_size(store.audio_size(FIRST))
+    assert dialog.audio.get_description() == f"Kept audio: {kept}.\n\n{window.AUDIO_LIMITS_NOTE}"
+    assert window.AUDIO_LIMITS_SAVED in texts(dialog)
+    dialog.close()
     assert lines(expand(shown, ten_days_old))[2] == ("Microphone", "Deleted")
     assert lines(expand(shown))[4] == ("Audio files", "Kept until 2026-11-25 13:05")
 
 
-def test_audio_limits_change_nothing_when_cancelled(
+@pytest.mark.usefixtures("agaric_settings")
+def test_audio_limits_change_nothing_until_saved(
     history: Callable[[], window.HistoryWindow],
 ) -> None:
     ten_days_old = recording([TRANSCRIBED], started=START - timedelta(days=9))
     shown = history()
+    dialog = open_settings(shown)
 
-    press(shown, "Audio limits")
-    dialog = open_dialog(shown)
     limits(dialog)["Age limit"][1].set_value(7)
-    press(dialog, "Cancel")
+    dialog.close()
+    settle()
 
     assert settings.audio_limits() == (30, 5)
     assert store.holds_audio(ten_days_old) is True
-
-
-def model_dialog(shown: window.HistoryWindow) -> tuple[Adw.AlertDialog, Gtk.Entry]:
-    press(shown, "Summary model")
-    dialog = open_dialog(shown)
-    assert isinstance(dialog, Adw.AlertDialog)
-    [entry] = [widget for widget in descendants(dialog) if isinstance(widget, Gtk.Entry)]
-    return dialog, entry
-
-
-def test_the_summary_model_is_saved_without_the_space_around_it_and_cleared_when_emptied(
-    history: Callable[[], window.HistoryWindow],
-) -> None:
-    shown = history()
-
-    dialog, entry = model_dialog(shown)
-
-    assert (dialog.get_heading(), dialog.get_body(), entry.get_text()) == (
-        "Summary model",
-        '"devin models" lists the models your account can use. Empty is Devin\'s default.',
-        "",
-    )
-    entry.set_text("  swe-2-high ")
-    press(dialog, "Save")
-    assert settings.summary_model() == "swe-2-high"
-
-    dialog, entry = model_dialog(shown)
-
-    assert entry.get_text() == "swe-2-high"
-    entry.set_text("  ")
-    press(dialog, "Save")
-    assert settings.summary_model() is None
-
-
-def test_the_summary_model_stays_when_cancelled(
-    history: Callable[[], window.HistoryWindow],
-) -> None:
-    settings.set_summary_model("swe-2-high")
-    shown = history()
-
-    dialog, entry = model_dialog(shown)
-    entry.set_text("opus")
-    press(dialog, "Cancel")
-
-    assert settings.summary_model() == "swe-2-high"
-
-
-WORK, PERSONAL = "01HZWORK", "01HZPERSONAL"
-BOTH_SPACES = f"{PERSONAL}\tPersonal\n{WORK}\tWork\n"
-PUBLISHES_TO_WORK = "The stored agent token publishes to Work."
-LIST_SPACES = ["settings", "agaric", "--list-spaces"]
-PASTED = '{"mcpServers": {"agaric-minutas-vptx4p": {"args": ["--token", "agt_…"]}}}'
-
-
-def agaric_dialog(
-    shown: window.HistoryWindow, fake: FakeSettings
-) -> tuple[Adw.AlertDialog, Adw.PasswordEntryRow, Adw.ComboRow]:
-    """The Agaric settings, once Agaric has answered them."""
-    asked = len(fake.given())
-    press(shown, "Agaric")
-    dialog = open_dialog(shown)
-    assert isinstance(dialog, Adw.AlertDialog)
-    wait_until(lambda: dialog.get_body() != window.ASKING_AGARIC)
-    assert fake.given()[asked:] == [[LIST_SPACES, ""]]
-    [pasted] = [row for row in descendants(dialog) if isinstance(row, Adw.PasswordEntryRow)]
-    [space] = [row for row in descendants(dialog) if isinstance(row, Adw.ComboRow)]
-    return dialog, pasted, space
-
-
-def offered(space: Adw.ComboRow) -> list[str]:
-    model = space.get_model()
-    assert model is not None
-    return [
-        cast("Gtk.StringObject", model.get_item(place)).get_string()
-        for place in range(model.get_n_items())
-    ]
-
-
-def test_agaric_says_where_the_token_publishes_and_never_shows_the_token(
-    history: Callable[[], window.HistoryWindow], agaric_settings: FakeSettings
-) -> None:
-    settings.set_agaric_token("agt_77777777777777777777777777777777")
-    agaric_settings.will("--list-spaces", f"{WORK}\tWork\n", f"{PUBLISHES_TO_WORK}\n", space=WORK)
-    shown = history()
-
-    dialog, pasted, space = agaric_dialog(shown, agaric_settings)
-
-    assert (dialog.get_heading(), dialog.get_body()) == ("Agaric", PUBLISHES_TO_WORK)
-    assert pasted.get_text() == ""
-    assert space.get_visible() is False
-    press(dialog, "Save")
-    assert settings.agaric_space_id() == WORK
-    assert len(agaric_settings.given()) == 1
-
-
-def test_agaric_offers_several_spaces_and_saves_the_one_chosen(
-    history: Callable[[], window.HistoryWindow], agaric_settings: FakeSettings
-) -> None:
-    settings.set_agaric_space_id(WORK)
-    agaric_settings.will("--list-spaces", BOTH_SPACES, f"{PUBLISHES_TO_WORK}\n")
-    shown = history()
-
-    dialog, _, space = agaric_dialog(shown, agaric_settings)
-
-    assert space.get_visible() is True
-    assert (offered(space), space.get_selected()) == (["Personal", "Work"], 1)
-    space.set_selected(0)
-    press(dialog, "Save")
-    assert settings.agaric_space_id() == PERSONAL
-
-
-def test_agaric_chooses_no_space_for_the_person(
-    history: Callable[[], window.HistoryWindow], agaric_settings: FakeSettings
-) -> None:
-    agaric_settings.will("--list-spaces", BOTH_SPACES, "Choose the one to publish to.\n")
-    shown = history()
-
-    dialog, _, space = agaric_dialog(shown, agaric_settings)
-
-    assert dialog.get_body() == "Choose the one to publish to."
-    assert space.get_selected() == Gtk.INVALID_LIST_POSITION
-    press(dialog, "Save")
-    assert settings.agaric_space_id() is None
-
-
-def test_agaric_out_of_reach_shows_the_fix(
-    history: Callable[[], window.HistoryWindow], agaric_settings: FakeSettings
-) -> None:
-    fix = "Agaric isn't running: start it and turn on Settings → Agent access"
-    agaric_settings.will("--list-spaces", "", f"{fix}\n", exit_status=1)
-    shown = history()
-
-    dialog, _, space = agaric_dialog(shown, agaric_settings)
-
-    assert dialog.get_body() == fix
-    assert space.get_visible() is False
-    press(dialog, "Cancel")
-
-
-def test_a_pasted_config_is_kept_and_the_outcome_said(
-    history: Callable[[], window.HistoryWindow], agaric_settings: FakeSettings
-) -> None:
-    agaric_settings.will("--list-spaces", "", "No Agaric agent token\n", exit_status=1)
-    agaric_settings.will(
-        "--token-from-stdin", f"{WORK}\tWork\n", f"{PUBLISHES_TO_WORK}\n", space=WORK
-    )
-    shown = history()
-    dialog, pasted, _ = agaric_dialog(shown, agaric_settings)
-
-    pasted.set_text(PASTED)
-    press(dialog, "Save")
-    wait_until(lambda: PUBLISHES_TO_WORK in texts(shown))
-
-    assert agaric_settings.given()[1] == [["settings", "agaric", "--token-from-stdin"], PASTED]
-    assert settings.agaric_space_id() == WORK
-
-
-def test_agaric_changes_nothing_when_cancelled(
-    history: Callable[[], window.HistoryWindow], agaric_settings: FakeSettings
-) -> None:
-    settings.set_agaric_space_id(WORK)
-    agaric_settings.will("--list-spaces", BOTH_SPACES, f"{PUBLISHES_TO_WORK}\n")
-    shown = history()
-    dialog, pasted, space = agaric_dialog(shown, agaric_settings)
-
-    space.set_selected(0)
-    pasted.set_text(PASTED)
-    press(dialog, "Cancel")
-
-    assert settings.agaric_space_id() == WORK
 
 
 def test_the_window_follows_what_other_processes_do(
@@ -2104,3 +2321,33 @@ def test_history_opens_on_the_recording_it_is_given() -> None:
     GLib.source_remove(watchdog)
 
     assert seen == [True, True]
+
+
+@pytest.mark.usefixtures("agaric_settings")
+def test_settings_open_over_the_recordings_window() -> None:
+    seen: list[object] = []
+
+    def look() -> bool:
+        app = Gio.Application.get_default()
+        assert isinstance(app, window.History)
+        assert app.window is not None
+        dialog = app.window.get_visible_dialog()
+        assert isinstance(dialog, window.SettingsDialog)
+        # Once Devin and Agaric have answered: nothing is left to answer a window that is gone.
+        if dialog.model.get_subtitle() == window.ASKING_DEVIN or (
+            dialog.agaric.get_description() == window.ASKING_AGARIC
+        ):
+            return GLib.SOURCE_CONTINUE
+        seen.extend([app.window.is_visible(), offered(dialog.model)])
+        app.window.monitor.cancel()
+        app.window.destroy()
+        return GLib.SOURCE_REMOVE
+
+    GLib.idle_add(look)
+    watchdog = stop_after_a_while()
+
+    assert window.run(None, open_settings=True) == 0
+
+    GLib.source_remove(watchdog)
+
+    assert seen == [True, MODELS]

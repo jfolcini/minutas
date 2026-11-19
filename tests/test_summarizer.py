@@ -216,15 +216,19 @@ def test_without_xdg_data_home_devin_keeps_its_login_in_the_default_data_folder(
     assert devin.calls[0].env.get("XDG_DATA_HOME") == str(tmp_path / "person" / ".local" / "share")
 
 
-def test_the_prompt_is_the_chosen_one_then_the_instructions_then_the_transcript(
-    devin: FakeDevin,
+def test_the_prompt_is_the_chosen_one_then_the_skill_the_instructions_and_the_transcript(
+    devin: FakeDevin, tmp_path: Path
 ) -> None:
     recording_id = recording()
+    (tmp_path / "SKILL.md").write_text("# Standup notes\n\nOne line a person.\n")
+    settings.set_summary_skill(str(tmp_path / "SKILL.md"))
 
     summarizer.summarize(recording_id, SUMMARIZED, "Summarize this standup.")
 
     assert devin.calls[0].prompt == (
         "Summarize this standup.\n\n"
+        "Write it as this skill says:\n\n"
+        "# Standup notes\n\nOne line a person.\n\n\n"
         "Write the summary in English, whatever language the meeting was held in. Start your "
         "answer with one line, `Title: <a few words naming the meeting, no date>`, then the "
         "summary in Markdown.\n\n"
@@ -337,6 +341,35 @@ def test_the_log_holds_the_command_and_everything_devin_said(devin: FakeDevin) -
     command = " ".join(devin.calls[0].args)
     log = (store.recording_dir(recording_id) / "run-0.log").read_text()
     assert log == f"$ {command}\npartial\nError: boom\nexit status 1\n"
+
+
+def test_without_a_chosen_skill_the_built_in_one_is_followed(devin: FakeDevin) -> None:
+    recording_id = recording()
+
+    summarizer.summarize(recording_id, SUMMARIZED, PROMPT)
+
+    built_in = summarizer.BUILT_IN_SKILL.read_text(encoding="utf-8")
+    assert built_in.startswith("---\nname: meeting-notes\n")
+    assert devin.calls[0].prompt.startswith(
+        f"{PROMPT}\n\nWrite it as this skill says:\n\n{built_in}\n\n"
+    )
+
+
+@pytest.mark.parametrize("unreadable", ["gone.md", "binary.md"])
+def test_a_skill_that_cannot_be_read_fails_the_run_and_asks_devin_nothing(
+    devin: FakeDevin, tmp_path: Path, unreadable: str
+) -> None:
+    recording_id = recording()
+    (tmp_path / "binary.md").write_bytes(b"\xff\xfe\x00")
+    settings.set_summary_skill(str(tmp_path / unreadable))
+
+    assert summarizer.summarize(recording_id, SUMMARIZED, PROMPT) is False
+
+    run = runs(recording_id)[0]
+    assert run["error"] == (
+        f"Can't read the summary skill {tmp_path / unreadable}: choose another in Settings"
+    )
+    assert devin.calls == []
 
 
 def test_devin_is_asked_for_the_summary_model_as_an_argument_of_its_own(
@@ -465,3 +498,75 @@ def test_a_first_line_title_names_the_meeting_and_the_rest_is_the_summary(
 @given(answer=st.text(max_size=80).filter(lambda answer: "Title:" not in answer))
 def test_an_answer_without_a_title_line_is_the_summary_whole(answer: str) -> None:
     assert summarizer.split_title(answer) == (None, answer.strip())
+
+
+LISTED = json.dumps(
+    {
+        "families": [
+            {
+                "family_label": "Adaptive",
+                "aliases": [],
+                "variants": [{"model_uid": "adaptive", "label": "Adaptive"}],
+            },
+            {"family_label": "Retired", "variants": []},
+            {
+                "family_label": "GPT-6 Sol",
+                "variants": [
+                    {"model_uid": "gpt-6-sol-medium", "label": "GPT-6 Sol Medium Thinking"},
+                    {"model_uid": "gpt-6-sol-none", "label": "GPT-6 Sol No Thinking"},
+                    {"model_uid": "sol-fusion", "label": "Fusion"},
+                ],
+            },
+        ]
+    }
+)
+FOUND = [
+    summarizer.Model("Adaptive", (("", "adaptive"),)),
+    summarizer.Model(
+        "GPT-6 Sol",
+        (
+            ("Medium Thinking", "gpt-6-sol-medium"),
+            ("No Thinking", "gpt-6-sol-none"),
+            ("Fusion", "sol-fusion"),
+        ),
+    ),
+]
+
+
+@pytest.mark.parametrize("saved", [None, "adaptive", "gpt-6-sol-none"])
+def test_models_are_the_families_devin_lists_with_their_efforts(saved: str | None) -> None:
+    assert summarizer.models(LISTED, saved) == FOUND
+
+
+def test_a_saved_model_devin_no_longer_lists_comes_after_its_families() -> None:
+    assert summarizer.models(LISTED, "swe-1.5") == [
+        *FOUND,
+        summarizer.Model("swe-1.5", (("", "swe-1.5"),)),
+    ]
+
+
+@pytest.mark.parametrize(
+    "listed",
+    [
+        "Available models (50 families)\n",
+        "[]",
+        '{"families": [{"variants": [{"label": "x", "model_uid": "x"}]}]}',
+        '{"families": [{"family_label": "SWE-2", "variants": [{"label": "SWE-2 High"}]}]}',
+        '{"families": [{"family_label": 2, "variants": [{"label": "x", "model_uid": "x"}]}]}',
+    ],
+)
+def test_models_devin_lists_in_another_form_say_so(listed: str) -> None:
+    with pytest.raises(summarizer.SummarizerError) as raised:
+        summarizer.models(listed, None)
+
+    assert str(raised.value) == "Devin listed its models in a form Minutas can't read"
+
+
+@pytest.mark.parametrize(
+    ("model", "where"),
+    [("adaptive", (0, 0)), ("gpt-6-sol-medium", (1, 0)), ("sol-fusion", (1, 2)), ("opus", None)],
+)
+def test_find_gives_the_place_of_a_models_family_and_effort(
+    model: str, where: tuple[int, int] | None
+) -> None:
+    assert summarizer.find(FOUND, model) == where
