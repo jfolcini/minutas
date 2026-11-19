@@ -37,6 +37,7 @@ STILL_RECORDING = "Still recording"
 NO_AUDIO = "The audio was deleted"
 NO_TRANSCRIPT = "Transcribe first"
 NO_SUMMARY = "Summarize first"
+AGARIC_SILENT = "Asking Agaric stopped without saying why"
 
 
 @dataclass(frozen=True)
@@ -102,6 +103,17 @@ class RowView:
     publish_gitlab: ActionView
     # When the age limit deletes the tracks; empty when it never will.
     kept_until: str = ""
+
+
+@dataclass(frozen=True)
+class AgaricView:
+    """What the Agaric settings show once `minutas settings agaric` has answered."""
+
+    said: str
+    # The spaces the agent may use, as id and name, when it may use several.
+    choices: tuple[tuple[str, str], ...]
+    # The place among choices of the space set; None when it is not among them.
+    chosen: int | None
 
 
 def duration(seconds: int) -> str:
@@ -310,4 +322,22 @@ def row(  # noqa: PLR0913 - each is a separate input to the row; all after track
         publish=publish,
         publish_gitlab=publish_gitlab,
         kept_until=kept_until,
+    )
+
+
+def agaric(listed: str, stderr: str, space_id: str | None) -> AgaricView:
+    """What the Agaric settings show, from the answer of `minutas settings agaric`.
+
+    listed: its stdout, a space's id and name a line, tab between. stderr: what it said, where
+    it publishes or why it can't, last. space_id: the space set once it exited.
+    """
+    spaces = tuple(
+        (space, name) for space, _, name in (line.partition("\t") for line in listed.splitlines())
+    )
+    choices = spaces if len(spaces) > 1 else ()
+    said = [line.strip() for line in stderr.splitlines() if line.strip()]
+    return AgaricView(
+        said=said[-1] if said else AGARIC_SILENT,
+        choices=choices,
+        chosen=next((place for place, (space, _) in enumerate(choices) if space == space_id), None),
     )

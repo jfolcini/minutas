@@ -245,15 +245,25 @@ def test_app_uv_failure_stops_the_script(sandbox: Sandbox) -> None:
 
 # --- agaric-mcp --------------------------------------------------------------------------------
 
-AGARIC_MCP_HINT = (
-    "agaric-mcp: no agaric-mcp with `call` on the PATH; Publish to Agaric needs it. Put the bridge "
-    "that ships with Agaric 0.25 or newer there "
-    "(https://github.com/jfolcini/agaric/issues/6980)\n"
-)
+
+def agaric_mcp_hint(sandbox: Sandbox) -> str:
+    return (
+        f"agaric-mcp: no agaric-mcp with `call` at {agarics_own_bridge(sandbox)} or on the PATH; "
+        "Publish to Agaric needs it. Install Agaric 0.26 or newer and start it once\n"
+    )
+
+
+def agarics_own_bridge(sandbox: Sandbox) -> Path:
+    return sandbox.data / "com.agaric.app" / "bin" / "agaric-mcp"
+
+
+WITH_CALL = 'echo "    call <tool> <json>   Run one tool with <json>"'
+# The 0.20 bridge's usage.
+WITHOUT_CALL = "echo '  agaric-mcp --token <token> [--socket <path>]'"
 
 
 def test_agaric_mcp_with_call_is_ok(sandbox: Sandbox) -> None:
-    sandbox.fake("agaric-mcp", 'echo "    call <tool> <json>   Run one tool with <json>"')
+    sandbox.fake("agaric-mcp", WITH_CALL)
 
     result = sandbox.run("step_agaric_mcp")
 
@@ -261,8 +271,20 @@ def test_agaric_mcp_with_call_is_ok(sandbox: Sandbox) -> None:
     assert sandbox.calls() == ["agaric-mcp --help"]
 
 
-# The 0.20 bridge's usage, or none at all.
-@pytest.mark.parametrize("bridge", ["echo '  agaric-mcp --token <token> [--socket <path>]'", None])
+def test_agarics_own_bridge_comes_before_the_one_on_the_path(sandbox: Sandbox) -> None:
+    sandbox.fake("agaric-mcp", WITHOUT_CALL)
+    own = agarics_own_bridge(sandbox)
+    sandbox.fake("agaric-mcp", WITH_CALL, own.parent)
+
+    assert sandbox.run("step_agaric_mcp").stdout == "agaric-mcp: ok\n"
+
+    sandbox.fake("agaric-mcp", WITHOUT_CALL, own.parent)
+    sandbox.fake("agaric-mcp", WITH_CALL)
+
+    assert sandbox.run("step_agaric_mcp").stdout == agaric_mcp_hint(sandbox)
+
+
+@pytest.mark.parametrize("bridge", [WITHOUT_CALL, None])
 def test_agaric_mcp_without_call_says_what_to_put_there(
     sandbox: Sandbox, bridge: str | None
 ) -> None:
@@ -272,7 +294,7 @@ def test_agaric_mcp_without_call_says_what_to_put_there(
     result = sandbox.run("step_agaric_mcp")
 
     assert result.returncode == 0
-    assert result.stdout == AGARIC_MCP_HINT
+    assert result.stdout == agaric_mcp_hint(sandbox)
 
 
 # --- GNOME extension ---------------------------------------------------------------------------

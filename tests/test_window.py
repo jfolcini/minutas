@@ -51,6 +51,26 @@ sys.stderr.write(plan["stderr"])
 sys.exit(plan["exit"])
 """
 
+# What `minutas settings agaric` does, as far as the window can tell: it keeps what it was given,
+# sets the space its plan names, and answers the option it was given as its plan has it answer.
+FAKE_SETTINGS = """
+import json, os, sys
+from pathlib import Path
+plan_file, *arguments = sys.argv[1:]
+plan = json.loads(Path(plan_file).read_text())
+given = Path(plan_file).with_name("given.json")
+before = json.loads(given.read_text()) if given.exists() else []
+given.write_text(json.dumps([*before, [arguments, sys.stdin.read()]]))
+answer = plan[arguments[-1]]
+if answer["space"] is not None:
+    saved = Path(os.environ["XDG_CONFIG_HOME"], "minutas", "settings.json")
+    saved.parent.mkdir(parents=True, exist_ok=True)
+    saved.write_text(json.dumps({"agaric_space_id": answer["space"]}))
+sys.stdout.write(answer["listed"])
+sys.stderr.write(answer["said"])
+sys.exit(answer["exit"])
+"""
+
 
 def run(action: str, status: str, **changes: object) -> store.Run:
     ended = {
@@ -353,6 +373,41 @@ class FakePublish:
 @pytest.fixture
 def publish(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> FakePublish:
     fake = FakePublish(tmp_path)
+    monkeypatch.setattr(window, "MINUTAS", [sys.executable, str(fake.script), str(fake.plan)])
+    return fake
+
+
+class FakeSettings:
+    """Stands in for the `minutas settings agaric` the window runs for its Agaric settings."""
+
+    def __init__(self, folder: Path) -> None:
+        self.script = folder / "fake_settings.py"
+        self.script.write_text(FAKE_SETTINGS)
+        self.plan = folder / "settings_plan.json"
+        self.plan.write_text("{}")
+
+    def will(
+        self,
+        option: str,
+        listed: str,
+        said: str,
+        *,
+        space: str | None = None,
+        exit_status: int = 0,
+    ) -> None:
+        plan = json.loads(self.plan.read_text())
+        plan[option] = {"listed": listed, "said": said, "space": space, "exit": exit_status}
+        self.plan.write_text(json.dumps(plan))
+
+    def given(self) -> list[list[object]]:
+        """Each run's arguments and what it read on stdin."""
+        given = self.plan.with_name("given.json")
+        return cast("list[list[object]]", json.loads(given.read_text())) if given.exists() else []
+
+
+@pytest.fixture
+def agaric_settings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> FakeSettings:
+    fake = FakeSettings(tmp_path)
     monkeypatch.setattr(window, "MINUTAS", [sys.executable, str(fake.script), str(fake.plan)])
     return fake
 
@@ -1704,6 +1759,131 @@ def test_the_summary_model_stays_when_cancelled(
     press(dialog, "Cancel")
 
     assert settings.summary_model() == "swe-2-high"
+
+
+WORK, PERSONAL = "01HZWORK", "01HZPERSONAL"
+BOTH_SPACES = f"{PERSONAL}\tPersonal\n{WORK}\tWork\n"
+PUBLISHES_TO_WORK = "The stored agent token publishes to Work."
+LIST_SPACES = ["settings", "agaric", "--list-spaces"]
+PASTED = '{"mcpServers": {"agaric-minutas-vptx4p": {"args": ["--token", "agt_…"]}}}'
+
+
+def agaric_dialog(
+    shown: window.HistoryWindow, fake: FakeSettings
+) -> tuple[Adw.AlertDialog, Adw.PasswordEntryRow, Adw.ComboRow]:
+    """The Agaric settings, once Agaric has answered them."""
+    asked = len(fake.given())
+    press(shown, "Agaric")
+    dialog = open_dialog(shown)
+    assert isinstance(dialog, Adw.AlertDialog)
+    wait_until(lambda: dialog.get_body() != window.ASKING_AGARIC)
+    assert fake.given()[asked:] == [[LIST_SPACES, ""]]
+    [pasted] = [row for row in descendants(dialog) if isinstance(row, Adw.PasswordEntryRow)]
+    [space] = [row for row in descendants(dialog) if isinstance(row, Adw.ComboRow)]
+    return dialog, pasted, space
+
+
+def offered(space: Adw.ComboRow) -> list[str]:
+    model = space.get_model()
+    assert model is not None
+    return [
+        cast("Gtk.StringObject", model.get_item(place)).get_string()
+        for place in range(model.get_n_items())
+    ]
+
+
+def test_agaric_says_where_the_token_publishes_and_never_shows_the_token(
+    history: Callable[[], window.HistoryWindow], agaric_settings: FakeSettings
+) -> None:
+    settings.set_agaric_token("agt_77777777777777777777777777777777")
+    agaric_settings.will("--list-spaces", f"{WORK}\tWork\n", f"{PUBLISHES_TO_WORK}\n", space=WORK)
+    shown = history()
+
+    dialog, pasted, space = agaric_dialog(shown, agaric_settings)
+
+    assert (dialog.get_heading(), dialog.get_body()) == ("Agaric", PUBLISHES_TO_WORK)
+    assert pasted.get_text() == ""
+    assert space.get_visible() is False
+    press(dialog, "Save")
+    assert settings.agaric_space_id() == WORK
+    assert len(agaric_settings.given()) == 1
+
+
+def test_agaric_offers_several_spaces_and_saves_the_one_chosen(
+    history: Callable[[], window.HistoryWindow], agaric_settings: FakeSettings
+) -> None:
+    settings.set_agaric_space_id(WORK)
+    agaric_settings.will("--list-spaces", BOTH_SPACES, f"{PUBLISHES_TO_WORK}\n")
+    shown = history()
+
+    dialog, _, space = agaric_dialog(shown, agaric_settings)
+
+    assert space.get_visible() is True
+    assert (offered(space), space.get_selected()) == (["Personal", "Work"], 1)
+    space.set_selected(0)
+    press(dialog, "Save")
+    assert settings.agaric_space_id() == PERSONAL
+
+
+def test_agaric_chooses_no_space_for_the_person(
+    history: Callable[[], window.HistoryWindow], agaric_settings: FakeSettings
+) -> None:
+    agaric_settings.will("--list-spaces", BOTH_SPACES, "Choose the one to publish to.\n")
+    shown = history()
+
+    dialog, _, space = agaric_dialog(shown, agaric_settings)
+
+    assert dialog.get_body() == "Choose the one to publish to."
+    assert space.get_selected() == Gtk.INVALID_LIST_POSITION
+    press(dialog, "Save")
+    assert settings.agaric_space_id() is None
+
+
+def test_agaric_out_of_reach_shows_the_fix(
+    history: Callable[[], window.HistoryWindow], agaric_settings: FakeSettings
+) -> None:
+    fix = "Agaric isn't running: start it and turn on Settings → Agent access"
+    agaric_settings.will("--list-spaces", "", f"{fix}\n", exit_status=1)
+    shown = history()
+
+    dialog, _, space = agaric_dialog(shown, agaric_settings)
+
+    assert dialog.get_body() == fix
+    assert space.get_visible() is False
+    press(dialog, "Cancel")
+
+
+def test_a_pasted_config_is_kept_and_the_outcome_said(
+    history: Callable[[], window.HistoryWindow], agaric_settings: FakeSettings
+) -> None:
+    agaric_settings.will("--list-spaces", "", "No Agaric agent token\n", exit_status=1)
+    agaric_settings.will(
+        "--token-from-stdin", f"{WORK}\tWork\n", f"{PUBLISHES_TO_WORK}\n", space=WORK
+    )
+    shown = history()
+    dialog, pasted, _ = agaric_dialog(shown, agaric_settings)
+
+    pasted.set_text(PASTED)
+    press(dialog, "Save")
+    wait_until(lambda: PUBLISHES_TO_WORK in texts(shown))
+
+    assert agaric_settings.given()[1] == [["settings", "agaric", "--token-from-stdin"], PASTED]
+    assert settings.agaric_space_id() == WORK
+
+
+def test_agaric_changes_nothing_when_cancelled(
+    history: Callable[[], window.HistoryWindow], agaric_settings: FakeSettings
+) -> None:
+    settings.set_agaric_space_id(WORK)
+    agaric_settings.will("--list-spaces", BOTH_SPACES, f"{PUBLISHES_TO_WORK}\n")
+    shown = history()
+    dialog, pasted, space = agaric_dialog(shown, agaric_settings)
+
+    space.set_selected(0)
+    pasted.set_text(PASTED)
+    press(dialog, "Cancel")
+
+    assert settings.agaric_space_id() == WORK
 
 
 def test_the_window_follows_what_other_processes_do(

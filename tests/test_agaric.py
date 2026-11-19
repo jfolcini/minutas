@@ -107,7 +107,7 @@ class FakeSystem:
             return subprocess.CompletedProcess(
                 args, self.gst.returncode, self.gst.stdout, self.gst.stderr
             )
-        assert args[:4] == ["agaric-mcp", "--token", TOKEN, "call"]
+        assert args[1:4] == ["--token", TOKEN, "call"]
         tool, arguments = args[4], json.loads(args[5])
         self.calls.append(
             Call(
@@ -925,8 +925,20 @@ def test_list_spaces_fails_with_agarics_reason(system: FakeSystem) -> None:
     settings.set_agaric_token(TOKEN)
     system.answers["list_spaces"] = [Answer(2, stderr="agaric-mcp: unknown argument: call\n")]
 
-    with pytest.raises(agaric.AgaricError, match=r"^Update agaric-mcp: "):
+    with pytest.raises(agaric.AgaricError, match=r"^Update Agaric to 0.26 or newer "):
         agaric.list_spaces()
+
+
+def test_agarics_own_bridge_comes_before_the_one_on_the_path(system: FakeSystem) -> None:
+    settings.set_agaric_token(TOKEN)
+    agaric.list_spaces()
+    own = store.data_dir().parent / "com.agaric.app" / "bin" / "agaric-mcp"
+    own.parent.mkdir(parents=True)
+    own.touch()
+
+    agaric.list_spaces()
+
+    assert [args[0] for args in system.commands] == ["agaric-mcp", str(own)]
 
 
 @pytest.mark.usefixtures("system")
@@ -951,3 +963,55 @@ def test_page_title_is_the_trimmed_name_or_meeting_then_the_date(name: str, day:
 
 def test_page_title_example() -> None:
     assert agaric.page_title("  Weekly sync ", date(2026, 1, 5)) == "Weekly sync 2026-01-05"
+
+
+AGENT_TOKEN = "agt_" + "0123456789abcdef" * 2  # a made-up agent token, of its shape
+
+
+def agarics_config(token: str) -> str:
+    """The config Agaric's Settings → Agent access gives an agent, laid out as Agaric lays it."""
+    folder = "/home/me/.local/share/com.agaric.app"
+    server = {
+        "command": f"{folder}/bin/agaric-mcp",
+        "args": ["--socket", f"{folder}/mcp.sock", "--token", token],
+    }
+    return json.dumps({"mcpServers": {"agaric-minutas-vptx4p": server}}, indent=2)
+
+
+@pytest.mark.parametrize(
+    "pasted",
+    [
+        AGENT_TOKEN,
+        f"  {AGENT_TOKEN}\n",
+        agarics_config(AGENT_TOKEN),
+        # Agaric's other copy, the command that adds the agent to Claude Code.
+        (
+            'claude mcp add -s user agaric-minutas-vptx4p -- "/home/me/.local/share/com.agaric.app/'
+            f'bin/agaric-mcp" --socket "/home/me/.local/share/com.agaric.app/mcp.sock" --token '
+            f"{AGENT_TOKEN}"
+        ),
+    ],
+)
+def test_the_token_is_taken_from_what_agaric_gives_to_paste(pasted: str) -> None:
+    assert agaric.token_in(pasted) == AGENT_TOKEN
+
+
+@pytest.mark.parametrize(
+    "pasted",
+    [
+        "",
+        "agt_1",
+        AGENT_TOKEN[:-1],
+        f"{AGENT_TOKEN}0",
+        f"x{AGENT_TOKEN}",
+        agarics_config("agt_1"),
+        '{"mcpServers": {}}',
+    ],
+)
+def test_what_holds_no_agent_token_gives_none(pasted: str) -> None:
+    assert agaric.token_in(pasted) is None
+
+
+@given(digits=st.text("0123456789abcdef", min_size=32, max_size=32))
+def test_any_agents_token_is_taken_from_its_config(digits: str) -> None:
+    assert agaric.token_in(agarics_config(f"agt_{digits}")) == f"agt_{digits}"

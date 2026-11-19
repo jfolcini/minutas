@@ -35,21 +35,21 @@ PAGE_LINK = "agaric://page/"
 # The tracks' own format; Opus at 32 kbps keeps about three hours under Agaric's 50 MB cap.
 MIX_CAPS = "audio/x-raw,rate=16000,channels=1"
 
-KEEP_IT = "run `minutas settings agaric --token-from-stdin` with its token"
+# How Agaric's Settings → Agent access makes an agent's token.
+TOKEN = re.compile(r"\bagt_[0-9a-f]{32}\b")
+
+KEEP_IT = "paste the config it shows under Agaric in Minutas' history window"
 NO_TOKEN = (
     "No Agaric agent token: add an agent with read-write access to the Work space in Agaric's "
     f"Settings → Agent access, then {KEEP_IT}"
 )
-NO_SPACE = (
-    "No Agaric space set: list them with `minutas settings agaric --list-spaces`, then run "
-    "`minutas settings agaric --space <id>`"
-)
-BRIDGE_MISSING = "agaric-mcp not found: install Agaric, or put its agaric-mcp on the PATH"
+NO_SPACE = "No Agaric space chosen: choose one under Agaric in Minutas' history window"
+BRIDGE_MISSING = "agaric-mcp not found: install Agaric 0.26 or newer and start it once"
 UPDATE_AGARIC = (
-    "Update agaric-mcp: the one on the PATH has no `call` command; put the one that ships with "
-    "Agaric in its place"
+    "Update Agaric to 0.26 or newer and start it once: the agaric-mcp Minutas found has no "
+    "`call` command"
 )
-NOT_RUNNING = "Agaric isn't running: start it, turn on Settings → Agent access and press Retry"
+NOT_RUNNING = "Agaric isn't running: start it and turn on Settings → Agent access"
 TOKEN_REFUSED = (
     f"The agent token was revoked: add an agent in Agaric's Settings → Agent access, then {KEEP_IT}"
 )
@@ -125,16 +125,31 @@ def failure(stderr: str, returncode: int) -> AgaricError:
     return AgaricError(reason.removeprefix(f"{BRIDGE}: "))
 
 
+def bridge() -> str:
+    """Agaric's own bridge, which an AppImage of Agaric keeps current in Agaric's data folder;
+    else the one on the PATH, where a .deb puts it and where a stale copy may linger."""
+    # Agaric's data folder sits beside Minutas' own, in XDG_DATA_HOME.
+    own = store.data_dir().parent / "com.agaric.app" / "bin" / BRIDGE
+    return str(own) if own.is_file() else BRIDGE
+
+
+def token_in(pasted: str) -> str | None:
+    """The agent token in what Agaric gives to paste: the token alone, or the config or command
+    that holds it. None when there is none."""
+    found = TOKEN.search(pasted)
+    return None if found is None else found.group()
+
+
 def call(token: str, tool: str, arguments: Mapping[str, object], log: Path) -> object:
     """Runs one tool and returns its result; the log gets the call, never the token."""
     request = json.dumps(arguments)
     with log.open("a") as out:
         out.write(f"$ {BRIDGE} call {tool} {request}\n")
         try:
-            # The bridge is found on PATH like any desktop command; no shell is involved. It takes
-            # the token only as an argument, and only this user can reach Agaric's socket.
+            # No shell is involved. The bridge takes the token only as an argument, and only this
+            # user can reach Agaric's socket.
             result = subprocess.run(  # noqa: S603
-                [BRIDGE, "--token", token, "call", tool, request],
+                [bridge(), "--token", token, "call", tool, request],
                 capture_output=True,
                 text=True,
                 check=False,

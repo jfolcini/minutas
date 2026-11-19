@@ -884,12 +884,64 @@ def test_settings_agaric_sets_the_space() -> None:
     assert settings.agaric_space_id() == "01HZWORK"
 
 
-def test_settings_agaric_reads_the_token_from_stdin(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(sys, "stdin", io.StringIO(" agt_1 \n"))
+TOKEN = "agt_55555555555555555555555555555555"  # noqa: S105 - a made-up agent token
+AGARIC_CONFIG = json.dumps(
+    {
+        "mcpServers": {
+            "agaric-minutas-vptx4p": {
+                "command": "/home/me/.local/share/com.agaric.app/bin/agaric-mcp",
+                "args": [
+                    "--socket",
+                    "/home/me/.local/share/com.agaric.app/mcp.sock",
+                    "--token",
+                    TOKEN,
+                ],
+            }
+        }
+    },
+    indent=2,
+)
+WORK, PERSONAL = ("01HZWORK", "Work"), ("01HZPERSONAL", "Personal")
+PUBLISHES_TO_WORK = "The stored agent token publishes to Work.\n"
+SEVERAL = "The stored agent token may use several spaces: choose the one to publish to.\n"
+
+
+@pytest.mark.parametrize("pasted", [f" {TOKEN} \n", AGARIC_CONFIG])
+def test_settings_agaric_takes_the_token_alone_or_in_agarics_whole_config(
+    fake_publisher: FakePublisher,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    pasted: str,
+) -> None:
+    fake_publisher.spaces = [WORK]
+    monkeypatch.setattr(sys, "stdin", io.StringIO(pasted))
 
     assert main(["settings", "agaric", "--token-from-stdin"]) == 0
 
-    assert settings.agaric_token() == "agt_1"
+    assert settings.agaric_token() == TOKEN
+    assert settings.agaric_space_id() == "01HZWORK"
+    assert capsys.readouterr() == ("01HZWORK\tWork\n", PUBLISHES_TO_WORK)
+
+
+@pytest.mark.parametrize("pasted", ["\n", "agt_1\n", '{"mcpServers": {}}'])
+def test_settings_agaric_refuses_what_holds_no_token(
+    fake_publisher: FakePublisher,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    pasted: str,
+) -> None:
+    fake_publisher.spaces = [WORK]
+    monkeypatch.setattr(sys, "stdin", io.StringIO(pasted))
+
+    assert main(["settings", "agaric", "--token-from-stdin"]) == 1
+
+    said = capsys.readouterr()
+    assert said.out == ""
+    assert said.err == (
+        "No Agaric agent token in that: paste the config Agaric shows for the agent in its "
+        "Settings → Agent access, or the token alone.\n"
+    )
+    assert settings.agaric_token() is None
 
 
 def test_settings_agaric_says_why_the_keyring_refused_the_token(
@@ -899,7 +951,7 @@ def test_settings_agaric_says_why_the_keyring_refused_the_token(
         reason = "dismissed"
         raise KeyringLocked(reason)  # what dismissing the unlock prompt raises
 
-    monkeypatch.setattr(sys, "stdin", io.StringIO("agt_1\n"))
+    monkeypatch.setattr(sys, "stdin", io.StringIO(f"{TOKEN}\n"))
     monkeypatch.setattr(settings, "set_agaric_token", locked)
 
     assert main(["settings", "agaric", "--token-from-stdin"]) == 1
@@ -909,15 +961,52 @@ def test_settings_agaric_says_why_the_keyring_refused_the_token(
     )
 
 
-def test_settings_agaric_refuses_an_empty_token(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+def test_settings_agaric_keeps_the_token_when_agaric_cannot_list_the_spaces(
+    fake_publisher: FakePublisher,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    monkeypatch.setattr(sys, "stdin", io.StringIO("\n"))
+    fake_publisher.error = agaric.AgaricError(agaric.NOT_RUNNING)
+    monkeypatch.setattr(sys, "stdin", io.StringIO(AGARIC_CONFIG))
 
     assert main(["settings", "agaric", "--token-from-stdin"]) == 1
 
-    assert capsys.readouterr().err == "No token on stdin.\n"
-    assert settings.agaric_token() is None
+    assert settings.agaric_token() == TOKEN
+    assert settings.agaric_space_id() is None
+    assert capsys.readouterr().err == (
+        f"Kept the agent token, but couldn't choose the space: {agaric.NOT_RUNNING}\n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("saved", "spaces", "outcome"),
+    [
+        (None, [WORK], ("01HZWORK", PUBLISHES_TO_WORK)),
+        ("01HZGONE", [WORK], ("01HZWORK", PUBLISHES_TO_WORK)),
+        (
+            "01HZPERSONAL",
+            [PERSONAL, WORK],
+            ("01HZPERSONAL", "The stored agent token publishes to Personal.\n"),
+        ),
+        (None, [PERSONAL, WORK], (None, SEVERAL)),
+        ("01HZGONE", [PERSONAL, WORK], ("01HZGONE", SEVERAL)),
+    ],
+)
+def test_settings_agaric_chooses_the_space_only_when_the_token_leaves_no_choice(
+    fake_publisher: FakePublisher,
+    capsys: pytest.CaptureFixture[str],
+    saved: str | None,
+    spaces: list[tuple[str, str]],
+    outcome: tuple[str | None, str],
+) -> None:
+    """outcome: the space set afterwards, and what it said about it."""
+    if saved is not None:
+        settings.set_agaric_space_id(saved)
+    fake_publisher.spaces = spaces
+
+    assert main(["settings", "agaric", "--list-spaces"]) == 0
+
+    assert (settings.agaric_space_id(), capsys.readouterr().err) == outcome
 
 
 def test_settings_agaric_lists_the_spaces(

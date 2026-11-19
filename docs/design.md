@@ -82,7 +82,7 @@ Recording runs as a user service, so it survives the lock screen. Transcription 
 
 ## Agaric contract
 
-Everything goes through one MCP tool, `add_meeting`, called with Agaric's bundled `agaric-mcp` bridge and an agent token from Settings → Agent access. Nothing in Agaric changes.
+Everything goes through one MCP tool, `add_meeting`, called with Agaric's own `agaric-mcp` bridge and an agent token from Settings → Agent access. Nothing in Agaric changes. The bridge is the copy an AppImage of Agaric 0.26 or newer keeps current at `${XDG_DATA_HOME:-~/.local/share}/com.agaric.app/bin/agaric-mcp`, else the `agaric-mcp` on the PATH, where Agaric's `.deb` puts it.
 
 ```bash
 agaric-mcp --token agt_… call add_meeting '{"space_id":"…","title":"Weekly sync","date":"2026-11-15","audio_path":"/…/rec.opus","transcript_path":"/…/rec.transcript.md"}'
@@ -108,7 +108,7 @@ The transcript is one paragraph per segment; Agaric makes each timestamp seek th
 - The page id in `add_meeting`'s result becomes the history's output link, `agaric://page/<id>`, which opens the page in Agaric; its `recording_block_id`, which the result always carries, is the block a later, newer summary goes onto.
 - Renaming is `update_block_content` on that page id with `<name> <YYYY-MM-DD>`; Agaric refuses a name another page of the space holds. A taken name on the first publish becomes Use that page or Rename; on a rename it becomes Rename only, since the page already holds the files.
 - Opus at about 32 kbps is about 15 MB an hour, so about three hours fit under the cap.
-- This tool's agent gets read-write access to the Work space only.
+- This tool's agent gets read-write access to the Work space only. Its token, `agt_` and 32 hex digits, is taken out of whatever of Agaric's was pasted; `list_spaces` then says which spaces it may use, and the only one is chosen without asking. With several, the space chosen stays while the token may use it; else Minutas asks.
 
 ## Components
 
@@ -173,7 +173,7 @@ Minutas lives in a GitHub repository. `install.sh` installs and updates it: it c
 | GNOME extension | `~/.local/share/gnome-shell/extensions/minutas@jfolcini.github.io/`, enabled in GNOME Shell's `enabled-extensions` setting: `gnome-extensions enable` asks the running Shell, which refuses an extension it found no files for at login | Files are identical and it's enabled |
 | Hugging Face token | Asked once, after you accept pyannote's conditions on Hugging Face; kept in the GNOME keyring | The keyring has it |
 | Models | Parakeet v3 and pyannote community-1 at the revisions pinned in the repository, in `~/.cache/minutas/models` | Those revisions are there |
-| agaric-mcp | Nothing; prints how to get the bridge that ships with Agaric 0.25 or newer, which Publish to Agaric's `call` needs | The `agaric-mcp` on the PATH has `call` |
+| agaric-mcp | Nothing; says to install Agaric 0.26 or newer and start it once, which puts in place the bridge Publish to Agaric's `call` needs | Agaric's own bridge (see Agaric contract), else the `agaric-mcp` on the PATH, has `call` |
 | glab | Nothing; names an older one it found and points to GitLab's own `.deb` of 1.91 or newer, which replaces Ubuntu's in place (the snap can't read `~/.local/share`, where the recordings are) | `glab` 1.91 or newer is on the PATH |
 | Devin CLI | Nothing; prints how to install it | It's on the PATH |
 
@@ -214,7 +214,8 @@ Every recording is a row, newest first; expanding it shows its speakers, its aud
 - **Deleting:** asks first; the history entry and its outputs stay. Without the tracks, Run again is disabled, and publishing leaves the audio out and says so.
 - **Audio limits:** delete tracks as Delete now does, but only once the latest transcription has succeeded and never the recording in progress; they run when a recording stops, when the window opens and when they are saved, with no timer of their own.
 - **Links:** open in the default app: `summary.md` in the text editor, `agaric://` links in Agaric, GitLab links in the browser.
-- **Settings:** presets, the Agaric space and agent token (kept in the GNOME keyring through Python's keyring package), the glossary, the echo-cancelled mic switch, whether `glab` is logged in, the audio limits with how much audio is kept against them, and the summary model.
+- **Settings:** presets, Agaric, the glossary, the echo-cancelled mic switch, whether `glab` is logged in, the audio limits with how much audio is kept against them, and the summary model.
+- **Agaric:** the agent token, pasted as the config Agaric shows or alone, kept in the GNOME keyring through Python's keyring package and never shown back; the space it publishes to, a choice only when the token may use several; and the fix when Agaric isn't running or refuses the token. Agaric is asked through `minutas settings agaric`, run as a command, so the window never waits on it.
 - **Top-bar menu:** record and stop, the last few recordings, and Open history.
 
 ## When an action fails

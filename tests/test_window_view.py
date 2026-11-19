@@ -8,9 +8,11 @@ from hypothesis import strategies as st
 from minutas import store
 from minutas.window_view import (
     ActionView,
+    AgaricView,
     RowView,
     SpeakerView,
     TrackView,
+    agaric,
     clean_name,
     duration,
     row,
@@ -947,3 +949,37 @@ def test_a_row_says_when_the_age_limit_deletes_its_audio_only_when_it_may(
         and transcription[1]["status"] == "succeeded"
     )
     assert (view.kept_until != "") is may_go
+
+
+BOTH_SPACES = "01HZPERSONAL\tPersonal\n01HZWORK\tWork\n"
+
+
+def test_agaric_with_one_space_says_where_it_publishes_and_offers_no_choice() -> None:
+    assert agaric(
+        "01HZWORK\tWork\n", "The stored agent token publishes to Work.\n", "01HZWORK"
+    ) == AgaricView(said="The stored agent token publishes to Work.", choices=(), chosen=None)
+
+
+@pytest.mark.parametrize(
+    ("space_id", "chosen"), [("01HZWORK", 1), ("01HZPERSONAL", 0), (None, None), ("01HZGONE", None)]
+)
+def test_agaric_offers_several_spaces_by_name_with_the_one_set_chosen(
+    space_id: str | None, chosen: int | None
+) -> None:
+    assert agaric(BOTH_SPACES, "said\n", space_id) == AgaricView(
+        said="said",
+        choices=(("01HZPERSONAL", "Personal"), ("01HZWORK", "Work")),
+        chosen=chosen,
+    )
+
+
+def test_agaric_out_of_reach_says_the_fix_it_was_given_last() -> None:
+    stderr = "Traceback, or a warning first\n  Agaric isn't running: start it  \n\n"
+
+    assert agaric("", stderr, "01HZWORK") == AgaricView(
+        said="Agaric isn't running: start it", choices=(), chosen=None
+    )
+
+
+def test_agaric_that_said_nothing_says_so() -> None:
+    assert agaric("", "", None).said == "Asking Agaric stopped without saying why"

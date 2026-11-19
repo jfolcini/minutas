@@ -28,6 +28,7 @@ from minutas.window_view import (  # noqa: E402
     SUMMARIZE,
     TRANSCRIBE,
     ActionView,
+    AgaricView,
     RowView,
 )
 
@@ -49,6 +50,8 @@ AUDIO_LIMITS_NOTE = (
 SUMMARY_MODEL_NOTE = (
     '"devin models" lists the models your account can use. Empty is Devin\'s default.'
 )
+ASKING_AGARIC = "Asking Agaric for the spaces the agent may use…"
+PASTE_AGARIC = "Paste the agent's config from Agaric, or its token"
 
 
 def now() -> datetime:
@@ -123,6 +126,24 @@ def limit_row(
 
 def chosen_limit(switch: Adw.ExpanderRow, value: Adw.SpinRow) -> int | None:
     return int(value.get_value()) if switch.get_enable_expansion() else None
+
+
+class SpaceRow(Adw.ComboRow):
+    """The spaces the agent may use, by name; shown only when it may use several."""
+
+    def __init__(self) -> None:
+        super().__init__(title="Space", visible=False)
+        self.ids: tuple[str, ...] = ()
+
+    def offer(self, view: AgaricView) -> None:
+        self.ids = tuple(space_id for space_id, _ in view.choices)
+        self.set_model(Gtk.StringList.new([name for _, name in view.choices]))
+        self.set_selected(Gtk.INVALID_LIST_POSITION if view.chosen is None else view.chosen)
+        self.set_visible(bool(view.choices))
+
+    def chosen(self) -> str | None:
+        place = self.get_selected()
+        return self.ids[place] if place < len(self.ids) else None
 
 
 class TrackControls:
@@ -377,6 +398,7 @@ class HistoryWindow(Adw.ApplicationWindow):
         header = Adw.HeaderBar()
         header.pack_end(button("Audio limits", self.edit_audio_limits))
         header.pack_end(button("Summary model", self.edit_summary_model))
+        header.pack_end(button("Agaric", self.edit_agaric))
         page = Adw.ToolbarView(content=self.toasts)
         page.add_top_bar(header)
         self.set_content(page)
@@ -603,6 +625,78 @@ class HistoryWindow(Adw.ApplicationWindow):
     ) -> None:
         if dialog.choose_finish(result) == "save":
             settings.set_summary_model(entry.get_text().strip() or None)
+
+    def edit_agaric(self, _button: Gtk.Button) -> None:
+        # Left empty: a stored token is never shown back.
+        pasted = Adw.PasswordEntryRow(title=PASTE_AGARIC, activates_default=True)
+        space = SpaceRow()
+        rows = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE, css_classes=["boxed-list"])
+        rows.append(pasted)
+        rows.append(space)
+        dialog = Adw.AlertDialog(
+            heading="Agaric",
+            body=ASKING_AGARIC,
+            extra_child=rows,
+            default_response="save",
+            close_response="cancel",
+        )
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("save", "Save")
+        dialog.set_response_appearance("save", Adw.ResponseAppearance.SUGGESTED)
+        dialog.choose(self, None, self.agaric_chosen, pasted, space)
+        self.ask_agaric(["--list-spaces"], None, self.spaces_listed, dialog, space)
+
+    def ask_agaric(
+        self,
+        options: list[str],
+        pasted: str | None,
+        answered: Callable[..., None],
+        *arguments: object,
+    ) -> None:
+        """Runs `minutas settings agaric` with pasted on its stdin, and hands it to answered
+        once it exits: the window never waits on Agaric."""
+        command = Gio.Subprocess.new(
+            [*MINUTAS, "settings", "agaric", *options],
+            Gio.SubprocessFlags.STDIN_PIPE
+            | Gio.SubprocessFlags.STDOUT_PIPE
+            | Gio.SubprocessFlags.STDERR_PIPE,
+        )
+        command.communicate_utf8_async(pasted, None, answered, *arguments)
+
+    def agaric_answer(self, command: Gio.Subprocess, result: Gio.AsyncResult) -> AgaricView:
+        _, listed, said = command.communicate_utf8_finish(result)
+        # Read once it exited: it may have chosen the space.
+        return window_view.agaric(listed or "", said or "", settings.agaric_space_id())
+
+    def spaces_listed(
+        self,
+        command: Gio.Subprocess,
+        result: Gio.AsyncResult,
+        dialog: Adw.AlertDialog,
+        space: SpaceRow,
+    ) -> None:
+        view = self.agaric_answer(command, result)
+        dialog.set_body(view.said)
+        space.offer(view)
+
+    def agaric_chosen(
+        self,
+        dialog: Adw.AlertDialog,
+        result: Gio.AsyncResult,
+        pasted: Adw.PasswordEntryRow,
+        space: SpaceRow,
+    ) -> None:
+        if dialog.choose_finish(result) != "save":
+            return
+        chosen = space.chosen()
+        if chosen is not None:
+            settings.set_agaric_space_id(chosen)
+        # The command takes the token out of what was pasted, or refuses it.
+        if pasted.get_text().strip():
+            self.ask_agaric(["--token-from-stdin"], pasted.get_text(), self.token_kept)
+
+    def token_kept(self, command: Gio.Subprocess, result: Gio.AsyncResult) -> None:
+        self.say(self.agaric_answer(command, result).said)
 
     def next_step(self, _button: Gtk.Button, recording_id: str, action: str) -> None:
         shown = self.shown(recording_id, action)
