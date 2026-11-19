@@ -110,10 +110,21 @@ class AgaricView:
     """What the Agaric settings show once `minutas settings agaric` has answered."""
 
     said: str
-    # The spaces the agent may use, as id and name, when it may use several.
+    # The spaces the agent may use, as id and name: the one set shows, even when it is the only one.
     choices: tuple[tuple[str, str], ...]
     # The place among choices of the space set; None when it is not among them.
     chosen: int | None
+
+
+def limits_warning(over: int, size: str) -> str:
+    """What saving the audio limits deletes at once: over recordings' audio, size of it."""
+    if over == 0:
+        return "No audio is over the new limits, so nothing is deleted now."
+    recordings = "1 recording" if over == 1 else f"{over} recordings"
+    return (
+        f"The audio of {recordings}, {size}, is over the new limits and is deleted now, for "
+        "good. The transcripts and everything published stay."
+    )
 
 
 def duration(seconds: int) -> str:
@@ -331,10 +342,9 @@ def agaric(listed: str, stderr: str, space_id: str | None) -> AgaricView:
     listed: its stdout, a space's id and name a line, tab between. stderr: what it said, where
     it publishes or why it can't, last. space_id: the space set once it exited.
     """
-    spaces = tuple(
+    choices = tuple(
         (space, name) for space, _, name in (line.partition("\t") for line in listed.splitlines())
     )
-    choices = spaces if len(spaces) > 1 else ()
     said = [line.strip() for line in stderr.splitlines() if line.strip()]
     return AgaricView(
         said=said[-1] if said else AGARIC_SILENT,

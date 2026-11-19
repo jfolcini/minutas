@@ -14,7 +14,6 @@ import tempfile
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from importlib import resources
 from pathlib import Path
 from types import FrameType
 
@@ -43,7 +42,7 @@ BUILT_IN_PRESETS = {
     ),
 }
 # How to write the summary, whatever the prompt asks it to cover, until Settings choose another.
-BUILT_IN_SKILL = resources.files("minutas") / "skills" / "meeting-notes" / "SKILL.md"
+BUILT_IN_SKILL = Path(__file__).parent / "skills" / "meeting-notes" / "SKILL.md"
 # Added to every prompt, built-in, saved or typed.
 INSTRUCTIONS = (
     "Write the summary in English, whatever language the meeting was held in. Start your answer "

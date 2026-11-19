@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 from typing import cast, override
 
 import gi
+from keyring.errors import KeyringError
 
 gi.require_version("Adw", "1")
 gi.require_version("Gtk", "4.0")
@@ -48,15 +49,21 @@ AUDIO_LIMITS_NOTE = (
     "when a recording stops and when the Recordings window opens. The transcripts and everything "
     "published stay."
 )
+AUDIO_LIMITS_SAVED = "Audio limits saved"
 ASKING_AGARIC = "Asking Agaric for the spaces the agent may use…"
 PASTE_AGARIC = "Paste the agent's config from Agaric, or its token"
+AGARIC_STORED = "Stored in the keyring"
+AGARIC_NOT_SET = "Not set"
+GET_AGARIC_CONFIG = (
+    "To connect Agaric: in Agaric, open Settings → Agent access, add an agent with read-write "
+    "access to the Work space, copy the config it shows, and paste it below."
+)
 # The command line's word for opening the Settings; no recording id is a word.
 SETTINGS = "settings"
 DEVIN_CLI = "Devin CLI"
 DEVINS_DEFAULT = "Devin's default"
 ASKING_DEVIN = "Asking Devin for the models your account can use…"
 BUILT_IN_SKILL = "Built-in: meeting notes"
-AUDIO_LIMITS_SAVED = "Audio limits saved"
 
 
 def now() -> datetime:
@@ -139,7 +146,8 @@ def last_line(said: str) -> str:
 
 
 class SpaceRow(Adw.ComboRow):
-    """The spaces the agent may use, by name; shown only when it may use several."""
+    """The spaces the agent may use, by name, the one it publishes to chosen; shown once Agaric
+    has listed any."""
 
     def __init__(self, chosen: Callable[..., None]) -> None:
         super().__init__(title="Space", visible=False)
@@ -161,7 +169,7 @@ class SpaceRow(Adw.ComboRow):
 
 class SettingsDialog(Adw.PreferencesDialog):
     """The settings: each change is saved as it is made, but the audio limits, which delete
-    audio, wait for Save."""
+    audio, wait for Save and a warning."""
 
     def __init__(self, window: "HistoryWindow") -> None:
         super().__init__(title="Settings")
@@ -174,6 +182,7 @@ class SettingsDialog(Adw.PreferencesDialog):
         self.effort_handler = self.effort.connect("notify::selected", window.effort_chosen)
         # A path is shown as written: its "&" is no markup.
         self.skill = Adw.ActionRow(title="Skill", subtitle_selectable=True, use_markup=False)
+        self.skill.add_suffix(button("Open", window.open_skill))
         self.skill.add_suffix(button("Choose…", window.choose_skill))
         self.built_in = button("Use built-in", window.use_built_in_skill)
         self.skill.add_suffix(self.built_in)
@@ -183,12 +192,14 @@ class SettingsDialog(Adw.PreferencesDialog):
             summary.add(row)
 
         self.agaric = Adw.PreferencesGroup(title="Agaric", description=ASKING_AGARIC)
+        # Whether one is stored, never the token itself.
+        self.token = Adw.ActionRow(title="Agent token", use_markup=False)
         # Left empty: a stored token is never shown back.
         self.pasted = Adw.PasswordEntryRow(title=PASTE_AGARIC, show_apply_button=True)
         self.pasted.connect("apply", window.agaric_pasted)
         self.space = SpaceRow(window.space_chosen)
-        self.agaric.add(self.pasted)
-        self.agaric.add(self.space)
+        for row in (self.token, self.pasted, self.space):
+            self.agaric.add(row)
 
         age_limit_days, size_limit_gb = settings.audio_limits()
         self.age = limit_row("Age limit", "Days", age_limit_days, settings.AUDIO_AGE_LIMIT_DAYS)
@@ -752,6 +763,9 @@ class HistoryWindow(Adw.ApplicationWindow):
             settings.set_summary_skill(path)
             shown.show_skill()
 
+    def open_skill(self, _button: Gtk.Button) -> None:
+        self.open(Gio.File.new_for_path(settings.summary_skill() or str(summarizer.BUILT_IN_SKILL)))
+
     def use_built_in_skill(self, built_in: Gtk.Button) -> None:
         settings.set_summary_skill(None)
         settings_of(built_in).show_skill()
@@ -763,7 +777,30 @@ class HistoryWindow(Adw.ApplicationWindow):
         dialog.audio.set_description(f"Kept audio: {kept}{against}.\n\n{AUDIO_LIMITS_NOTE}")
 
     def save_audio_limits(self, save: Gtk.Button) -> None:
+        """Says what the limits shown would delete at once, and saves them if accepted."""
         dialog = settings_of(save)
+        over = store.recordings_over_limits(
+            now(), chosen_limit(*dialog.age), chosen_limit(*dialog.size)
+        )
+        size = GLib.format_size(sum(store.audio_size(recording_id) for recording_id in over))
+        warning = Adw.AlertDialog(
+            heading="Save the audio limits?",
+            body=window_view.limits_warning(len(over), size),
+            close_response="cancel",
+        )
+        warning.add_response("cancel", "Cancel")
+        warning.add_response("accept", "Accept")
+        appearance = Adw.ResponseAppearance
+        warning.set_response_appearance(
+            "accept", appearance.DESTRUCTIVE if over else appearance.SUGGESTED
+        )
+        warning.choose(dialog, None, self.limits_accepted, dialog)
+
+    def limits_accepted(
+        self, warning: Adw.AlertDialog, result: Gio.AsyncResult, dialog: SettingsDialog
+    ) -> None:
+        if warning.choose_finish(result) != "accept":
+            return
         settings.set_audio_limits(chosen_limit(*dialog.age), chosen_limit(*dialog.size))
         self.delete_audio_over_limits()
         self.show_kept_audio(dialog)
@@ -789,13 +826,25 @@ class HistoryWindow(Adw.ApplicationWindow):
     def spaces_listed(
         self, command: Gio.Subprocess, result: Gio.AsyncResult, dialog: SettingsDialog
     ) -> None:
-        """Says where the token publishes, or why it can't, and offers its spaces."""
+        """Says whether a token is stored, where it publishes or why it can't, or how to get
+        one; and offers its spaces."""
         _, listed, said = command.communicate_utf8_finish(result)
-        # Read once it exited: it may have chosen the space.
+        # Read once it exited: it may have chosen the space, or stored the token.
         view = window_view.agaric(listed or "", said or "", settings.agaric_space_id())
+        shown = GET_AGARIC_CONFIG if self.token_missing(dialog) else view.said
         # A group's description is always markup; a space's name is not.
-        dialog.agaric.set_description(GLib.markup_escape_text(view.said))
+        dialog.agaric.set_description(GLib.markup_escape_text(shown))
         dialog.space.offer(view)
+
+    def token_missing(self, dialog: SettingsDialog) -> bool:
+        """Says whether a token is stored; True only when the keyring says there is none."""
+        try:
+            missing = settings.agaric_token() is None
+        except KeyringError as error:
+            dialog.token.set_subtitle(f"Can't read the keyring: {error}")
+            return False
+        dialog.token.set_subtitle(AGARIC_NOT_SET if missing else AGARIC_STORED)
+        return missing
 
     def space_chosen(self, space: SpaceRow, _property: object) -> None:
         chosen = space.chosen()
