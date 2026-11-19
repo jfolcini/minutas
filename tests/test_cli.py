@@ -904,6 +904,10 @@ AGARIC_CONFIG = json.dumps(
 WORK, PERSONAL = ("01HZWORK", "Work"), ("01HZPERSONAL", "Personal")
 PUBLISHES_TO_WORK = "The stored agent token publishes to Work.\n"
 SEVERAL = "The stored agent token may use several spaces: choose the one to publish to.\n"
+NO_SPACE = (
+    "The stored agent token may use no space: give its agent read-write access to the Work "
+    "space in Agaric's Settings → Agent access.\n"
+)
 
 
 @pytest.mark.parametrize("pasted", [f" {TOKEN} \n", AGARIC_CONFIG])
@@ -990,6 +994,7 @@ def test_settings_agaric_keeps_the_token_when_agaric_cannot_list_the_spaces(
         ),
         (None, [PERSONAL, WORK], (None, SEVERAL)),
         ("01HZGONE", [PERSONAL, WORK], ("01HZGONE", SEVERAL)),
+        (None, [], (None, NO_SPACE)),
     ],
 )
 def test_settings_agaric_chooses_the_space_only_when_the_token_leaves_no_choice(

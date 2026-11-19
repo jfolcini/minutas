@@ -210,6 +210,12 @@ def choose_space(*, token_kept: bool) -> int:
     sys.stdout.writelines(f"{space_id}\t{name}\n" for space_id, name in names.items())
     chosen = settings.agaric_space_id()
     if chosen is None or chosen not in names:
+        if not names:
+            sys.stderr.write(
+                "The stored agent token may use no space: give its agent read-write access to the "
+                "Work space in Agaric's Settings → Agent access.\n"
+            )
+            return 0
         if len(names) != 1:
             sys.stderr.write(
                 "The stored agent token may use several spaces: choose the one to publish to.\n"
