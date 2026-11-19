@@ -206,13 +206,16 @@ PY
   report Models "fetched the pinned revisions into $models_dir"
 }
 
-# Publish to Agaric runs `agaric-mcp call`, which a stale copy of the bridge lacks.
+# Publish to Agaric runs `agaric-mcp call`, which a stale copy of the bridge lacks. Like Publish
+# to Agaric, it checks Agaric's own bridge first, which an AppImage of Agaric keeps current.
 step_agaric_mcp() {
-  if [[ $(agaric-mcp --help 2>/dev/null) == *"call <tool>"* ]]; then
+  local own=$data_home/com.agaric.app/bin/agaric-mcp bridge=agaric-mcp
+  [[ -f $own ]] && bridge=$own
+  if [[ $("$bridge" --help 2>/dev/null) == *"call <tool>"* ]]; then
     report agaric-mcp ok
     return
   fi
-  report agaric-mcp "no agaric-mcp with \`call\` on the PATH; Publish to Agaric needs it. Put the bridge that ships with Agaric 0.25 or newer there (https://github.com/jfolcini/agaric/issues/6980)"
+  report agaric-mcp "no agaric-mcp with \`call\` at $own or on the PATH; Publish to Agaric needs it. Install Agaric 0.26 or newer and start it once"
 }
 
 # GitLab's own .deb replaces Ubuntu's older glab in place; the snap can't read hidden folders in the

@@ -195,14 +195,44 @@ def summarize(args: argparse.Namespace) -> int:
     return 0 if summarizer.summarize(recording_id, now(), prompt) else 1
 
 
+def choose_space(*, token_kept: bool) -> int:
+    """Lists the spaces the token may use, and sets the one to publish to when that leaves no
+    choice: the space set, while the token may use it, else the token's only space.
+
+    The list goes to stdout, for the window to offer; where it publishes goes to stderr.
+    """
+    try:
+        names = dict(agaric.list_spaces())
+    except agaric.AgaricError as error:
+        if token_kept:
+            return fail(f"Kept the agent token, but couldn't choose the space: {error}")
+        return fail(str(error))
+    sys.stdout.writelines(f"{space_id}\t{name}\n" for space_id, name in names.items())
+    chosen = settings.agaric_space_id()
+    if chosen is None or chosen not in names:
+        if len(names) != 1:
+            sys.stderr.write(
+                "The stored agent token may use several spaces: choose the one to publish to.\n"
+            )
+            return 0
+        [chosen] = names
+        settings.set_agaric_space_id(chosen)
+    sys.stderr.write(f"The stored agent token publishes to {names[chosen]}.\n")
+    return 0
+
+
 def settings_agaric(args: argparse.Namespace) -> int:
     if args.space is None and not args.token_from_stdin and not args.list_spaces:
         return fail("Nothing to do: pass --space, --token-from-stdin or --list-spaces.")
     if args.token_from_stdin:
-        # From stdin, never from the arguments, which the shell's history keeps.
-        token = sys.stdin.readline().strip()
-        if not token:
-            return fail("No token on stdin.")
+        # From stdin, never from the arguments, which the shell's history keeps; all of it, since
+        # Agaric's config spans lines.
+        token = agaric.token_in(sys.stdin.read())
+        if token is None:
+            return fail(
+                "No Agaric agent token in that: paste the config Agaric shows for the agent in its "
+                "Settings → Agent access, or the token alone."
+            )
         try:
             settings.set_agaric_token(token)
         except KeyringError as error:
@@ -210,12 +240,8 @@ def settings_agaric(args: argparse.Namespace) -> int:
             return fail(f"Could not store the Agaric agent token in the keyring: {error}")
     if args.space is not None:
         settings.set_agaric_space_id(args.space)
-    if args.list_spaces:
-        try:
-            spaces = agaric.list_spaces()
-        except agaric.AgaricError as error:
-            return fail(str(error))
-        sys.stdout.writelines(f"{space_id}\t{name}\n" for space_id, name in spaces)
+    if args.list_spaces or args.token_from_stdin:
+        return choose_space(token_kept=args.token_from_stdin)
     return 0
 
 
@@ -288,10 +314,14 @@ def build_parser() -> argparse.ArgumentParser:
     agaric_settings.add_argument(
         "--token-from-stdin",
         action="store_true",
-        help="read the agent token from stdin and keep it in the keyring",
+        help="read the agent token, or the whole config Agaric shows for the agent, from stdin;"
+        " keep the token in the keyring, then do as --list-spaces does",
     )
     agaric_settings.add_argument(
-        "--list-spaces", action="store_true", help="list the spaces the token may use"
+        "--list-spaces",
+        action="store_true",
+        help="list the spaces the token may use, and choose the one to publish to when the"
+        " token may use only one",
     )
     agaric_settings.set_defaults(handler=settings_agaric)
     return parser
