@@ -2,7 +2,9 @@
 
 An issue link gets a comment, a project link a new issue. The transcript and the audio are
 uploaded to the project first, and the summary links them. A failed run keeps the audio it
-uploaded, so Retry to the same project doesn't upload it again.
+uploaded, so Retry to the same project doesn't upload it again. Audio over the server's upload
+limit is left out, with a note: only an admin can read the limit, so the smallest audio a server
+refused is remembered, and a later audio as big is left out without uploading.
 """
 
 import json
@@ -18,7 +20,7 @@ from types import FrameType
 from typing import NamedTuple, NotRequired, cast
 from urllib.parse import quote, urlsplit, urlunsplit
 
-from minutas import agaric, store
+from minutas import agaric, settings, store
 
 ACTION = "publish_gitlab"
 GLAB = "glab"
@@ -35,6 +37,8 @@ UNEXPECTED = "GitLab answered without a link: see Details"
 
 VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)")
 ISSUE = re.compile(r"(?:issues|work_items)/([0-9]+)")
+# What glab says when GitLab refuses an upload as over the server's limit.
+TOO_BIG = "HTTP 413"
 
 
 class Target(NamedTuple):
@@ -69,6 +73,10 @@ class GitLabRun(store.Run):
 
 class GitLabError(Exception):
     pass
+
+
+class UploadLimitError(GitLabError):
+    """GitLab answered an upload with HTTP 413."""
 
 
 def parse_link(link: str) -> Target | None:
@@ -127,7 +135,7 @@ def failure(target: Target, stderr: str, returncode: int) -> str:
                 "see it"
             ),
         ),
-        ("HTTP 413", f"it is over {host}'s upload limit"),
+        (TOO_BIG, f"it is over {host}'s upload limit"),
         ("permission denied", f"a glab installed as a snap can't read the recordings: {INSTALL}"),
         ("dial tcp", f"{host} is out of reach: check the network, then Retry"),
         # A glab from before 1.91.
@@ -161,7 +169,7 @@ def post(target: Target, step: str, arguments: list[str], key: str, log: Path) -
         out.write(f"{result.stdout}{result.stderr}exit status {result.returncode}\n")
     if result.returncode != 0:
         reason = f"Could not {step}: {failure(target, result.stderr, result.returncode)}"
-        raise GitLabError(reason)
+        raise (UploadLimitError if TOO_BIG in result.stderr else GitLabError)(reason)
     try:
         found = cast("dict[str, object]", json.loads(result.stdout))[key]
     except (ValueError, KeyError, TypeError):
@@ -179,6 +187,22 @@ def upload(target: Target, what: str, file: Path, log: Path) -> str:
     return post(target, f"upload the {what}", arguments, "markdown", log)
 
 
+def upload_audio(target: Target, mixed: Path, uploads: dict[str, str], log: Path) -> str | None:
+    """Uploads the audio, adding it to uploads; returns the note when the server's limit leaves
+    it out."""
+    size = mixed.stat().st_size
+    left_out = f"The audio was left out: it is over {target.host}'s upload limit"
+    refused = settings.refused_audio_size(target.host)
+    if refused is not None and size >= refused:
+        return left_out
+    try:
+        uploads["audio"] = upload(target, "audio", mixed, log)
+    except UploadLimitError:
+        settings.refuse_audio_size(target.host, size)
+        return left_out
+    return None
+
+
 def send(
     recording_id: str, target: Target, uploads: dict[str, str], log: Path
 ) -> tuple[str, str | None]:
@@ -194,7 +218,8 @@ def send(
         shutil.copyfile(folder / store.TRANSCRIPT, copy)
         uploads["transcript"] = upload(target, "transcript", copy, log)
         if "audio" not in uploads and store.holds_audio(recording_id):
-            uploads["audio"] = upload(target, "audio", agaric.mix(folder, Path(work), log), log)
+            mixed = agaric.mix(folder, Path(work), log)
+            note = upload_audio(target, mixed, uploads, log)
         elif "audio" not in uploads:
             note = agaric.AUDIO_LEFT_OUT
     summary = (folder / store.SUMMARY).read_text(encoding="utf-8").strip()
