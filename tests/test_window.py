@@ -1882,6 +1882,26 @@ def test_the_skill_is_the_built_in_one_until_a_file_is_chosen(
     dialog.close()
 
 
+def test_vocabulary_opens_the_glossary_and_makes_it_empty_the_first_time(
+    history: Callable[[], window.HistoryWindow], desktop_calls: Desktop
+) -> None:
+    shown = history()
+    dialog = open_settings(shown)
+    glossary = worker.glossary()
+
+    press(dialog.vocabulary, "Open")
+
+    assert desktop_calls.opened == [str(glossary)]
+    assert glossary.read_text() == ""
+
+    glossary.write_text("deploy\nPR\n")
+    press(dialog.vocabulary, "Open")
+
+    assert desktop_calls.opened == [str(glossary), str(glossary)]
+    assert glossary.read_text() == "deploy\nPR\n"
+    dialog.close()
+
+
 @pytest.mark.usefixtures("agaric_settings")
 def test_a_skill_file_not_chosen_changes_nothing_and_a_failed_choice_says_why(
     history: Callable[[], window.HistoryWindow], desktop_calls: Desktop

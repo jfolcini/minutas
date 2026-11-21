@@ -64,6 +64,10 @@ DEVIN_CLI = "Devin CLI"
 DEVINS_DEFAULT = "Devin's default"
 ASKING_DEVIN = "Asking Devin for the models your account can use…"
 BUILT_IN_SKILL = "Built-in: meeting notes"
+VOCABULARY_NOTE = (
+    "Names, products and jargon to listen for, one per line, besides each meeting's attendees; "
+    "used from the next transcription, or Run again"
+)
 
 
 def now() -> datetime:
@@ -187,6 +191,11 @@ class SettingsDialog(Adw.PreferencesDialog):
         self.built_in = button("Use built-in", window.use_built_in_skill)
         self.skill.add_suffix(self.built_in)
         self.show_skill()
+        self.vocabulary = Adw.ActionRow(title="Vocabulary", subtitle=VOCABULARY_NOTE)
+        self.vocabulary.add_suffix(button("Open", window.open_vocabulary))
+        transcription = Adw.PreferencesGroup(title="Transcription")
+        transcription.add(self.vocabulary)
+
         summary = Adw.PreferencesGroup(title="Summary")
         for row in (self.summarizer, self.model, self.effort, self.skill):
             summary.add(row)
@@ -211,7 +220,7 @@ class SettingsDialog(Adw.PreferencesDialog):
         self.audio.add(self.size[0])
 
         page = Adw.PreferencesPage()
-        for group in (summary, self.agaric, self.audio):
+        for group in (transcription, summary, self.agaric, self.audio):
             page.add(group)
         self.add(page)
 
@@ -765,6 +774,13 @@ class HistoryWindow(Adw.ApplicationWindow):
 
     def open_skill(self, _button: Gtk.Button) -> None:
         self.open(Gio.File.new_for_path(settings.summary_skill() or str(summarizer.BUILT_IN_SKILL)))
+
+    def open_vocabulary(self, _button: Gtk.Button) -> None:
+        # The text editor opens a file that exists: the first time, an empty one.
+        glossary = worker.glossary()
+        glossary.parent.mkdir(parents=True, exist_ok=True)
+        glossary.touch()
+        self.open(Gio.File.new_for_path(str(glossary)))
 
     def use_built_in_skill(self, built_in: Gtk.Button) -> None:
         settings.set_summary_skill(None)
