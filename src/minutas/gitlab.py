@@ -37,6 +37,8 @@ UNEXPECTED = "GitLab answered without a link: see Details"
 
 VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)")
 ISSUE = re.compile(r"(?:issues|work_items)/([0-9]+)")
+# What glab says when GitLab refuses an upload as over the server's limit.
+TOO_BIG = "HTTP 413"
 
 
 class Target(NamedTuple):
@@ -133,7 +135,7 @@ def failure(target: Target, stderr: str, returncode: int) -> str:
                 "see it"
             ),
         ),
-        ("HTTP 413", f"it is over {host}'s upload limit"),
+        (TOO_BIG, f"it is over {host}'s upload limit"),
         ("permission denied", f"a glab installed as a snap can't read the recordings: {INSTALL}"),
         ("dial tcp", f"{host} is out of reach: check the network, then Retry"),
         # A glab from before 1.91.
@@ -167,7 +169,7 @@ def post(target: Target, step: str, arguments: list[str], key: str, log: Path) -
         out.write(f"{result.stdout}{result.stderr}exit status {result.returncode}\n")
     if result.returncode != 0:
         reason = f"Could not {step}: {failure(target, result.stderr, result.returncode)}"
-        raise (UploadLimitError if "HTTP 413" in result.stderr else GitLabError)(reason)
+        raise (UploadLimitError if TOO_BIG in result.stderr else GitLabError)(reason)
     try:
         found = cast("dict[str, object]", json.loads(result.stdout))[key]
     except (ValueError, KeyError, TypeError):
