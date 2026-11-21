@@ -10,7 +10,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from minutas import gitlab, store
+from minutas import gitlab, settings, store
 
 START = datetime(2026, 11, 18, 13, 5, 42, tzinfo=UTC)
 FIRST = "2026-11-18T13-05-42"
@@ -263,6 +263,60 @@ def test_without_tracks_the_summary_links_the_transcript_alone_and_says_so(
     )
 
 
+LEFT_OUT = f"The audio was left out: it is over {HOST}'s upload limit"
+TOO_BIG = Answer(1, "<html>413 Request Entity Too Large</html>", "glab: HTTP 413\n")
+
+
+def test_audio_over_the_servers_limit_is_left_out_and_the_run_succeeds_with_a_note(
+    system: FakeSystem,
+) -> None:
+    recording_id = recording()
+    system.answers["audio"] = [TOO_BIG]
+
+    assert gitlab.publish(recording_id, PUBLISHED, target()) is True
+
+    assert [call.kind for call in system.calls] == ["transcript", "audio", "notes"]
+    assert system.calls[-1].argv[-1] == f"--raw-field=body={body(TRANSCRIPT_LINK)}"
+    run = runs(recording_id)[0]
+    assert (run["status"], run.get("note"), run.get("uploads")) == (
+        "succeeded",
+        LEFT_OUT,
+        {"transcript": TRANSCRIPT_LINK},
+    )
+    assert settings.refused_audio_size(HOST) == len(MIX)
+
+
+def test_audio_as_big_as_one_the_host_refused_is_left_out_without_uploading(
+    system: FakeSystem,
+) -> None:
+    settings.refuse_audio_size(HOST, len(MIX))
+    recording_id = recording()
+
+    assert gitlab.publish(recording_id, PUBLISHED, target()) is True
+
+    assert [call.kind for call in system.calls] == ["transcript", "notes"]
+    assert runs(recording_id)[0].get("note") == LEFT_OUT
+
+
+def test_audio_smaller_than_the_smallest_the_host_refused_is_uploaded(system: FakeSystem) -> None:
+    settings.refuse_audio_size(HOST, len(MIX) + 1)
+    recording_id = recording()
+
+    assert gitlab.publish(recording_id, PUBLISHED, target()) is True
+
+    assert [call.kind for call in system.calls] == ["transcript", "audio", "notes"]
+    assert runs(recording_id)[0].get("note") is None
+
+
+def test_another_hosts_refusal_does_not_leave_the_audio_out(system: FakeSystem) -> None:
+    settings.refuse_audio_size("other.example.com", 1)
+    recording_id = recording()
+
+    assert gitlab.publish(recording_id, PUBLISHED, target()) is True
+
+    assert [call.kind for call in system.calls] == ["transcript", "audio", "notes"]
+
+
 @pytest.mark.parametrize(
     ("uploads", "calls"),
     [
@@ -354,9 +408,15 @@ UNREACHABLE = (
             {"transcript": TRANSCRIPT_LINK, "audio": AUDIO_LINK},
         ),
         (
-            "audio",
+            "transcript",
             Answer(1, "<html>413 Request Entity Too Large</html>", "glab: HTTP 413\n"),
-            f"Could not upload the audio: it is over {HOST}'s upload limit",
+            f"Could not upload the transcript: it is over {HOST}'s upload limit",
+            {},
+        ),
+        (
+            "audio",
+            Answer(1, stderr="glab: 500 Internal Server Error (HTTP 500)\n"),
+            "Could not upload the audio: 500 Internal Server Error (HTTP 500)",
             {"transcript": TRANSCRIPT_LINK},
         ),
         (
@@ -407,7 +467,8 @@ UNREACHABLE = (
         "logged out",
         "no project",
         "forbidden",
-        "too big",
+        "transcript too big",
+        "audio server error",
         "offline",
         "old glab",
         "refused",
