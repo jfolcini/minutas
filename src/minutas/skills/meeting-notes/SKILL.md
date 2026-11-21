@@ -31,14 +31,18 @@ The request above says what the summary should cover; this skill says how to wri
 ## Shape
 
 Unless the request above asks for another shape, start with two or three sentences on what the
-meeting was for and what came out of it. Then these sections, leaving out any with nothing in
-it:
+meeting was for and what came out of it. Then these sections, each under its own `##` heading,
+leaving out any with nothing in it:
 
+- **Agenda:** whatever the shape, the first section: one bullet per section after it, each a
+  Markdown link to that section's heading, and under Discussion one nested link per topic. A
+  heading's link is `#` and the heading in lower case, with spaces as hyphens and punctuation
+  dropped: `[Action items](#action-items)`.
 - **Decisions:** one line each.
 - **Action items:** `- [ ] Owner: task (deadline)`.
 - **Open questions:** what was raised and not settled, and who raised it.
-- **Discussion:** the topics in the order they came up, a few bullets each, saying who argued
-  what when it matters.
+- **Discussion:** the topics in the order they came up, each under its own `###` heading with a
+  few bullets, saying who argued what when it matters.
 
 Write short, plain sentences, in bullets rather than paragraphs. No filler such as "the team
 discussed", no praise, and no closing summary of the summary.
