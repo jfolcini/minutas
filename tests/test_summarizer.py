@@ -459,10 +459,10 @@ def test_a_context_that_cannot_be_read_fails_the_run_naming_it_and_asks_devin_no
     assert devin.calls == []
 
 
-def test_context_presets_are_the_markdown_files_of_the_context_folder_by_name() -> None:
+def test_context_presets_are_the_visible_markdown_files_of_the_context_folder() -> None:
     assert summarizer.context_names() == []
 
-    for name in ("Team glossary.md", "atlas.md", "Zeta.md", "notes.txt"):
+    for name in ("Team glossary.md", "atlas.md", "Zeta.md", "notes.txt", ".hidden.md"):
         (context_dir() / name).write_text("")
     (context_dir() / "folder.md").mkdir()
 

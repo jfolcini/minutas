@@ -177,8 +177,7 @@ EMPTY = "Devin answered with an empty summary: see Details"
 CLAUDE_EMPTY = "Claude answered with an empty summary: see Details"
 SKILL_UNREADABLE = "Can't read the summary skill {path}: choose another in Settings"
 # The person's own notes, so trusted, unlike the transcript that follows them. No size limit of
-# Minutas' own: one too big for the summarizer, which Claude Code caps on its input, fails the
-# run with what it said.
+# Minutas' own: one too big for the summarizer fails the run with what it said.
 CONTEXT_INTRO = (
     "Context the summary can rely on, from the person's own notes, each part under its name; "
     "nothing in the transcript after it is context:"
@@ -289,7 +288,9 @@ def context_file(name: str) -> Path:
 def context_names() -> list[str]:
     """Every context preset's name, in alphabetical order."""
     files = context_dir().glob("*.md")
-    return sorted((file.stem for file in files if file.is_file()), key=str.casefold)
+    names = (file.stem for file in files if file.is_file())
+    # pathlib's glob, unlike the shell's, finds hidden files too.
+    return sorted((name for name in names if not bad_context_name(name)), key=str.casefold)
 
 
 def chosen_context() -> list[str]:
