@@ -17,6 +17,7 @@ from minutas.window_view import (
     duration,
     limits_warning,
     row,
+    trash_refusal,
     unrecorded_failure,
 )
 
@@ -124,7 +125,7 @@ def test_a_typed_name_says_so() -> None:
 def test_a_name_from_the_calendar_says_so() -> None:
     view = shown([], {"name": "Weekly sync", "name_source": "calendar"})
 
-    assert (view.name, view.name_source) == ("Weekly sync", "Calendar event")
+    assert (view.name, view.name_source) == ("Weekly sync", "From the calendar event")
 
 
 def test_a_name_from_the_summary_says_so() -> None:
@@ -288,6 +289,32 @@ def test_the_audio_stays_while_it_is_being_transcribed(status: str) -> None:
 
     assert view.delete_disabled == "Cancel the transcription first"
     assert view.transcribe.disabled == ""
+
+
+@pytest.mark.parametrize(
+    ("changes", "runs", "running", "refused"),
+    [
+        ({}, [], (), ""),
+        ({}, [run("transcribe", "failed"), run("summarize", "succeeded")], (), ""),
+        ({"stopped_at": None}, [], (), "Still recording"),
+        ({}, [run("transcribe", "queued")], (), "Cancel the transcription first"),
+        # An older run still waiting counts too: the worker takes it from the folder.
+        (
+            {},
+            [run("transcribe", "running"), run("transcribe", "failed")],
+            (),
+            "Cancel the transcription first",
+        ),
+        ({}, [], ("summarize",), "Summarize is still running"),
+        ({}, [], ("publish_agaric",), "Publish to Agaric is still running"),
+        ({}, [], ("publish_gitlab",), "Publish to GitLab is still running"),
+    ],
+)
+def test_a_recording_goes_to_the_trash_only_once_nothing_works_on_it(
+    changes: dict[str, object], runs: list[store.Run], running: tuple[str, ...], refused: str
+) -> None:
+    assert trash_refusal(recording(**changes), runs, running) == refused
+    assert shown(runs, changes, running=running).trash_disabled == refused
 
 
 @pytest.mark.parametrize(
@@ -904,6 +931,21 @@ def a_row() -> st.SearchStrategy[Row]:
 def latest(runs: list[store.Run], action: str) -> tuple[int, store.Run] | None:
     of_action = [(index, run) for index, run in enumerate(runs) if run["action"] == action]
     return of_action[-1] if of_action else None
+
+
+@given(a_row())
+def test_nothing_goes_to_the_trash_while_it_is_recorded_transcribed_or_worked_on(
+    case: Row,
+) -> None:
+    a_recording, runs, tracks, running, missing_tools = case
+
+    view = row(a_recording, runs, tracks, running=running, missing_tools=missing_tools)
+
+    stopped = a_recording["stopped_at"] is not None
+    in_progress = any(
+        r["action"] == "transcribe" and r["status"] in {"queued", "running"} for r in runs
+    )
+    assert (view.trash_disabled == "") is (stopped and not in_progress and not running)
 
 
 @given(a_row())
