@@ -2490,11 +2490,9 @@ CLAUDE_OLDER = (
 
 
 @pytest.fixture
-def claude_installed(devin_installed: FakeDevin) -> None:
-    """A claude on PATH, never run: the window only looks for one."""
-    script = devin_installed.folder / "claude"
-    script.write_text("#!/bin/sh\n")
-    script.chmod(0o755)
+def claude_installed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A claude that can summarize: its version is not asked of a real one."""
+    monkeypatch.setattr(summarizer, "claude_problem", lambda: "")
 
 
 @pytest.mark.usefixtures("agaric_settings", "claude_installed")
@@ -2636,6 +2634,11 @@ def test_with_claude_code_chosen_summarize_needs_a_claude_that_can_and_not_devin
 
     presets = shown.details[FIRST].presets
     assert (presets.get_sensitive(), presets.get_tooltip_text()) == (not problem, problem or None)
+
+    # The Settings' model rows say it too.
+    dialog = open_settings(shown)
+    assert dialog.model.get_subtitle() == problem
+    dialog.close()
 
 
 @pytest.mark.usefixtures("agaric_settings")

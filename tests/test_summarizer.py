@@ -97,9 +97,12 @@ class FakeClaude:
         self.hangs = False
         # What `claude --version` prints; asking it is not among the calls.
         self.version = "2.1.166 (Claude Code)"
+        self.version_hangs = False
 
     def __call__(self, args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         if args == [CLAUDE_ON_PATH, "--version"]:
+            if self.version_hangs:
+                raise subprocess.TimeoutExpired(args, cast("float", kwargs["timeout"]))
             return subprocess.CompletedProcess(args, 0, f"{self.version}\n", "")
         cwd = Path(cast("str", kwargs["cwd"]))
         self.calls.append(
@@ -748,6 +751,14 @@ def test_a_claude_older_than_its_deny_rule_says_its_version_and_how_to_update(
     claude.version = version
 
     assert summarizer.problem() == CLAUDE_OLDER.format(version=found)
+
+
+def test_a_claude_that_never_gives_its_version_is_an_unknown_one_and_does_not_hold_the_window(
+    claude: FakeClaude,
+) -> None:
+    claude.version_hangs = True
+
+    assert summarizer.problem() == CLAUDE_OLDER.format(version="unknown")
 
 
 def test_a_missing_claude_is_the_problem_while_it_is_chosen(claude: FakeClaude) -> None:

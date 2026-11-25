@@ -196,6 +196,7 @@ CONTEXT_UNREADABLE = (
 LIST_MODELS = [DEVIN, "models", "list", "--format", "json", "--process-model", "in-process"]
 MODELS_UNREADABLE = "Devin listed its models in a form Minutas can't read"
 VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)")
+VERSION_TIMEOUT_SECONDS = 10
 TIMED_OUT = f"{{name}} gave no answer in {TIMEOUT_SECONDS // 60} minutes: see Details, then Retry"
 
 
@@ -232,10 +233,18 @@ def claude_problem() -> str:
     path = shutil.which(CLAUDE)
     if path is None:
         return CLAUDE_MISSING
-    # The path just found, never a shell string.
-    said = subprocess.run(  # noqa: S603
-        [path, "--version"], capture_output=True, text=True, check=False
-    ).stdout
+    try:
+        # The path just found, never a shell string. Every refresh of the window asks, so a claude
+        # that never answers must not hold it.
+        said = subprocess.run(  # noqa: S603
+            [path, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=VERSION_TIMEOUT_SECONDS,
+            check=False,
+        ).stdout
+    except subprocess.TimeoutExpired:
+        said = ""
     version = VERSION.search(said)
     if version is None or tuple(map(int, version.groups())) < CLAUDE_MINIMUM:
         found = "unknown" if version is None else version[0]

@@ -10,7 +10,6 @@ everything in it, for good.
 """
 
 import contextlib
-import shutil
 import sys
 from collections.abc import Callable, Collection, Mapping, Sequence
 from datetime import UTC, datetime
@@ -388,8 +387,7 @@ class SettingsDialog(Adw.PreferencesDialog):
         self.found = []
         offer(self.model, self.model_handler, summarizer.CLAUDE_MODELS, settings.claude_model())
         offer(self.effort, self.effort_handler, summarizer.CLAUDE_EFFORTS, settings.claude_effort())
-        found = shutil.which(summarizer.CLAUDE) is not None
-        self.model.set_subtitle("" if found else summarizer.CLAUDE_MISSING)
+        self.model.set_subtitle(summarizer.claude_problem())
         self.model.set_sensitive(True)
         self.effort.set_visible(True)
 
