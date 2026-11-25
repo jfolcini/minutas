@@ -20,6 +20,8 @@ from types import FrameType
 from typing import NamedTuple, NotRequired, cast
 from urllib.parse import quote, urlsplit, urlunsplit
 
+from pydantic import TypeAdapter
+
 from minutas import agaric, settings, store
 
 ACTION = "publish_gitlab"
@@ -41,6 +43,9 @@ VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)")
 ISSUE = re.compile(r"(?:issues|work_items)/([0-9]+)")
 # What glab says when GitLab refuses an upload as over the server's limit.
 TOO_BIG = "HTTP 413"
+
+# What glab's API command answers with.
+JSON_OBJECT = TypeAdapter(dict[str, object])
 
 
 class Target(NamedTuple):
@@ -220,7 +225,7 @@ def post(target: Target, step: str, arguments: list[str], key: str, log: Path) -
         reason = f"Could not {step}: {failure(target, result.stderr, result.returncode)}"
         raise (UploadLimitError if TOO_BIG in result.stderr else GitLabError)(reason)
     try:
-        found = settings.JSON_OBJECT.validate_json(result.stdout).get(key)
+        found = JSON_OBJECT.validate_json(result.stdout).get(key)
     except ValueError:
         found = None
     if not isinstance(found, str | int):

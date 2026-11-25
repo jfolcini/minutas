@@ -9,7 +9,6 @@ from pydantic import TypeAdapter
 
 from minutas.atomic import write_json
 
-# Any JSON object, which the store's and the tools' JSON is checked against before use.
 JSON_OBJECT = TypeAdapter(dict[str, object])
 KEYRING_SERVICE = "minutas"
 AGARIC_KEYRING_USERNAME = "agaric"

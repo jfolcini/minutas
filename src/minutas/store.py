@@ -133,6 +133,7 @@ class Run(TypedDict):
     progress: NotRequired[Progress]
 
 
+JSON_OBJECT = TypeAdapter(dict[str, object])
 RECORDING = TypeAdapter(Recording)
 RUNS = TypeAdapter(list[Run])
 SEGMENT_LIST = TypeAdapter(list[Segment])
@@ -183,9 +184,7 @@ def create_recording(started: datetime) -> Recording:
 
 
 def load_recording(recording_id: str) -> Recording:
-    saved = settings.JSON_OBJECT.validate_json(
-        (recording_dir(recording_id) / "recording.json").read_text()
-    )
+    saved = JSON_OBJECT.validate_json((recording_dir(recording_id) / "recording.json").read_text())
     # A recording made before names had a source holds the default name.
     return RECORDING.validate_python({"name_source": "default", **saved})
 
