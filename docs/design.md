@@ -5,13 +5,13 @@
 Minutas, a local tool for GNOME on Wayland (Ubuntu 24.04's GNOME 46 and newer), records a work meeting, transcribes it with who said what, and files it in Agaric as a meeting page. Agaric already stores and shows meetings ([#5364](https://github.com/jfolcini/agaric/issues/5364)); this tool does everything before that.
 
 - **Languages:** Spanish, Argentine accents above all, and English from non-native speakers, often in the same meeting.
-- **Outputs:** a transcript on stop, then on demand a summary, an Agaric meeting page and a GitLab comment or issue, each listed with its link in the recording's history.
+- **Outputs:** a transcript on stop, then on demand a summary, an Agaric meeting page and a GitLab or GitHub comment or issue, each listed with its link in the recording's history.
 - **When it runs:** on the desktop, after the call; nothing heavy runs during it. Phone voice notes reach the desktop through Agaric's sync.
 - **Out of scope:** live transcription, phone-call audio (Android doesn't allow capturing it), any change to Agaric, and forking an existing tool.
 
 ## Decisions
 
-The stack is settled: Python, Parakeet v3, pyannote community-1, two recorded tracks, the calendar through GNOME, Devin or Claude Code for the summary and `glab` for GitLab. Only transcription runs on its own; everything else is a button in the Recordings window.
+The stack is settled: Python, Parakeet v3, pyannote community-1, two recorded tracks, the calendar through GNOME, Devin or Claude Code for the summary, `glab` for GitLab and `gh` for GitHub. Only transcription runs on its own; everything else is a button in the Recordings window.
 
 | Area | Decision | Why |
 | --- | --- | --- |
@@ -26,7 +26,7 @@ The stack is settled: Python, Parakeet v3, pyannote community-1, two recorded tr
 | Recording | Two tracks: mic and computer audio | "Me" versus "them" is exact without AI; speaker detection runs on the call only |
 | Echo | Headphones normally; a setting records PipeWire's echo-cancelled mic instead, for days on speakers | A clean mic track without setup most days, and no duplicates when speakers are on |
 | Consent | Pressing Record shows a GNOME notification: "Tell participants you're recording" | A nudge at the moment it matters; the audio may reach GitLab |
-| Automation | Only transcription runs on stop; Summarize, Publish to Agaric and Publish to GitLab are buttons per recording | Nothing leaves the machine until I press a button |
+| Automation | Only transcription runs on stop; Summarize, Publish to Agaric, Publish to GitLab and Publish to GitHub are buttons per recording | Nothing leaves the machine until I press a button |
 | Failures | Every run ends succeeded, failed or cancelled; a failed run shows why and the fix, with a Retry button; nothing retries on its own | A blind retry can post twice or hide a real problem |
 | Interface | Top-bar menu (record, stop, recent recordings, Recordings, Settings) plus a Recordings window, with the Settings in a dialog over it | The window runs outside GNOME Shell, so a bug can't freeze the desktop |
 | Calendar | Nextcloud through GNOME Online Accounts and Evolution Data Server | GNOME holds the login and expands repeating meetings |
@@ -37,7 +37,9 @@ The stack is settled: Python, Parakeet v3, pyannote community-1, two recorded tr
 | Taken name | Publish to Agaric stops and asks: Use that page or Rename | Two meetings with one name on one day are rare, and only I know whether they're the same one |
 | Agaric | Publish to Agaric runs `agaric-mcp call add_meeting`, with no template; running it again adds the summary and applies a new name | The summary already lists decisions and action items, so a template would repeat them |
 | GitLab | Publish to GitLab asks for a link: an issue link gets a comment, a project link a new issue with only a title and body; it posts the summary and links the uploaded transcript and audio, or the transcript alone when the server refuses the audio as too big | The link alone says where and how to post; labels and assignees are set in GitLab |
-| GitLab login | [`glab`](https://docs.gitlab.com/cli/api/), logged in once per server; 1.91 or newer, which install.sh only checks for, and the Recordings window keeps Publish to GitLab off until it's there | Already handles gitlab.com and self-hosted servers; no token handling in the tool |
+| GitLab login | [`glab`](https://docs.gitlab.com/cli/api/), logged in once per server, with `glab auth login` or a token pasted in the Settings, which Minutas hands to glab for the GNOME keyring and never keeps; 1.91 or newer, which install.sh only checks for, and the Recordings window keeps Publish to GitLab off until it's there | Already handles gitlab.com and self-hosted servers; glab holds the login, so the tool keeps no GitLab token |
+| GitHub | Publish to GitHub asks for a link, starting from the recording's last one, else the default link in the Settings: an issue link gets a comment, a repository link a new issue with only a title and body; it posts the summary with a link to the transcript in a secret gist, and leaves the audio out | GitHub takes no audio file, and `gh` attaches no file to an issue; a secret gist is unlisted, though anyone with its link can read it |
+| GitHub login | [`gh`](https://cli.github.com/manual/), logged in once per host with `gh auth login`; 2.45 or newer, Ubuntu 24.04's own, which install.sh only checks for, and the Recordings window keeps Publish to GitHub off until it's there | Handles github.com and GitHub Enterprise Server alike; no token handling in the tool |
 | Audio kept | The two tracks as Ogg Opus, 16 kHz mono at 32 kbps each (about 30 MB an hour), with the transcript and outputs, until Delete now, Move to Trash or a limit takes them: 30 days old, or 5 GB for all the tracks together, past which the oldest go whatever their age; each limit can be turned off; no lossless copy | At that rate Opus barely changes what the speech models hear, and 16 kHz is all they take; tracks kept for weeks can still be re-transcribed with a better model, and the limits keep the disk bounded ([#18](https://github.com/jfolcini/minutas/issues/18)) |
 | Audio files | Per recording, for its two tracks: Play, Save a copy, Open folder, Delete now | Manage disk and hand a file to someone without leaving the window |
 | Existing tools | Inspiration only, no fork | None fits; several have a piece worth borrowing |
@@ -60,6 +62,7 @@ flowchart TD
     sum["Summarize<br/>Devin CLI or Claude Code, in English<br/>→ summary.md"]
     agaric["Publish to Agaric<br/>add_meeting<br/>→ agaric://page/&lt;id&gt;"]
     gitlab["Publish to GitLab<br/>glab: comment or new issue<br/>→ issue or comment link"]
+    github["Publish to GitHub<br/>gh: transcript to a secret gist, then comment or new issue<br/>→ issue or comment link"]
 
     ext --> rec
     ext -- at stop --> cal
@@ -76,9 +79,10 @@ flowchart TD
     hist --> sum
     hist --> agaric
     hist --> gitlab
+    hist --> github
 ```
 
-Recording runs as a user service, so it survives the lock screen. Transcription runs on stop; Summarize, Publish to Agaric and Publish to GitLab are buttons in the Recordings window, and Publish to GitLab waits for a summary.
+Recording runs as a user service, so it survives the lock screen. Transcription runs on stop; Summarize, Publish to Agaric, Publish to GitLab and Publish to GitHub are buttons in the Recordings window, and the last two wait for a summary.
 
 ## Agaric contract
 
@@ -116,7 +120,7 @@ One Python program does the work and draws the Recordings window; the GNOME exte
 
 | Component | Job | Main library |
 | --- | --- | --- |
-| GNOME extension | Top-bar menu: record and stop with a timer, the last few recordings with a warning mark on any failed run, Recordings and Settings; notifications on Record ("Tell participants you're recording"), when a transcript is ready, and when a run fails. While no `minutas` command is on the PATH or in `~/.local/bin`, checked each time the menu opens, the menu holds only Install Minutas…, which opens the README's install section, as does the "Minutas isn't installed" notification | GJS, GNOME Shell 46+ |
+| GNOME extension | Top-bar menu: record and stop with a timer, the last few recordings with a warning mark on any failed run and how far a running transcription has got, Recordings and Settings; notifications on Record ("Tell participants you're recording"), when a transcript is ready, and when a run fails. While no `minutas` command is on the PATH or in `~/.local/bin`, checked each time the menu opens, the menu holds only Install Minutas…, which opens the README's install section, as does the "Minutas isn't installed" notification | GJS, GNOME Shell 46+ |
 | Recordings window | Every recording with its name, speakers, actions and their runs (status, error, Retry, Cancel, output link) and its audio files, and Rename and Move to Trash; the Settings, a dialog over it | GTK 4 and libadwaita through PyGObject |
 | Player and file buttons | Play, Save a copy, Open folder and Delete now for the recording's two tracks | GTK 4 `MediaFile` and `MediaControls`, `FileDialog`, `FileLauncher` |
 | Recorder | Mic and computer audio as two Opus tracks; survives the lock screen and a Shell restart; if it dies, what was captured is kept; a setting records the echo-cancelled mic instead | `systemd-run --user`, GStreamer or `pw-record`, PipeWire |
@@ -124,12 +128,13 @@ One Python program does the work and draws the Recordings window; the GNOME exte
 | Calendar lookup | The event overlapping the recording: name, date, attendee names | PyGObject `ECal` and `EDataServer` |
 | Page name | Picks the name: one typed in the Recordings window, else the calendar event's, else the summary's proposal, else "Meeting" | Python standard library |
 | Turn finder | Who spoke when: Silero VAD finds the speech on both tracks; the mic's is mine, and pyannote says whose each stretch of the call's is. pyannote runs in a process of its own, which ends before Parakeet loads, from the model on disk and with its usage reporting off | Silero VAD; pyannote.audio 4 with community-1 |
-| Transcriber | Runs on stop, and again on Retry or Run again: one pass per turn, same-speaker turns merged up to about 30 s, with the meeting's word list. Writes `transcript.json`: each turn's start, end and text under its speaker's key, `Me` or `Speaker 1`, `Speaker 2`… in the order they first speak. Parakeet loads from its archive unpacked once, beside it in the model cache, not unpacked to disk again on every run | NeMo, Parakeet TDT 0.6B v3, phrase boosting |
+| Transcriber | Runs on stop, and again on Retry or Run again: one pass per turn, same-speaker turns merged up to about 30 s, with the meeting's word list. Writes `transcript.json`: each turn's start, end and text under its speaker's key, `Me` or `Speaker 1`, `Speaker 2`… in the order they first speak. Says on stdout how far it has got, a line each time: its phase (finding speech on each track, identifying speakers, transcribing) and how much of the phase is done; the worker keeps it on the run while it runs. Parakeet loads from its archive unpacked once, beside it in the model cache, not unpacked to disk again on every run | NeMo, Parakeet TDT 0.6B v3, phrase boosting |
 | Speaker naming | Each speaker set to a calendar attendee or a custom name in the Recordings window, kept with the recording and through Run again; voice memory later | Calendar attendees; community-1 speaker embeddings later |
 | Formatter | Writes `transcript.md`, `[hh:mm:ss] **Name:** text`, from `transcript.json` and the current names, after every transcription and every naming | Python standard library |
 | Summarize | A built-in preset (General, Standup, 1:1, Stakeholder call) or a saved one, or Custom typed at run time and savable as a preset; always in English. Every prompt gets the skill the Settings choose, the built-in meeting-notes one by default, then one added instruction: start with a line `Title: <a few words, no date>`, which becomes the proposed page name and is cut from `summary.md`. The transcript is other people's speech, so the summarizer chosen in Settings gets it inside the prompt, in a temporary folder of its own, with none of the person's MCP servers, rules, skills or settings, every tool that reaches a file, a command or the web taken away, and any such tool it adds later denied: nothing said in a meeting can make it read a file, run a command or fetch a page. Devin gets an empty home and a config of its own. Claude Code, 2.1.166 or newer, keeps its login in the person's home, so it keeps that home and gets flags instead: the prompt on its input, no built-in tools, no MCP servers, its claude.ai connectors included, no settings files, every tool denied, a permission mode that approves nothing, no commands or skills, no session kept, no file read for an `@` mention, no CLAUDE.md and no memory. What its organization manages still applies, its hooks included, and where it deploys a `managed-mcp.json` Claude Code refuses to run; a login that only its settings file holds is not read | Devin CLI, `devin -p --prompt-file`; Claude Code, `claude -p` |
 | Publish to Agaric | The page, audio and transcript; the summary once it exists; renames the page when its automatic name changed; output `agaric://page/<id>` | `agaric-mcp call add_meeting`, `update_block_content` |
-| Publish to GitLab | Asks for a link; uploads transcript and audio, posts the summary with their links as a comment or a new issue titled `<name> <YYYY-MM-DD>`; output the comment or issue link; enabled once a summary exists | `glab api` (uploads, issues, notes) |
+| Publish to GitLab | Asks for a link, starting from the last run's or the default one; uploads transcript and audio, posts the summary with their links as a comment or a new issue titled `<name> <YYYY-MM-DD>`; output the comment or issue link; enabled once a summary exists | `glab api` (uploads, issues, notes) |
+| Publish to GitHub | Asks for a link, starting from the recording's last one, else the Settings' default; puts the transcript in a secret gist and posts the summary with its link as a comment or a new issue titled `<name> <YYYY-MM-DD>`, without the audio; output the comment or issue link; enabled once a summary exists | `gh gist create`, `gh issue comment`, `gh issue create`, the transcript and summary on stdin |
 | Scorer | Word error rate on the test set for every change | `jiwer` |
 
 ### Between the extension and the program
@@ -152,14 +157,15 @@ The program rewrites `DATA/status.json` atomically after every change, and the e
   "recording": {"id": "2026-11-18T13-05-42", "started_at": "2026-11-18T13:05:42+01:00"},
   "recent": [
     {"id": "2026-11-18T12-00-03", "name": "Meeting", "started_at": "2026-11-18T12:00:03+01:00",
-     "duration_seconds": 1834, "incomplete": false, "transcribe": "succeeded", "failed": []}
+     "duration_seconds": 1834, "incomplete": false, "transcribe": "succeeded", "progress": null,
+     "failed": []}
   ]
 }
 ```
 
 - `recording` is the active recording, or `null`; `recent` holds the last five others, newest first.
 - `incomplete` means the recorder died before Stop; what it captured is kept.
-- `transcribe` is the latest Transcribe run's status, or `null`; `failed` lists the actions whose latest run failed: `transcribe`, `summarize`, `publish_agaric`, `publish_gitlab`.
+- `transcribe` is the latest Transcribe run's status, or `null`; `progress` is how far it has got while it runs, its phase and the whole percent of that phase done (`{"phase": "identifying speakers", "percent": 40}`), else `null`; `failed` lists the actions whose latest run failed: `transcribe`, `summarize`, `publish_agaric`, `publish_gitlab`, `publish_github`.
 
 ## Installing and updating
 
@@ -176,6 +182,7 @@ Minutas lives in a GitHub repository. `install.sh` installs and updates it: it c
 | Models | Parakeet v3 and pyannote community-1 at the revisions pinned in the repository, in `~/.cache/minutas/models` | Those revisions are there |
 | agaric-mcp | Nothing; says to install Agaric 0.26 or newer and start it once, which puts in place the bridge Publish to Agaric's `call` needs | Agaric's own bridge (see Agaric contract), else the `agaric-mcp` on the PATH, has `call` |
 | glab | Nothing; names an older one it found and points to GitLab's own `.deb` of 1.91 or newer, which replaces Ubuntu's in place (the snap can't read `~/.local/share`, where the recordings are) | `glab` 1.91 or newer is on the PATH |
+| gh | Nothing; names an older one it found and says to install Ubuntu's own (`sudo apt install gh`) or one from [cli.github.com](https://cli.github.com) | `gh` 2.45 or newer is on the PATH |
 | Summarizer | Nothing; prints how to install the Devin CLI and Claude Code | Either is on the PATH |
 
 - **Output:** in a terminal, it opens with what it puts in place and what it may ask for, and why; every step prints `ok` when nothing needed doing, or what it installed or updated, and a second run in a row prints `ok` for all of them; it ends with what is left to do, if anything: log out and back in, and the optional tools still missing.
@@ -189,12 +196,11 @@ Minutas lives in a GitHub repository. `install.sh` installs and updates it: it c
 
 ## Later: more tools and platforms
 
-The first version supports Devin and Claude Code, GitLab and GNOME on Ubuntu only; GitHub, Codex, macOS and Windows may follow, so the code keeps each of those behind its own module without building a plugin system now.
+The first version supports Devin and Claude Code, GitLab, GitHub and GNOME on Ubuntu only; Codex, macOS and Windows may follow, so the code keeps each of those behind its own module without building a plugin system now.
 
 | Addition | How it fits | Known catch |
 | --- | --- | --- |
 | Codex | Another summarizer next to Devin and Claude Code: `codex exec` takes a prompt and prints Markdown, as `devin -p` and `claude -p` do | The `Title:` line instruction must work with it, and it must be isolated as tightly as they are; it is another choice in the Settings' Summarizer, with its own models |
-| GitHub | Another publisher next to GitLab, through `gh` 2.99 or newer, the counterpart of `glab`: `gh issue comment` on an issue link, `gh issue create` on a repository link, both logged in with `gh auth login` | `gh --attach` [uploads only image and media files](https://docs.github.com/en/github-cli/github-cli/attaching-files-with-github-cli) and needs push access: the transcript would go to a secret gist (`gh gist create`); whether Opus audio in a WebM file counts as media needs a test, else a release asset |
 | macOS | A menu-bar item instead of the GNOME extension; system audio through ScreenCaptureKit; the calendar straight from Nextcloud over CalDAV | No GNOME Online Accounts or Evolution Data Server; the Recordings window would need a native toolkit to feel at home; Parakeet may run better through Apple's MLX than NeMo |
 | Windows | A tray icon; system audio through WASAPI loopback; the calendar over CalDAV; a PowerShell install script | NeMo and pyannote on Windows need checking; no `systemd-run`, so recording runs under the app itself |
 
@@ -203,21 +209,23 @@ The first version supports Devin and Claude Code, GitLab and GNOME on Ubuntu onl
 
 ## Recordings window
 
-Every recording is a row, newest first, with a menu on the line that shows its name: Rename… and Move to Trash…. Expanding it shows its speakers, its audio files and its four actions, each with its last result: an output link, or why it failed and a Retry button.
+Every recording is a row, newest first, with a menu on the line that shows its name: Rename… and Move to Trash…. Expanding it shows its speakers, its audio files and its five actions, each with its last result: an output link, or why it failed and a Retry button.
 
 - **Name:** Rename… asks for a name, starting from the current one, and says where that came from (calendar, summary, default or typed); a typed name is kept for good, and the next Publish to Agaric applies it.
 - **Speakers:** the call's speakers are listed under Transcribe once it has run, numbered in the order they first speak; each one is set to a calendar attendee or a custom name, and the transcript is written again with it; a transcript already published keeps the names it went with.
-- **Actions:** Transcribe (runs on stop; Run again re-transcribes, for example after the word list changes), Summarize, Publish to Agaric and Publish to GitLab. Every run is kept with its time, status and output link; Publish to Agaric run again adds what the page lacks, such as the summary or a newer one, and applies a changed name.
+- **Actions:** Transcribe (runs on stop; Run again re-transcribes, for example after the word list changes; while it runs, its phase and how much of it is done, with a progress bar, and the row says them collapsed too), Summarize, Publish to Agaric, Publish to GitLab and Publish to GitHub. Every run is kept with its time, status and output link; Publish to Agaric run again adds what the page lacks, such as the summary or a newer one, and applies a changed name.
 - **Failed runs:** show the reason and the fix, with Retry and Details; see *When an action fails* below.
 - **Summarize:** the menu lists built-in presets, saved presets, then Custom; Custom opens a text box with Save as preset. Saved presets can be deleted from the menu's Delete a preset, built-in ones can't. Without the summarizer chosen in Settings on the PATH, Summarize is disabled and says how to install it.
-- **Publish to GitLab:** enabled once a summary exists; its dialog asks for the link, starting from the last run's, and says before posting whether it will get a comment or a new issue. Without `glab` 1.91 or newer on the PATH, it is disabled and recommends GitLab's own `.deb`: the snap can't read the recordings.
+- **Publish to GitLab:** enabled once a summary exists; its dialog asks for the link, starting from the last run's, else the default link the Settings hold, and says before posting whether it will get a comment or a new issue. Without `glab` 1.91 or newer on the PATH, it is disabled and recommends GitLab's own `.deb`: the snap can't read the recordings.
+- **Publish to GitHub:** enabled once a summary exists; its dialog asks for the link, starting from the recording's last one, else the Settings' default, and says before posting whether it will get a comment or a new issue, and that the transcript goes to a secret gist anyone with its link can read, without the audio. Without `gh` 2.45 or newer on the PATH, it is disabled and says how to install it.
 - **Audio files:** the mic and call tracks, each with Play and Save a copy; Delete now removes both, Open folder opens the recording's folder, and the row says when the age limit will delete them.
 - **Deleting the audio:** asks first; the history entry and its outputs stay. Without the tracks, Run again is disabled, and publishing leaves the audio out and says so.
-- **Move to Trash:** asks first, then moves the whole recording's folder, its audio, transcript, summary and run history, to the desktop's Trash, where it can be restored; what was published stays in Agaric and GitLab. It refuses, saying why, while the recording is in progress, while a transcription is queued or running (Cancel it first), or while Summarize or a publish runs for it. A trash that fails says why and deletes nothing: it never falls back to deleting.
-- **Audio limits:** delete tracks as Delete now does, but only once the latest transcription has succeeded and never the recording in progress; they run when a recording stops, when the window opens and when they are saved, with no timer of their own. A change to them waits for Save, unlike every other setting, and Save first warns how many recordings' audio, and how much of it, goes at once, with Accept and Cancel: a scroll over a limit would otherwise delete audio unasked.
-- **Links:** open in the default app: `summary.md` in the text editor, `agaric://` links in Agaric, GitLab links in the browser.
-- **Settings:** a dialog over the window, opened from its main menu or the top-bar menu. Transcription: the vocabulary, the glossary of the word list, with Open, which opens it in the text editor, one word or phrase a line. Summary: the summarizer, the Devin CLI or Claude Code, then its model and effort, Devin's from what `devin models list --format json` offers and Claude Code's from its model aliases (Fable, Opus, Sonnet, Haiku) and effort levels, each summarizer keeping its own while the other is chosen, and the skill file, Markdown, with Open, which opens it or the built-in one, and Use built-in to go back to the one Minutas ships; Agaric; the audio limits with how much audio is kept against them. Later: the echo-cancelled mic switch, whether `glab` is logged in.
+- **Move to Trash:** asks first, then moves the whole recording's folder, its audio, transcript, summary and run history, to the desktop's Trash, where it can be restored; what was published stays in Agaric, GitLab and GitHub. It refuses, saying why, while the recording is in progress, while a transcription is queued or running (Cancel it first), or while Summarize or a publish runs for it. A trash that fails says why and deletes nothing: it never falls back to deleting.
+- **Audio limits:** delete tracks as Delete now does, but only once the latest transcription has succeeded and never the recording in progress; they run when a recording stops, when the window opens and when they are saved, with no timer of their own. A change to them waits for Save, unlike every other setting, and Save first warns how many recordings' audio, and how much of it, goes at once, with Accept and Cancel: a scroll over a limit would otherwise delete audio unasked. Save sits below the two limits and is on only while the limits shown differ from the saved ones; closing the Settings then asks first, with Cancel, Discard and Save, and Save there gives the same warning and closes once it is accepted.
+- **Links:** open in the default app: `summary.md` in the text editor, `agaric://` links in Agaric, GitLab and GitHub links in the browser.
+- **Settings:** a dialog over the window, opened from its main menu or the top-bar menu. Transcription: the vocabulary, the glossary of the word list, with Open, which opens it in the text editor, one word or phrase a line. Summary: the summarizer, the Devin CLI or Claude Code, then its model and effort, Devin's from what `devin models list --format json` offers and Claude Code's from its model aliases (Fable, Opus, Sonnet, Haiku) and effort levels, each summarizer keeping its own while the other is chosen, and the skill file, Markdown, with Open, which opens it or the built-in one, and Use built-in to go back to the one Minutas ships; Agaric; GitLab; GitHub: the default link Publish to GitHub starts from, an issue or repository link, refused when it is neither, and cleared when emptied; the audio limits with how much audio is kept against them. Later: the echo-cancelled mic switch.
 - **Agaric:** the agent token, pasted as the config Agaric shows or alone, kept in the GNOME keyring through Python's keyring package and never shown back; whether a token is stored, and without one how to get Agaric's config; the space it publishes to, shown even when it is the only one; and the fix when Agaric isn't running or refuses the token. Agaric is asked through `minutas settings agaric`, run as a command, so the window never waits on it.
+- **GitLab:** the default link, a project or issue link, checked as Publish to GitLab's dialog checks it, and empty for none; whether `glab` is logged in to that link's server, gitlab.com without one, or why not, as `glab auth status` finds it; and a personal access token with the api scope, pasted and handed to `glab auth login --stdin --use-keyring` for that server, which keeps it in the GNOME keyring; Minutas never keeps or shows it back. glab is asked through `minutas settings gitlab`, run as a command, so the window never waits on it.
 - **Main menu:** Settings; Update Minutas (see Installing and updating); About Minutas, with the version, the license, the website and where to report an issue.
 - **Top-bar menu:** record and stop, the last few recordings, Recordings and Settings.
 
@@ -246,11 +254,12 @@ A run still marked Running when the app starts again, after a logout or a crash,
 | Summarize | The summarizer not logged in, a non-zero exit, empty output, no answer at all | Failed with the summarizer's output in Details; one that stalls is stopped after a generous timeout; the run keeps the prompt it used, Custom included, so Retry sends the same one |
 | Publish to Agaric | Agaric not running, the agent token revoked, a file over 50 MB, the name already taken by another page | Failed with Agaric's message; `add_meeting` is one transaction, so a failed call leaves nothing behind. A taken name stops the run and asks: Use that page (adds the files to it) or Rename; a rename to a taken name asks for another name |
 | Publish to GitLab | `glab` not logged in for that server, no access to the link, an upload over the server's limit, network down | Failed at the step that broke, with the fix (for example `glab auth login --hostname <host>`); a finished audio upload is kept in the run, so Retry doesn't upload it again. Audio over the limit is the exception: the summary goes out with the transcript alone and the run's note says so; only an admin can read the limit, so the smallest audio each server refused is remembered and a later one as big isn't sent |
+| Publish to GitHub | `gh` not logged in for that host, no access to the link, network down | Failed at the step that broke, with the fix (for example `gh auth login --hostname <host>`); Retry makes the gist again, since naming a speaker changes the transcript |
 
 - **Where failures show:** a red status on the run, a warning mark on the recording in the top-bar menu, and a GNOME notification.
 - **Details:** the full output of the tool that failed, ready to copy.
 - **Cancel:** stops a queued or running run; a cancelled run can be retried like a failed one.
-- **Dependencies:** Publish to GitLab stays disabled until a summary succeeds, and says why.
+- **Dependencies:** Publish to GitLab and Publish to GitHub stay disabled until a summary succeeds, and say why.
 
 ## Transcription quality plan
 
@@ -304,9 +313,9 @@ The scorer comes first, so every later step is measured; the tool is usable end 
 - [ ] **M4:** calendar lookup through GNOME Online Accounts: the event's name as the page name, the date, attendees and the word list
 - [ ] **M5:** community-1 on the call track; speakers named in the Recordings window from the attendees or a custom name
 - [ ] **M6:** Summarize: built-in presets (General, Standup, 1:1, Stakeholder call), saved presets, Custom with Save as preset, deleting saved presets, Devin CLI, `summary.md`, the proposed page name from its `Title:` line; Publish to Agaric adds the summary and renames the page when its automatic name changed
-- [ ] **M7:** Publish to GitLab through `glab api`: comment or new issue (title and body only), transcript and audio uploads, Retry carrying on from the failed step, the output link
+- [ ] **M7:** Publish to GitLab through `glab api`: comment or new issue (title and body only), transcript and audio uploads, Retry carrying on from the failed step, the output link; Publish to GitHub through `gh`: comment or new issue, the transcript in a secret gist, no audio
 - [ ] **M8:** GNOME extension: record and stop, the consent reminder on Record, recent recordings with a mark on failed runs, Open history, notifications for a ready transcript or a failed run; `install.sh` complete, with the glab and extension steps, and `minutas update`
-- [ ] **Later:** voice memory; fine-tuning on Rioplatense speech if the test set shows a gap; a Codex summarizer; publishing to GitHub; macOS and Windows
+- [ ] **Later:** voice memory; fine-tuning on Rioplatense speech if the test set shows a gap; a Codex summarizer; macOS and Windows
 
 ## Open questions
 
@@ -332,6 +341,8 @@ Everything is decided.
 - [Claude Code CLI reference](https://code.claude.com/docs/en/cli-reference)
 - [Claude Code environment variables](https://code.claude.com/docs/en/env-vars)
 - [glab api](https://docs.gitlab.com/cli/api/)
+- [glab auth login](https://docs.gitlab.com/cli/auth/login/)
 - [glab issue note](https://docs.gitlab.com/cli/issue/note/)
+- [gh manual](https://cli.github.com/manual/)
 - [PipeWire echo-cancel module](https://docs.pipewire.org/page_module_echo_cancel.html)
 - [Ubuntu 26.04 LTS release notes](https://documentation.ubuntu.com/release-notes/26.04/summary-for-lts-users/)

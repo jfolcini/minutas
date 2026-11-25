@@ -2,19 +2,19 @@
 
 ## Threat model
 
-Minutas runs on one person's own desktop. It records meeting audio, transcribes it locally, and sends content off the machine only when that person presses a button: the summary prompt to the summarizer chosen in Settings, the Devin CLI or Claude Code, the page, audio and transcript to Agaric on the same machine, and the summary, transcript and audio to the GitLab server they name. Its secrets are an Agaric agent token and a Hugging Face token, both kept in the GNOME keyring; GitLab credentials stay with `glab`.
+Minutas runs on one person's own desktop. It records meeting audio, transcribes it locally, and sends content off the machine only when that person presses a button: the summary prompt to the summarizer chosen in Settings, the Devin CLI or Claude Code, the page, audio and transcript to Agaric on the same machine, the summary, transcript and audio to the GitLab server they name, and the summary to the GitHub host they name, with the transcript in a secret gist there. Its secrets are an Agaric agent token and a Hugging Face token, both kept in the GNOME keyring; GitLab credentials stay with `glab`, GitHub's with `gh`.
 
 ## In scope
 
 - Meeting content or a token leaving the machine other than through the action the user pressed.
 - A token written anywhere but the keyring (a log, a run's Details, a file in the recording folder).
-- Command or argument injection through a meeting name, a speaker name, a calendar field or a GitLab link.
+- Command or argument injection through a meeting name, a speaker name, a calendar field or a GitLab or GitHub link.
 - A supply-chain weakness in this repository's own build and CI.
 
 ## Out of scope
 
 - An attacker who already runs code as the user or has the user's unlocked session.
-- What Agaric, GitLab, `glab`, the Devin CLI, Claude Code or the models do with content once Minutas has handed it over; report those upstream.
+- What Agaric, GitLab, `glab`, GitHub, `gh`, the Devin CLI, Claude Code or the models do with content once Minutas has handed it over; report those upstream.
 
 ## Supported versions
 

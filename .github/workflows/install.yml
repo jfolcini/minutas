@@ -42,7 +42,8 @@ jobs:
         run: sudo apt-get update
 
       # What the desktop brings: GNOME Shell's settings, which the extension step enables it in,
-      # and the tools installed by hand: Agaric's bridge, glab, and the Devin CLI.
+      # and the tools installed by hand: Agaric's bridge, glab, and the Devin CLI. The runner
+      # image has a gh new enough for the gh step.
       - name: Stand in for the desktop
         run: |
           sudo apt-get install -y gnome-shell-common

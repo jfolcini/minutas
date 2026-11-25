@@ -11,7 +11,18 @@ from typing import TYPE_CHECKING, cast
 import pytest
 from keyring.errors import KeyringLocked
 
-from minutas import agaric, calendar, cli, gitlab, recorder, settings, store, summarizer, worker
+from minutas import (
+    agaric,
+    calendar,
+    cli,
+    github,
+    gitlab,
+    recorder,
+    settings,
+    store,
+    summarizer,
+    worker,
+)
 from minutas.cli import main
 
 if TYPE_CHECKING:
@@ -815,6 +826,71 @@ def test_publish_gitlab_refuses_what_it_cannot_post(
     assert fake_gitlab.published == []
 
 
+class FakeGitHub:
+    """Stands in for the github module's publish: no gh."""
+
+    def __init__(self) -> None:
+        self.succeeds = True
+        self.published: list[tuple[str, datetime, github.Target]] = []
+
+    def publish(self, recording_id: str, published: datetime, target: github.Target) -> bool:
+        self.published.append((recording_id, published, target))
+        return self.succeeds
+
+
+@pytest.fixture
+def fake_github(monkeypatch: pytest.MonkeyPatch) -> FakeGitHub:
+    fake = FakeGitHub()
+    monkeypatch.setattr(github, "publish", fake.publish)
+    monkeypatch.setattr(cli, "now", lambda: START + timedelta(hours=1))
+    return fake
+
+
+GITHUB_ISSUE = "https://github.com/owner/repo/issues/7"
+
+
+@pytest.mark.parametrize(("succeeds", "code"), [(True, 0), (False, 1)])
+def test_publish_github_posts_the_summary_where_the_link_says(
+    fake_github: FakeGitHub, *, succeeds: bool, code: int
+) -> None:
+    recording_id = summarized()
+    fake_github.succeeds = succeeds
+
+    assert main(["publish", "github", recording_id, f"{GITHUB_ISSUE}#issuecomment-3"]) == code
+
+    assert fake_github.published == [
+        (
+            recording_id,
+            START + timedelta(hours=1),
+            github.Target(GITHUB_ISSUE, "github.com", "owner/repo", 7),
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    ("link", "error"),
+    [
+        ("https://github.com/owner", "Not a GitHub issue or repository link: "),
+        (GITHUB_ISSUE, "No recording 2026-11-18T13-05-42."),
+        (GITHUB_ISSUE, "2026-11-18T13-05-42 has no summary yet: summarize it first."),
+    ],
+    ids=["not github", "unknown recording", "no summary"],
+)
+def test_publish_github_refuses_what_it_cannot_post(
+    fake_github: FakeGitHub, capsys: pytest.CaptureFixture[str], link: str, error: str
+) -> None:
+    if error.startswith("Not"):
+        summarized()
+        error += link
+    elif error.endswith("summarize it first."):
+        store.create_recording(START)
+
+    assert main(["publish", "github", "2026-11-18T13-05-42", link]) == 1
+
+    assert capsys.readouterr().err == f"{error}\n"
+    assert fake_github.published == []
+
+
 class FakeSummarizer:
     """Stands in for the summarizer module: no Devin."""
 
@@ -1056,6 +1132,132 @@ def test_settings_agaric_without_an_option_says_what_it_takes(
     assert capsys.readouterr().err == (
         "Nothing to do: pass --space, --token-from-stdin or --list-spaces.\n"
     )
+
+
+class FakeGlabLogin:
+    """Stands in for the gitlab module's glab login: no glab."""
+
+    def __init__(self) -> None:
+        self.problem = ""
+        self.logged_in = True
+        self.refused: str | None = None
+        self.handed: list[tuple[str, str]] = []
+        self.asked: list[str] = []
+
+    def log_in(self, host: str, token: str) -> None:
+        self.handed.append((host, token))
+        if self.refused is not None:
+            raise gitlab.GitLabError(self.refused)
+
+    def login_status(self, host: str) -> str:
+        self.asked.append(host)
+        if not self.logged_in:
+            reason = f"glab isn't logged in to {host}"
+            raise gitlab.GitLabError(reason)
+        return f"glab is logged in to {host}."
+
+
+@pytest.fixture
+def glab_login(monkeypatch: pytest.MonkeyPatch) -> FakeGlabLogin:
+    fake = FakeGlabLogin()
+    monkeypatch.setattr(gitlab, "glab_problem", lambda: fake.problem)
+    monkeypatch.setattr(gitlab, "log_in", fake.log_in)
+    monkeypatch.setattr(gitlab, "login_status", fake.login_status)
+    return fake
+
+
+GITLAB_TOKEN = "glpat-" + "a" * 20
+
+
+@pytest.mark.parametrize(
+    ("link", "host"), [(None, "gitlab.com"), (ISSUE_LINK, "gitlab.example.com")]
+)
+def test_settings_gitlab_says_whether_glab_is_logged_in_to_the_default_links_server(
+    glab_login: FakeGlabLogin,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    link: str | None,
+    host: str,
+) -> None:
+    settings.set_gitlab_link(link)
+    # Without --token-from-stdin, a token on stdin is left alone.
+    monkeypatch.setattr(sys, "stdin", io.StringIO(GITLAB_TOKEN))
+
+    assert main(["settings", "gitlab"]) == 0
+
+    assert capsys.readouterr() == ("", f"glab is logged in to {host}.\n")
+    assert (glab_login.asked, glab_login.handed) == ([host], [])
+
+
+def test_settings_gitlab_fails_while_glab_is_not_logged_in(
+    glab_login: FakeGlabLogin, capsys: pytest.CaptureFixture[str]
+) -> None:
+    glab_login.logged_in = False
+
+    assert main(["settings", "gitlab"]) == 1
+
+    assert capsys.readouterr().err == "glab isn't logged in to gitlab.com\n"
+
+
+def test_settings_gitlab_hands_glab_the_token_then_says_whether_it_is_logged_in(
+    glab_login: FakeGlabLogin,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    settings.set_gitlab_link(ISSUE_LINK)
+    monkeypatch.setattr(sys, "stdin", io.StringIO(f" {GITLAB_TOKEN} \n"))
+
+    assert main(["settings", "gitlab", "--token-from-stdin"]) == 0
+
+    assert glab_login.handed == [("gitlab.example.com", GITLAB_TOKEN)]
+    assert glab_login.asked == ["gitlab.example.com"]
+    assert capsys.readouterr().err == "glab is logged in to gitlab.example.com.\n"
+
+
+def test_settings_gitlab_refuses_a_blank_token(
+    glab_login: FakeGlabLogin,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(sys, "stdin", io.StringIO(" \n"))
+
+    assert main(["settings", "gitlab", "--token-from-stdin"]) == 1
+
+    assert capsys.readouterr().err == (
+        "No token in that: paste a GitLab personal access token with the api scope.\n"
+    )
+    assert (glab_login.handed, glab_login.asked) == ([], [])
+
+
+def test_settings_gitlab_says_why_glab_did_not_keep_the_token(
+    glab_login: FakeGlabLogin,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    refused = "glab couldn't keep the token for gitlab.com: the keyring is locked"
+    glab_login.refused = refused
+    monkeypatch.setattr(sys, "stdin", io.StringIO(GITLAB_TOKEN))
+
+    assert main(["settings", "gitlab", "--token-from-stdin"]) == 1
+
+    assert capsys.readouterr().err == f"{refused}\n"
+    assert glab_login.asked == []
+
+
+@pytest.mark.parametrize("options", [[], ["--token-from-stdin"]])
+def test_settings_gitlab_says_what_is_wrong_with_the_glab_installed(
+    glab_login: FakeGlabLogin,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    options: list[str],
+) -> None:
+    glab_login.problem = "glab not found: install glab 1.91.0 or newer"
+    monkeypatch.setattr(sys, "stdin", io.StringIO(GITLAB_TOKEN))
+
+    assert main(["settings", "gitlab", *options]) == 1
+
+    assert capsys.readouterr().err == "glab not found: install glab 1.91.0 or newer\n"
+    assert (glab_login.handed, glab_login.asked) == ([], [])
 
 
 class Releases:

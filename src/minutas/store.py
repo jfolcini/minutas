@@ -22,7 +22,7 @@ TRANSCRIPT = "transcript.md"
 # The transcriber's key for the mic track's speaker, who has no other name.
 ME = "Me"
 SUMMARY = "summary.md"
-ACTIONS = ("transcribe", "summarize", "publish_agaric", "publish_gitlab")
+ACTIONS = ("transcribe", "summarize", "publish_agaric", "publish_gitlab", "publish_github")
 RECENT_IN_STATUS = 5
 INTERRUPTED = "interrupted"
 # Where a name can come from, lowest first: a name gives way only to one from as high a source.
@@ -66,6 +66,15 @@ class Choice(TypedDict):
     page_id: NotRequired[str]
 
 
+class Progress(TypedDict):
+    """How far a running transcription has got."""
+
+    # What it is doing: one of the transcriber's phases.
+    phase: str
+    # The whole percent of the phase done.
+    percent: int
+
+
 class Run(TypedDict):
     action: str
     status: str
@@ -80,8 +89,10 @@ class Run(TypedDict):
     note: NotRequired[str | None]
     # What a Summarize run asked the summarizer, so Retry asks the same.
     prompt: NotRequired[str]
-    # The issue or project link a Publish to GitLab run posted to, which the next one offers.
+    # The link a Publish to GitLab or GitHub run posted to, which the next one offers.
     link: NotRequired[str]
+    # How far a Transcribe run has got, while it runs.
+    progress: NotRequired[Progress]
 
 
 def data_dir() -> Path:
@@ -417,7 +428,9 @@ def close_abandoned() -> None:
 def recent_entry(recording: Recording) -> dict[str, object]:
     started = datetime.fromisoformat(recording["started_at"])
     stopped = datetime.fromisoformat(recording["stopped_at"] or recording["started_at"])
-    latest = {run["action"]: run["status"] for run in load_runs(recording["id"])}
+    runs = load_runs(recording["id"])
+    latest = {run["action"]: run["status"] for run in runs}
+    transcriptions = [run for run in runs if run["action"] == "transcribe"]
     return {
         "id": recording["id"],
         "name": recording["name"],
@@ -425,6 +438,7 @@ def recent_entry(recording: Recording) -> dict[str, object]:
         "duration_seconds": int((stopped - started).total_seconds()),
         "incomplete": recording["incomplete"],
         "transcribe": latest.get("transcribe"),
+        "progress": transcriptions[-1].get("progress") if transcriptions else None,
         "failed": [action for action in ACTIONS if latest.get(action) == "failed"],
     }
 

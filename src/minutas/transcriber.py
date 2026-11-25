@@ -17,6 +17,13 @@ and "Speaker 1", "Speaker 2"… for the call's speakers in the order they first 
 writes transcript.md from it, under the names the speakers have there. On failure the last line
 of stderr is the reason.
 
+On stdout it says how far it has got, one JSON line each time, flushed, which the worker shows:
+
+    {"phase": "transcribing", "done": 12, "total": 40}
+
+phase is one of PHASES; done counts what that phase has done of its total. Anything else on
+stdout is a library's.
+
 The speech stack is imported inside the functions that use it: the app's Python and the tests
 import this module without it.
 """
@@ -25,6 +32,7 @@ import argparse
 import gc
 import itertools
 import json
+import math
 import multiprocessing
 import os
 import shutil
@@ -54,6 +62,10 @@ PARAKEET = "nvidia/parakeet-tdt-0.6b-v3"
 PYANNOTE = "pyannote/speaker-diarization-community-1"
 # NeMo's weight for the boosted phrases. Higher, it starts writing them where nobody said them.
 BOOSTING_WEIGHT = 1.0
+FINDING_SPEECH = {MIC: "finding speech on the microphone", CALL: "finding speech on the call"}
+IDENTIFYING_SPEAKERS = "identifying speakers"
+TRANSCRIBING = "transcribing"
+PHASES = (*FINDING_SPEECH.values(), IDENTIFYING_SPEAKERS, TRANSCRIBING)
 
 
 class TranscriberError(Exception):
@@ -156,6 +168,12 @@ def segments(paragraphs: Sequence[tuple[Turn, str]]) -> list[Segment]:
     ]
 
 
+def report(phase: str, done: int, total: int) -> None:
+    sys.stdout.write(json.dumps({"phase": phase, "done": done, "total": total}) + "\n")
+    # pyannote's process writes to the same pipe, and the worker reads it as it comes.
+    sys.stdout.flush()
+
+
 def read_words(path: Path | None) -> list[str]:
     if path is None:
         return []
@@ -226,10 +244,13 @@ def find_speech(track: Path) -> list[tuple[int, int]]:
     torch.set_num_threads(1)
     vad = silero_vad.load_silero_vad()
     with soundfile.SoundFile(track) as audio, torch.inference_mode():
-        probabilities = [
-            vad(torch.from_numpy(window), SAMPLE_RATE).item()
-            for window in audio.blocks(blocksize=VAD_WINDOW, dtype="float32", fill_value=0)
-        ]
+        windows = math.ceil(audio.frames / VAD_WINDOW)
+        probabilities: list[float] = []
+        for done, window in enumerate(
+            audio.blocks(blocksize=VAD_WINDOW, dtype="float32", fill_value=0), 1
+        ):
+            probabilities.append(vad(torch.from_numpy(window), SAMPLE_RATE).item())
+            report(FINDING_SPEECH[track.name], done, windows)
         # Silero cuts speech longer than a turn at a pause.
         spans = silero_vad.get_speech_timestamps_from_probs(
             probabilities,
@@ -263,6 +284,20 @@ class VoicedOnly:
         return torch.full((len(masks), self.dimension), torch.nan).numpy()
 
 
+def report_embeddings(
+    step: str,
+    _artifact: object,
+    *,
+    completed: int | None = None,
+    total: int | None = None,
+    **_file: object,
+) -> None:
+    """pyannote's hook, told of each of its steps: the embeddings, most of its work, say how far
+    they have got."""
+    if step == "embeddings" and completed is not None and total is not None:
+        report(IDENTIFYING_SPEAKERS, completed, total)
+
+
 def diarize(pipeline_file: Path, call: Path) -> list[Turn]:
     """Whom pyannote community-1 hears on the call, and when: one speaker at a time."""
     # Read when pyannote is imported: left alone, it reports every run to its makers.
@@ -281,7 +316,10 @@ def diarize(pipeline_file: Path, call: Path) -> list[Turn]:
     pipeline._embedding = VoicedOnly(pipeline._embedding)  # noqa: SLF001 - it has no setting for this
     # pyannote takes the call whole.
     audio, _ = soundfile.read(call, dtype="float32")
-    heard = pipeline({"waveform": torch.from_numpy(audio)[None], "sample_rate": SAMPLE_RATE})
+    heard = pipeline(
+        {"waveform": torch.from_numpy(audio)[None], "sample_rate": SAMPLE_RATE},
+        hook=report_embeddings,
+    )
     return [
         Turn(speaker, round(segment.start * SAMPLE_RATE), round(segment.end * SAMPLE_RATE))
         for segment, _, speaker in heard.exclusive_speaker_diarization.itertracks(yield_label=True)
@@ -289,9 +327,11 @@ def diarize(pipeline_file: Path, call: Path) -> list[Turn]:
 
 
 def recognize(
-    weights: Path, folder: Path, turns: Iterable[Turn], words: Sequence[str]
+    weights: Path, folder: Path, turns: Sequence[Turn], words: Sequence[str]
 ) -> list[str]:
     """Each turn's text from Parakeet, with the words boosted."""
+    # Said before the model loads, which takes a while.
+    report(TRANSCRIBING, 0, len(turns))
     import soundfile
     import torch.utils.serialization
     from nemo.collections.asr.models import ASRModel
@@ -318,7 +358,7 @@ def recognize(
     # oneDNN keeps a compiled kernel per input length (up to 1024), so memory climbs with every
     # new turn length; with it off memory stays flat, at no measured cost in speed or text.
     with torch.inference_mode(), torch.backends.mkldnn.flags(enabled=False):
-        for turn in turns:
+        for done, turn in enumerate(turns, 1):
             # Only this turn's audio is in memory, however long the meeting.
             clip, _ = soundfile.read(
                 folder / (MIC if turn.speaker == ME else CALL),
@@ -327,6 +367,7 @@ def recognize(
                 dtype="float32",
             )
             texts.append(model.transcribe([clip], batch_size=1, verbose=False)[0].text)
+            report(TRANSCRIBING, done, len(turns))
     return texts
 
 
@@ -338,6 +379,8 @@ def transcribe(folder: Path, words: Sequence[str]) -> list[Segment]:
     if on_the_call:
         # In a process of its own: what pyannote took, its libraries included, goes back whole
         # when it ends. Started afresh, since this one already runs torch's threads.
+        # Said before it starts, which takes a while, as does the work before its embeddings.
+        report(IDENTIFYING_SPEAKERS, 0, 1)
         try:
             with ProcessPoolExecutor(1, mp_context=multiprocessing.get_context("spawn")) as apart:
                 heard = apart.submit(diarize, pipeline, folder / CALL).result()
