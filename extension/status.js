@@ -2,13 +2,15 @@
 
 /** @typedef {null | 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'} RunStatus */
 /** @typedef {{id: string, started_at: string}} Recording */
+/** @typedef {Recording & {paused_at?: string, paused_seconds?: number}} Active */
 /** @typedef {{phase: string, percent: number}} Progress */
 /**
  * @typedef {Recording & {name: string, duration_seconds: number, incomplete: boolean,
  *     transcribe: RunStatus, progress?: Progress | null, failed: string[]}} Recent
  */
-/** @typedef {{recording: Recording | null, recent: Recent[]}} Status */
+/** @typedef {{recording: Active | null, recent: Recent[]}} Status */
 /** @typedef {{recordingId: string, title: string, body: string}} Notice */
+/** @typedef {{label: string, args: string[], failureTitle: string}} Control */
 
 const RUN_STATUSES = [null, 'queued', 'running', 'succeeded', 'failed', 'cancelled'];
 
@@ -36,6 +38,13 @@ const isTimestamp = value =>
 /** @param {any} value */
 const isRecording = value => value !== null && typeof value === 'object' &&
     isString(value.id) && isTimestamp(value.started_at);
+
+// paused_at is there only while it is paused, paused_seconds only once it has been.
+/** @param {any} value */
+const isActive = value => isRecording(value) &&
+    (value.paused_at === undefined || isTimestamp(value.paused_at)) &&
+    (value.paused_seconds === undefined ||
+        (Number.isInteger(value.paused_seconds) && value.paused_seconds >= 0));
 
 // Absent from a status.json written before it was.
 /** @param {any} value */
@@ -65,7 +74,7 @@ export function parseStatus(text) {
         return null;
     }
     if (data?.version !== 1 ||
-        !(data.recording === null || isRecording(data.recording)) ||
+        !(data.recording === null || isActive(data.recording)) ||
         !Array.isArray(data.recent) || !data.recent.every(isRecent))
         return null;
     return {recording: data.recording, recent: data.recent};
@@ -119,11 +128,14 @@ export function formatClock(seconds) {
 }
 
 /**
- * @param {string} startedAt
+ * How long it has recorded for: its pauses left out, standing still while it is paused.
+ * @param {Active} recording
  * @param {number} nowMs
  */
-export function elapsedSeconds(startedAt, nowMs) {
-    return Math.max(0, Math.floor((nowMs - Date.parse(startedAt)) / 1000));
+export function elapsedSeconds(recording, nowMs) {
+    const until = recording.paused_at ? Date.parse(recording.paused_at) : nowMs;
+    const sinceStart = Math.floor((until - Date.parse(recording.started_at)) / 1000);
+    return Math.max(0, sinceStart - (recording.paused_seconds ?? 0));
 }
 
 /** @param {Recent} recording */
@@ -133,7 +145,36 @@ export function recentLabel(recording) {
         parts.push(`${recording.progress.phase}… ${recording.progress.percent}%`);
     else if (recording.transcribe === 'queued' || recording.transcribe === 'running')
         parts.push('transcribing…');
+    else if (recording.transcribe === 'failed' || recording.transcribe === 'cancelled')
+        parts.push(`transcription ${recording.transcribe}`);
     return parts.join(' · ');
+}
+
+/**
+ * What the menu offers for its transcription: to cancel one that is queued or running, to
+ * transcribe again after one that failed or was cancelled, else nothing.
+ * @param {Recent} recording
+ * @returns {Control | null}
+ */
+export function transcriptionControl(recording) {
+    switch (recording.transcribe) {
+    case 'queued':
+    case 'running':
+        return {
+            label: 'Cancel transcription',
+            args: ['transcribe', '--cancel', recording.id],
+            failureTitle: "Couldn't cancel the transcription",
+        };
+    case 'failed':
+    case 'cancelled':
+        return {
+            label: 'Transcribe again',
+            args: ['transcribe', recording.id],
+            failureTitle: "Couldn't start transcribing",
+        };
+    default:
+        return null;
+    }
 }
 
 /** @param {Recent} recording */

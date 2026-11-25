@@ -111,14 +111,15 @@ jobs:
 
       # The window's tests run it on Ubuntu's own PyGObject, GTK and libadwaita, on an Xvfb
       # display and a session bus of their own (tests/conftest.py); the calendar's tests read
-      # libical events through Evolution Data Server's typelibs.
-      - name: Install GTK, libadwaita, Evolution Data Server's typelibs, PyGObject and Xvfb
+      # libical events through Evolution Data Server's typelibs; the recorder's run its pipeline
+      # on GStreamer, with a test source.
+      - name: Install GTK, libadwaita, Evolution Data Server's typelibs, GStreamer, PyGObject and Xvfb
         run: |
           sudo apt-get update -q
           sudo apt-get install -y -q --no-install-recommends \
             -o Acquire::http::Timeout=30 -o Acquire::Retries=3 \
             python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 gir1.2-ecal-2.0 gir1.2-edataserver-1.2 \
-            xvfb dbus-daemon
+            gir1.2-gstreamer-1.0 gstreamer1.0-plugins-base xvfb dbus-daemon
 
       - name: pytest (coverage gate)
         env:

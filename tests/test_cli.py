@@ -1,3 +1,4 @@
+import fcntl
 import io
 import json
 import os
@@ -61,6 +62,10 @@ class FakeRecorder:
         self.on_failed_start: Callable[[Path], None] = lambda _: None
         self.started: list[tuple[Path, list[str]]] = []
         self.stops = 0
+        self.pauses = 0
+        self.resumes = 0
+        # What the unit runs once its recorder has stopped.
+        self.on_stop: Callable[[], object] = lambda: None
 
     def start(self, folder: Path, *, on_exit: list[str]) -> None:
         if self.error is not None:
@@ -75,6 +80,18 @@ class FakeRecorder:
         if self.error is not None:
             raise self.error
         self.stops += 1
+        self.running = False
+        self.on_stop()
+
+    def pause(self) -> None:
+        if self.error is not None:
+            raise self.error
+        self.pauses += 1
+
+    def resume(self) -> None:
+        if self.error is not None:
+            raise self.error
+        self.resumes += 1
 
 
 @pytest.fixture
@@ -83,6 +100,8 @@ def fake_recorder(monkeypatch: pytest.MonkeyPatch) -> FakeRecorder:
     monkeypatch.setattr(recorder, "start", fake.start)
     monkeypatch.setattr(recorder, "is_running", fake.is_running)
     monkeypatch.setattr(recorder, "stop", fake.stop)
+    monkeypatch.setattr(recorder, "pause", fake.pause)
+    monkeypatch.setattr(recorder, "resume", fake.resume)
     return fake
 
 
@@ -331,6 +350,7 @@ class FakeWorker:
         self.error: worker.WorkerError | None = None
         self.starts = 0
         self.works = 0
+        self.cancelled: list[tuple[str, int]] = []
 
     def ensure_worker(self) -> None:
         self.starts += 1
@@ -340,12 +360,16 @@ class FakeWorker:
     def work(self) -> None:
         self.works += 1
 
+    def cancel(self, recording_id: str, index: int) -> None:
+        self.cancelled.append((recording_id, index))
+
 
 @pytest.fixture
 def fake_worker(monkeypatch: pytest.MonkeyPatch) -> FakeWorker:
     fake = FakeWorker()
     monkeypatch.setattr(worker, "ensure_worker", fake.ensure_worker)
     monkeypatch.setattr(worker, "work", fake.work)
+    monkeypatch.setattr(worker, "cancel", fake.cancel)
     return fake
 
 
@@ -371,6 +395,208 @@ def recent_transcribe() -> list[tuple[object, object]]:
     return [(entry["transcribe"], entry["failed"]) for entry in recent]
 
 
+def recording_in_progress(fake_recorder: FakeRecorder) -> str:
+    fake_recorder.running = True
+    return store.create_recording(START)["id"]
+
+
+def test_record_pause_pauses_the_recorder_and_the_status_says_since_when(
+    fake_recorder: FakeRecorder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recording_id = recording_in_progress(fake_recorder)
+    monkeypatch.setattr(cli, "now", lambda: START + timedelta(seconds=60))
+
+    assert main(["record", "pause"]) == 0
+
+    assert fake_recorder.pauses == 1
+    assert read_status()["recording"] == {
+        "id": recording_id,
+        "started_at": "2026-11-18T13:05:42+00:00",
+        "paused_at": "2026-11-18T13:06:42+00:00",
+    }
+
+
+def test_record_pause_while_paused_refuses(
+    fake_recorder: FakeRecorder, capsys: pytest.CaptureFixture[str]
+) -> None:
+    recording_id = recording_in_progress(fake_recorder)
+    store.mark_paused(recording_id, START + timedelta(seconds=60))
+
+    assert main(["record", "pause"]) == 1
+
+    assert capsys.readouterr().err == "Already paused.\n"
+    assert fake_recorder.pauses == 0
+    assert store.load_recording(recording_id).get("paused_at") == "2026-11-18T13:06:42+00:00"
+
+
+def test_record_pause_reports_a_recorder_that_took_no_signal(
+    fake_recorder: FakeRecorder, capsys: pytest.CaptureFixture[str]
+) -> None:
+    recording_id = recording_in_progress(fake_recorder)
+    fake_recorder.error = recorder.RecorderError("Failed to kill unit")
+
+    assert main(["record", "pause"]) == 1
+
+    assert capsys.readouterr().err == "Could not pause the recorder: Failed to kill unit\n"
+    assert "paused_at" not in store.load_recording(recording_id)
+
+
+def test_record_resume_resumes_the_recorder_and_the_status_says_how_long_it_was_paused(
+    fake_recorder: FakeRecorder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recording_id = recording_in_progress(fake_recorder)
+    store.mark_paused(recording_id, START + timedelta(seconds=60))
+    monkeypatch.setattr(cli, "now", lambda: START + timedelta(seconds=90))
+
+    assert main(["record", "resume"]) == 0
+
+    assert fake_recorder.resumes == 1
+    assert read_status()["recording"] == {
+        "id": recording_id,
+        "started_at": "2026-11-18T13:05:42+00:00",
+        "paused_seconds": 30,
+    }
+
+
+def test_record_resume_while_recording_refuses(
+    fake_recorder: FakeRecorder, capsys: pytest.CaptureFixture[str]
+) -> None:
+    recording_id = recording_in_progress(fake_recorder)
+
+    assert main(["record", "resume"]) == 1
+
+    assert capsys.readouterr().err == "Not paused.\n"
+    assert fake_recorder.resumes == 0
+    assert "paused_seconds" not in store.load_recording(recording_id)
+
+
+def test_record_resume_reports_a_recorder_that_took_no_signal(
+    fake_recorder: FakeRecorder, capsys: pytest.CaptureFixture[str]
+) -> None:
+    recording_id = recording_in_progress(fake_recorder)
+    store.mark_paused(recording_id, START + timedelta(seconds=60))
+    fake_recorder.error = recorder.RecorderError("Failed to kill unit")
+
+    assert main(["record", "resume"]) == 1
+
+    assert capsys.readouterr().err == "Could not resume the recorder: Failed to kill unit\n"
+    assert store.load_recording(recording_id).get("paused_at") == "2026-11-18T13:06:42+00:00"
+
+
+@pytest.mark.usefixtures("fake_recorder")
+@pytest.mark.parametrize("command", ["pause", "resume", "discard"])
+def test_with_nothing_recording_the_recording_controls_refuse_and_close_an_abandoned_one(
+    capsys: pytest.CaptureFixture[str], command: str
+) -> None:
+    abandoned_id = abandoned_recording()
+
+    assert main(["record", command]) == 1
+
+    assert capsys.readouterr().err == "Nothing is recording.\n"
+    assert store.load_recording(abandoned_id)["incomplete"] is True
+    assert read_status()["recording"] is None
+
+
+def store_lock_held() -> bool:
+    with (store.data_dir() / "store.lock").open("a") as file:
+        try:
+            fcntl.flock(file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+    return False
+
+
+class FakeTrash:
+    """Stands in for the desktop's Trash: GLib reads XDG_DATA_HOME once, before any test sets
+    it, so a real trash would land in the real one."""
+
+    def __init__(self, into: Path) -> None:
+        self.into = into
+        self.error: Exception | None = None
+        # Each folder moved to the Trash, and whether the store lock was held meanwhile.
+        self.trashed: list[tuple[str, bool]] = []
+
+    def trash(self, folder: Path) -> bool:
+        self.trashed.append((str(folder), store_lock_held()))
+        if self.error is not None:
+            raise self.error
+        self.into.mkdir()
+        folder.rename(self.into / folder.name)
+        return True
+
+
+@pytest.fixture
+def fake_trash(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FakeTrash:
+    # Ubuntu builds its PyGObject for its own Python alone.
+    pytest.importorskip("gi", exc_type=ImportError)
+    from gi.repository import Gio  # noqa: PLC0415
+
+    fake = FakeTrash(tmp_path / "Trash")
+    # A function, which the file it is called on binds to, as it does Gio's own.
+    monkeypatch.setattr(
+        Gio.File, "trash", lambda file, _cancellable: fake.trash(Path(file.get_path()))
+    )
+    return fake
+
+
+def test_record_discard_stops_the_recorder_and_moves_the_recording_to_the_trash(
+    fake_recorder: FakeRecorder,
+    fake_worker: FakeWorker,
+    fake_calendar: FakeCalendar,
+    fake_trash: FakeTrash,
+) -> None:
+    recording_id = with_audio(recording_in_progress(fake_recorder))
+    folder = store.recording_dir(recording_id)
+    store.write_status()
+    fake_recorder.on_stop = lambda: main(["record", "stopped", recording_id])
+
+    assert main(["record", "discard"]) == 0
+
+    assert fake_recorder.stops == 1
+    assert fake_trash.trashed == [(str(folder), True)]
+    assert (fake_trash.into / recording_id / "mic.opus").read_bytes() == b"OggS"
+    # Nothing looked for its meeting, and nothing will transcribe it.
+    assert fake_calendar.asked == []
+    assert fake_worker.starts == 0
+    assert json.loads((fake_trash.into / recording_id / "runs.json").read_text()) == []
+    assert read_status() == {"version": 1, "recording": None, "recent": []}
+
+
+def test_record_discard_keeps_a_recording_the_trash_refused_and_says_why(
+    fake_recorder: FakeRecorder, fake_trash: FakeTrash, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from gi.repository import GLib  # noqa: PLC0415 - the fixture skipped the test without it
+
+    recording_id = with_audio(recording_in_progress(fake_recorder))
+    fake_recorder.on_stop = lambda: main(["record", "stopped", recording_id])
+    fake_trash.error = GLib.Error("Unable to find or create trash directory")
+
+    assert main(["record", "discard"]) == 1
+
+    assert capsys.readouterr().err == (
+        "Stopped recording, but could not move it to the Trash: "
+        "Unable to find or create trash directory\n"
+    )
+    assert (store.recording_dir(recording_id) / "mic.opus").read_bytes() == b"OggS"
+    assert store.load_runs(recording_id) == []
+    recent = read_status()["recent"]
+    assert isinstance(recent, list)
+    assert [(entry["id"], entry["transcribe"]) for entry in recent] == [(recording_id, None)]
+
+
+def test_record_discard_reports_a_failed_stop_and_trashes_nothing(
+    fake_recorder: FakeRecorder, fake_trash: FakeTrash, capsys: pytest.CaptureFixture[str]
+) -> None:
+    recording_id = with_audio(recording_in_progress(fake_recorder))
+    fake_recorder.error = recorder.RecorderError("Job failed")
+
+    assert main(["record", "discard"]) == 1
+
+    assert capsys.readouterr().err == "Could not stop the recorder: Job failed\n"
+    assert fake_trash.trashed == []
+    assert store.is_recording(recording_id)
+
+
 @pytest.mark.parametrize("service_result", ["success", "signal"])
 def test_record_stopped_queues_a_transcription_of_what_was_captured(
     fake_worker: FakeWorker, monkeypatch: pytest.MonkeyPatch, service_result: str
@@ -384,6 +610,22 @@ def test_record_stopped_queues_a_transcription_of_what_was_captured(
     assert store.load_runs(recording_id) == [queued("2026-11-18T13:07:12+00:00")]
     assert fake_worker.starts == 1
     assert recent_transcribe() == [("queued", [])]
+
+
+def test_record_stopped_looks_up_and_queues_nothing_for_a_discarded_recording(
+    fake_worker: FakeWorker, fake_calendar: FakeCalendar, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recording_id = with_audio(store.create_recording(START)["id"])
+    store.mark_discarded(recording_id)
+    monkeypatch.setenv("SERVICE_RESULT", "success")
+    monkeypatch.setattr(cli, "now", lambda: START + timedelta(seconds=90))
+
+    assert main(["record", "stopped", recording_id]) == 0
+
+    assert store.load_recording(recording_id)["stopped_at"] == "2026-11-18T13:07:12+00:00"
+    assert store.load_runs(recording_id) == []
+    assert fake_worker.starts == 0
+    assert fake_calendar.asked == []
 
 
 def test_record_stopped_queues_nothing_for_a_recording_without_audio(
@@ -529,6 +771,48 @@ def test_transcribe_refuses_a_recording_whose_tracks_are_gone(
     assert capsys.readouterr().err == f"The tracks of {recording_id} are gone.\n"
     assert store.load_runs(recording_id) == []
     assert fake_worker.starts == 0
+
+
+@pytest.mark.parametrize("status", ["queued", "running"])
+def test_transcribe_cancel_cancels_the_latest_transcription_in_progress(
+    fake_worker: FakeWorker, status: str
+) -> None:
+    recording_id = with_audio(store.create_recording(START)["id"])
+    earlier = {**queued("2026-11-18T13:07:12+00:00"), "status": "failed"}
+    latest = {**queued("2026-11-18T14:05:42+00:00"), "status": status}
+    store.write_json(store.recording_dir(recording_id) / "runs.json", [earlier, latest])
+
+    assert main(["transcribe", "--cancel", recording_id]) == 0
+
+    assert fake_worker.cancelled == [(recording_id, 1)]
+    assert fake_worker.starts == 0
+
+
+@pytest.mark.parametrize("statuses", [[], ["succeeded"], ["queued", "cancelled"]])
+def test_transcribe_cancel_refuses_when_the_latest_transcription_is_not_in_progress(
+    fake_worker: FakeWorker, capsys: pytest.CaptureFixture[str], statuses: list[str]
+) -> None:
+    recording_id = with_audio(store.create_recording(START)["id"])
+    runs = [{**queued("2026-11-18T13:07:12+00:00"), "status": status} for status in statuses]
+    # Another action's run in progress is not a transcription.
+    runs.append({**queued("2026-11-18T15:05:42+00:00"), "action": "summarize", "status": "running"})
+    store.write_json(store.recording_dir(recording_id) / "runs.json", runs)
+
+    assert main(["transcribe", "--cancel", recording_id]) == 1
+
+    assert capsys.readouterr().err == (
+        f"No transcription of {recording_id} is queued or running.\n"
+    )
+    assert fake_worker.cancelled == []
+
+
+def test_transcribe_cancel_refuses_an_unknown_recording(
+    fake_worker: FakeWorker, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["transcribe", "--cancel", "2026-11-18T13-05-43"]) == 1
+
+    assert capsys.readouterr().err == "No recording 2026-11-18T13-05-43.\n"
+    assert fake_worker.cancelled == []
 
 
 def test_transcribe_reports_a_worker_that_will_not_start(

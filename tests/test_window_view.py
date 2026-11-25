@@ -177,6 +177,14 @@ def test_a_recording_in_progress_offers_nothing_but_its_name() -> None:
             [],
             "2026-11-18 23:59 · 1 min",
         ),
+        # A recording lasts as long as it was not paused.
+        ({"paused_seconds": 600}, [], "2026-11-18 13:05 · 20 min"),
+        (
+            {"stopped_at": None, "paused_at": "2026-11-18T13:20:00+01:00"},
+            [],
+            "2026-11-18 13:05 · Recording · Paused",
+        ),
+        ({"stopped_at": None, "paused_seconds": 600}, [], "2026-11-18 13:05 · Recording"),
     ],
 )
 def test_the_subtitle_says_when_how_long_and_what_is_going_on(

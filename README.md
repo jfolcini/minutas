@@ -11,8 +11,8 @@ Minutas records your work meetings on GNOME, transcribes them with who said what
 
 ## What it does
 
-- **Records from the top bar.** Record and Stop in a GNOME top-bar menu, with a timer while it records and a reminder to tell the others you are recording. Your microphone and the computer's audio are kept as two tracks, so "me" versus "them" needs no guessing. Recording carries on through the lock screen, and if anything stops it early, what was captured is kept.
-- **Transcribes on its own, on your computer.** When you press Stop, [Parakeet](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3) writes the transcript and [pyannote](https://huggingface.co/pyannote/speaker-diarization-community-1) tells the people on the call apart, while the window shows how far it has got. It is built for Spanish and English, often in the same meeting, and runs on the CPU at idle priority, so a call you record meanwhile keeps the machine.
+- **Records from the top bar.** Record, Pause, Finish and Discard in a GNOME top-bar menu, with a timer while it records and a reminder to tell the others you are recording. Your microphone and the computer's audio are kept as two tracks, so "me" versus "them" needs no guessing. Recording carries on through the lock screen, and if anything stops it early, what was captured is kept.
+- **Transcribes on its own, on your computer.** When you press Finish, [Parakeet](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3) writes the transcript and [pyannote](https://huggingface.co/pyannote/speaker-diarization-community-1) tells the people on the call apart, while the window shows how far it has got. It is built for Spanish and English, often in the same meeting, and runs on the CPU at idle priority, so a call you record meanwhile keeps the machine.
 - **Knows the meeting.** The event in your GNOME calendar names the recording and offers its attendees as names for the speakers; a vocabulary of your own names, products and jargon helps the transcriber spell them.
 - **Summarizes on demand.** Summarize asks the [Devin CLI](https://docs.devin.ai/cli/reference/commands) or [Claude Code](https://code.claude.com/docs/en/cli-reference), whichever you choose, for a summary in English: General, Standup, 1:1, Stakeholder call, or a prompt you type and can save.
 - **Publishes with one button each.** Publish to Agaric files a meeting page with the audio, transcript and summary. Publish to GitLab and Publish to GitHub comment on an issue, or open one, with the summary and a link to the transcript. Every run is kept with its result and a button that opens what it made.
@@ -79,7 +79,7 @@ Then it checks for the optional tools, installs none of them, and says what each
   <img src="docs/screenshots/transcribing.png" width="49%" alt="A recording being transcribed: the recording's row and the Transcribe action both say Transcribing · 62%, with a progress bar and Cancel">
 </p>
 
-1. **Record.** Open the microphone menu in the top bar and choose Record. A notification reminds you to tell the participants. Choose Stop when the meeting ends.
+1. **Record.** Open the microphone menu in the top bar and choose Record. A notification reminds you to tell the participants. Choose Finish when the meeting ends.
 2. **Wait for the transcript.** Transcription starts on its own. The top-bar menu and the Recordings window show how far it has got, and a notification says when the transcript is ready: click it, or the recording in the menu, to open it in the Recordings window.
 3. **Name the speakers.** Expand the recording: the call's speakers are listed as Speaker 1, Speaker 2… in the order they first speak. Name each one with its Name menu, from the meeting's attendees or a name you type, and the transcript is written again with the names. "Me" is always the microphone track.
 4. **Summarize.** Pick a preset from the Summarize menu, or Custom… to type what the summary should cover.

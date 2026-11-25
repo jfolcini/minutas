@@ -246,6 +246,9 @@ def test_set_typed_name_fails_for_a_recording_that_is_gone() -> None:
         lambda: store.write_transcript("2026-11-18T13-05-42"),
         lambda: store.set_speaker_name("2026-11-18T13-05-42", "Speaker 1", "Ana Díaz"),
         lambda: store.set_summary_name("2026-11-18T13-05-42", "Release plan"),
+        lambda: store.mark_paused("2026-11-18T13-05-42", START),
+        lambda: store.mark_resumed("2026-11-18T13-05-42", START),
+        lambda: store.mark_discarded("2026-11-18T13-05-42"),
     ],
 )
 def test_a_recording_is_read_and_rewritten_inside_the_store_lock(
@@ -401,6 +404,118 @@ def test_close_abandoned_leaves_stopped_recordings_alone() -> None:
     assert recording["incomplete"] is False
 
 
+def test_a_pause_lasts_until_the_recording_is_resumed() -> None:
+    recording_id = store.create_recording(START)["id"]
+
+    store.mark_paused(recording_id, START + timedelta(seconds=60))
+
+    assert store.load_recording(recording_id).get("paused_at") == "2026-11-18T13:06:42+00:00"
+
+    store.mark_resumed(recording_id, START + timedelta(seconds=90))
+    store.mark_paused(recording_id, START + timedelta(seconds=120))
+    store.mark_resumed(recording_id, START + timedelta(seconds=125))
+
+    recording = store.load_recording(recording_id)
+    assert recording.get("paused_seconds") == 35
+    assert "paused_at" not in recording
+
+
+def test_a_recording_stopped_while_paused_was_paused_until_it_stopped() -> None:
+    recording_id = store.create_recording(START)["id"]
+    store.mark_paused(recording_id, START + timedelta(seconds=60))
+
+    store.mark_stopped(recording_id, START + timedelta(seconds=100), incomplete=False)
+
+    recording = store.load_recording(recording_id)
+    assert recording.get("paused_seconds") == 40
+    assert "paused_at" not in recording
+    assert store.duration_seconds(recording) == 60
+
+
+def test_a_recording_never_paused_keeps_no_pause() -> None:
+    recording = store.load_recording(make_stopped(START, seconds=90))
+
+    assert "paused_seconds" not in recording
+    assert store.duration_seconds(recording) == 90
+
+
+def test_a_recording_in_progress_has_no_duration_yet() -> None:
+    assert store.duration_seconds(store.create_recording(START)) == 0
+
+
+@given(
+    spans=st.lists(
+        st.tuples(
+            st.integers(min_value=0, max_value=7200), st.integers(min_value=0, max_value=7200)
+        ),
+        max_size=6,
+    ),
+    last=st.integers(min_value=0, max_value=7200),
+)
+def test_a_recording_lasts_as_long_as_it_was_not_paused(
+    spans: list[tuple[int, int]], last: int
+) -> None:
+    recording = default_recording()
+    clock = START
+    for recorded, paused in spans:
+        clock += timedelta(seconds=recorded)
+        recording["paused_at"] = clock.isoformat()
+        clock += timedelta(seconds=paused)
+        store.end_pause(recording, clock)
+    recording["stopped_at"] = (clock + timedelta(seconds=last)).isoformat()
+
+    assert store.duration_seconds(recording) == sum(recorded for recorded, _ in spans) + last
+    assert recording.get("paused_seconds", 0) == sum(paused for _, paused in spans)
+
+
+def test_mark_discarded_says_so_and_changes_nothing_else() -> None:
+    created = store.create_recording(START)
+
+    store.mark_discarded(created["id"])
+
+    assert store.load_recording(created["id"]) == {**created, "discarded": True}
+
+
+def test_close_abandoned_on_a_paused_recording_stops_at_the_last_audio_written() -> None:
+    recording_id = store.create_recording(START)["id"]
+    store.mark_paused(recording_id, START + timedelta(seconds=20))
+    store.mark_resumed(recording_id, START + timedelta(seconds=50))
+    track = store.recording_dir(recording_id) / "mic.opus"
+    track.write_bytes(b"OggS")
+    written = (START + timedelta(seconds=118)).timestamp()
+    os.utime(track, (written, written))
+    store.mark_paused(recording_id, START + timedelta(seconds=120))
+
+    store.close_abandoned()
+
+    recording = store.load_recording(recording_id)
+    assert (recording["stopped_at"], recording["incomplete"]) == ("2026-11-18T13:07:40+00:00", True)
+    # The pause it was in began after its audio ends: only the first one counts.
+    assert recording.get("paused_seconds") == 30
+    assert store.duration_seconds(recording) == 88
+    assert track.read_bytes() == b"OggS"
+
+
+def test_a_recording_abandoned_with_no_audio_since_before_its_pauses_lasted_no_time() -> None:
+    recording_id = store.create_recording(START)["id"]
+    track = store.recording_dir(recording_id) / "mic.opus"
+    track.write_bytes(b"OggS")
+    written = (START + timedelta(seconds=9)).timestamp()
+    os.utime(track, (written, written))
+    store.mark_paused(recording_id, START + timedelta(seconds=10))
+    store.mark_resumed(recording_id, START + timedelta(seconds=20))
+    store.mark_paused(recording_id, START + timedelta(seconds=21))
+
+    store.close_abandoned()
+
+    recording = store.load_recording(recording_id)
+    assert (recording["stopped_at"], recording.get("paused_seconds")) == (
+        "2026-11-18T13:05:51+00:00",
+        10,
+    )
+    assert store.duration_seconds(recording) == 0
+
+
 def test_status_with_nothing_recorded() -> None:
     store.write_status()
 
@@ -452,6 +567,34 @@ def test_status_lists_as_many_stopped_as_the_settings_say(count: int) -> None:
     assert isinstance(recent, list)
     newest = ["2026-11-18T16-05-42", "2026-11-18T15-05-42", "2026-11-18T14-05-42"]
     assert [entry["id"] for entry in recent] == newest[:count]
+
+
+def test_status_says_the_active_recording_is_paused_and_for_how_long_it_was() -> None:
+    recording_id = store.create_recording(START)["id"]
+    store.mark_paused(recording_id, START + timedelta(seconds=60))
+
+    store.write_status()
+
+    active = {"id": "2026-11-18T13-05-42", "started_at": "2026-11-18T13:05:42+00:00"}
+    assert read_status()["recording"] == {**active, "paused_at": "2026-11-18T13:06:42+00:00"}
+
+    store.mark_resumed(recording_id, START + timedelta(seconds=90))
+    store.write_status()
+
+    assert read_status()["recording"] == {**active, "paused_seconds": 30}
+
+
+def test_status_leaves_the_pauses_out_of_a_recordings_duration() -> None:
+    recording_id = store.create_recording(START)["id"]
+    store.mark_paused(recording_id, START + timedelta(seconds=60))
+    store.mark_resumed(recording_id, START + timedelta(seconds=90))
+    store.mark_stopped(recording_id, START + timedelta(seconds=100), incomplete=False)
+
+    store.write_status()
+
+    recent = read_status()["recent"]
+    assert isinstance(recent, list)
+    assert recent[0]["duration_seconds"] == 70
 
 
 def test_status_shows_an_incomplete_recording() -> None:

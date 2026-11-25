@@ -10,9 +10,10 @@ import {
     notificationsFor,
     parseStatus,
     recentLabel,
+    transcriptionControl,
 } from '../status.js';
 
-/** @typedef {import('../status.js').Recording} Recording */
+/** @typedef {import('../status.js').Active} Active */
 /** @typedef {import('../status.js').Recent} Recent */
 
 /** @type {{name: string, fn: () => void}[]} */
@@ -47,7 +48,7 @@ const entry = (fields = {}) => ({
 const SPEAKERS = {phase: 'identifying speakers', percent: 40};
 
 const ACTIVE = {id: '2026-11-18T13-05-42', started_at: '2026-11-18T13:05:42+01:00'};
-/** @type {(recording: Recording | null, recent: Recent[]) => import('../status.js').Status} */
+/** @type {(recording: Active | null, recent: Recent[]) => import('../status.js').Status} */
 const status = (recording, recent) => ({recording, recent});
 
 test('parseStatus reads the contract example', () => {
@@ -83,6 +84,26 @@ test('parseStatus rejects a progress that is not a phase and a whole percent', (
         return parseStatus(text);
     });
     assertEqual(rejected, [null, null, null, null, null, null, null]);
+});
+
+test('parseStatus reads a recording that is paused, and one that was', () => {
+    const paused = {...ACTIVE, paused_at: '2026-11-18T13:06:42+01:00'};
+    const resumed = {...ACTIVE, paused_seconds: 30};
+    assertEqual(
+        [paused, resumed].map(recording => parseStatus(JSON.stringify({version: 1, recording, recent: []}))),
+        [status(paused, []), status(resumed, [])]
+    );
+});
+
+test('parseStatus rejects a pause that is not a time, or not whole seconds', () => {
+    const rejected = [
+        {paused_at: 'yesterday'},
+        {paused_at: null},
+        {paused_seconds: -1},
+        {paused_seconds: 1.5},
+        {paused_seconds: '30'},
+    ].map(pause => parseStatus(JSON.stringify({version: 1, recording: {...ACTIVE, ...pause}, recent: []})));
+    assertEqual(rejected, [null, null, null, null, null]);
 });
 
 test('parseStatus rejects a half-written file', () => {
@@ -171,11 +192,23 @@ test('formatClock shows minutes and seconds, and hours once there are any', () =
 });
 
 test('elapsedSeconds counts from a start time with a UTC offset', () => {
-    assertEqual(elapsedSeconds(ACTIVE.started_at, Date.parse('2026-11-18T12:06:47Z')), 65);
+    assertEqual(elapsedSeconds(ACTIVE, Date.parse('2026-11-18T12:06:47Z')), 65);
 });
 
 test('elapsedSeconds never goes below zero when the clock is behind', () => {
-    assertEqual(elapsedSeconds(ACTIVE.started_at, Date.parse('2026-11-18T12:00:00Z')), 0);
+    assertEqual(elapsedSeconds(ACTIVE, Date.parse('2026-11-18T12:00:00Z')), 0);
+});
+
+test('elapsedSeconds leaves out the time a recording was paused', () => {
+    assertEqual(elapsedSeconds({...ACTIVE, paused_seconds: 30}, Date.parse('2026-11-18T12:06:47Z')), 35);
+});
+
+test('elapsedSeconds stands still while a recording is paused', () => {
+    const paused = {...ACTIVE, paused_seconds: 30, paused_at: '2026-11-18T13:06:42+01:00'};
+    assertEqual(
+        [elapsedSeconds(paused, Date.parse('2026-11-18T12:06:47Z')), elapsedSeconds(paused, Date.parse('2026-11-18T13:00:00Z'))],
+        [30, 30]
+    );
 });
 
 test('recentLabel shows the name, local start and duration', () => {
@@ -193,6 +226,44 @@ test('recentLabel says how far a running transcription has got', () => {
     assertEqual(
         recentLabel(entry({transcribe: 'running', progress: SPEAKERS})),
         'Meeting · 2026-11-18 12:00 · 30:34 · identifying speakers… 40%'
+    );
+});
+
+test('recentLabel says a transcription failed or was cancelled', () => {
+    assertEqual(
+        [recentLabel(entry({transcribe: 'failed', failed: ['transcribe']})), recentLabel(entry({transcribe: 'cancelled'}))],
+        ['Meeting · 2026-11-18 12:00 · 30:34 · transcription failed', 'Meeting · 2026-11-18 12:00 · 30:34 · transcription cancelled']
+    );
+});
+
+test('transcriptionControl cancels a transcription that is queued or running', () => {
+    const cancel = {
+        label: 'Cancel transcription',
+        args: ['transcribe', '--cancel', '2026-11-18T12-00-03'],
+        failureTitle: "Couldn't cancel the transcription",
+    };
+    assertEqual(
+        [transcriptionControl(entry({transcribe: 'queued'})), transcriptionControl(entry({transcribe: 'running'}))],
+        [cancel, cancel]
+    );
+});
+
+test('transcriptionControl transcribes again after a transcription failed or was cancelled', () => {
+    const again = {
+        label: 'Transcribe again',
+        args: ['transcribe', '2026-11-18T12-00-03'],
+        failureTitle: "Couldn't start transcribing",
+    };
+    assertEqual(
+        [transcriptionControl(entry({transcribe: 'failed'})), transcriptionControl(entry({transcribe: 'cancelled'}))],
+        [again, again]
+    );
+});
+
+test('transcriptionControl offers nothing once transcribed, or before any transcription', () => {
+    assertEqual(
+        [transcriptionControl(entry()), transcriptionControl(entry({transcribe: null}))],
+        [null, null]
     );
 });
 

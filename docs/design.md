@@ -28,7 +28,7 @@ The stack is settled: Python, Parakeet v3, pyannote community-1, two recorded tr
 | Consent | Pressing Record shows a GNOME notification: "Tell participants you're recording" | A nudge at the moment it matters; the audio may reach GitLab |
 | Automation | Only transcription runs on stop; Summarize, Publish to Agaric, Publish to GitLab and Publish to GitHub are buttons per recording | Nothing leaves the machine until I press a button |
 | Failures | Every run ends succeeded, failed or cancelled; a failed run shows why and the fix, with a Retry button; nothing retries on its own | A blind retry can post twice or hide a real problem |
-| Interface | Top-bar menu (record, stop, recent recordings, Recordings, Settings) plus a Recordings window, with the Settings in a dialog over it | The window runs outside GNOME Shell, so a bug can't freeze the desktop |
+| Interface | Top-bar menu (record, pause, finish, discard, recent recordings, Recordings, Settings) plus a Recordings window, with the Settings in a dialog over it | The window runs outside GNOME Shell, so a bug can't freeze the desktop |
 | Calendar | Nextcloud through GNOME Online Accounts and Evolution Data Server | GNOME holds the login and expands repeating meetings |
 | Summary | The Devin CLI (`devin -p`) or Claude Code (`claude -p`), chosen in Settings, Devin until one is; always written in English, saved as `summary.md`; the model and its effort are Minutas settings, Devin's chosen from what `devin models list` offers and Claude Code's from its model aliases and effort levels, unset meaning the summarizer's own default; so is the skill the summary follows, a Markdown file, unset meaning the built-in meeting-notes one | The account the summarizer uses, Devin's or Claude Code's ([#70](https://github.com/jfolcini/minutas/issues/70)), must be one cleared for meeting content; one language for every summary; the summarizer runs without my own config for it, so the model and the skill are set in Minutas |
 | Summary prompts | Built-in presets General, Standup, 1:1 and Stakeholder call, which can't be deleted; Custom is typed at run time and savable as a preset; saved presets can be deleted. Context presets, Markdown files of my own (a glossary, a project's background, references pasted in), made, opened and deleted in the Settings and ticked in the Summarize menu, go with every summary until unticked, as trusted text ahead of the transcript | One click for regular meetings, free text for the rest; what every summary should know is written once, and handed over as text, since the summarizer reads nothing but its prompt |
@@ -49,7 +49,7 @@ The stack is settled: Python, Parakeet v3, pyannote community-1, two recorded tr
 
 ```mermaid
 flowchart TD
-    ext["GNOME extension<br/>record · stop · history"]
+    ext["GNOME extension<br/>record · pause · finish · discard · history"]
     rec["Recorder (systemd-run --user)<br/>mic and computer audio as two tracks"]
     mic["Mic track<br/>always me"]
     calltrack["Call track<br/>everyone else"]
@@ -65,7 +65,7 @@ flowchart TD
     github["Publish to GitHub<br/>gh: transcript to a secret gist, then comment or new issue<br/>→ issue or comment link"]
 
     ext --> rec
-    ext -- at stop --> cal
+    ext -- at finish --> cal
     rec --> mic
     rec --> calltrack
     mic --> vad
@@ -116,14 +116,14 @@ The transcript is one paragraph per segment; Agaric makes each timestamp seek th
 
 ## Components
 
-One Python program does the work and draws the Recordings window; the GNOME extension only starts and stops recording, lists recent recordings and opens the window.
+One Python program does the work and draws the Recordings window; the GNOME extension only runs its commands, to record and to cancel or repeat a transcription, lists recent recordings and opens the window.
 
 | Component | Job | Main library |
 | --- | --- | --- |
-| GNOME extension | Top-bar menu: record and stop with a timer, the last recordings (as many as the Settings say) with a warning mark on any failed run and how far a running transcription has got, Recordings and Settings; notifications on Record ("Tell participants you're recording"), when a transcript is ready, and when a run fails. While no `minutas` command is on the PATH or in `~/.local/bin`, checked each time the menu opens, the menu holds only Install Minutas…, which opens the README's install section, as does the "Minutas isn't installed" notification | GJS, GNOME Shell 46+ |
+| GNOME extension | Top-bar menu: Record; while recording, Pause or Resume, Finish and Discard…, with a timer that leaves the pauses out, on a red pill while it records and an orange one with a pause icon while it is paused. Finish acts at once, since it loses nothing; Discard… asks first, in a Shell dialog where Escape, Cancel and Enter leave the recording going. Then the last recordings (as many as the Settings say) with a warning mark on any failed run and how far a running transcription has got, and under each, Cancel transcription while its transcription is queued or running, or Transcribe again once it failed or was cancelled; Recordings and Settings; notifications on Record ("Tell participants you're recording"), when a transcript is ready, and when a run fails. While no `minutas` command is on the PATH or in `~/.local/bin`, checked each time the menu opens, the menu holds only Install Minutas…, which opens the README's install section, as does the "Minutas isn't installed" notification | GJS, GNOME Shell 46+ |
 | Recordings window | Every recording with its name, speakers, actions and their runs (status, error, Retry, Cancel, output link) and its audio files, and Rename and Move to Trash; a search over them; the Settings, a dialog over it | GTK 4 and libadwaita through PyGObject |
 | Player and file buttons | Play, Save a copy, Open folder and Delete now for the recording's two tracks | GTK 4 `MediaFile` and `MediaControls`, `FileDialog`, `FileLauncher` |
-| Recorder | Mic and computer audio as two Opus tracks; survives the lock screen and a Shell restart; if it dies, what was captured is kept; a setting records the echo-cancelled mic instead | `systemd-run --user`, GStreamer or `pw-record`, PipeWire |
+| Recorder | Mic and computer audio as two Opus tracks; survives the lock screen and a Shell restart; if it dies, what was captured is kept; a setting records the echo-cancelled mic instead. Its unit runs the pipeline in a small program of Minutas's own, on Ubuntu's Python: a signal pauses the pipeline and another resumes it, so a pause captures nothing and leaves no gap in the tracks, which pause together and so stay aligned; SIGINT, which the unit is stopped with, ends both files properly, paused or not | `systemd-run --user`, GStreamer through PyGObject or `pw-record`, PipeWire |
 | Store | One folder per recording: the two Opus tracks, transcript, summary, the name and where it came from, the speakers' names, and a JSON log of every run with its status, error and output link | Python standard library |
 | Calendar lookup | The event overlapping the recording: name, date, attendee names | PyGObject `ECal` and `EDataServer` |
 | Page name | Picks the name: one typed in the Recordings window, else the calendar event's, else the summary's proposal, else "Meeting" | Python standard library |
@@ -144,7 +144,12 @@ The extension holds no state of its own: it runs the commands below and watches 
 | Command | Does |
 | --- | --- |
 | `minutas record start` | Starts the recorder unit, waits until both tracks receive audio, and prints `{"id": …, "started_at": …}`; exits 1 with the reason on stderr when already recording or no audio arrives |
-| `minutas record stop` | Stops the recorder; exits 1 when nothing is recording |
+| `minutas record pause` | Pauses the recorder: nothing is captured until it is resumed, and the recording stays open; exits 1 when nothing is recording or it is already paused |
+| `minutas record resume` | Resumes a paused recorder; exits 1 when nothing is recording or it is not paused |
+| `minutas record stop` | Finishes the recording, paused or not: stops the recorder, which looks up the calendar event and queues the transcription; exits 1 when nothing is recording |
+| `minutas record discard` | Stops the recorder without the calendar lookup or a transcription, then moves the recording's folder to the desktop's Trash, as Move to Trash does; exits 1 when nothing is recording, or with the reason when the Trash refuses, which leaves the recording stopped and not transcribed, never deleted |
+| `minutas transcribe <id>` | Queues a transcription of the recording; exits 1 when its tracks are gone |
+| `minutas transcribe --cancel <id>` | Cancels the recording's latest transcription; exits 1 when that one is neither queued nor running |
 | `minutas repair` | Marks a recording whose recorder is gone stopped and incomplete, and starts the transcription worker, which fails a run left running as interrupted and takes the queued ones; leaves a running recorder and a running worker alone; exits 1 when the worker won't start. The extension runs it each time it is enabled: at login, and after unlocking |
 | `minutas history [--recording <id>]` | Opens the Recordings window, on that recording when one is given; with the window already open, brings it forward and shows that recording |
 | `minutas settings` | Opens the Recordings window with the Settings over it |
@@ -164,7 +169,8 @@ The program rewrites `DATA/status.json` atomically after every change, and the e
 ```
 
 - `recording` is the active recording, or `null`; `recent` holds the last others, newest first: as many as the Settings' Top-bar menu group says, five unless changed. The extension announces a ready transcript or a failed run only for a recording `recent` holds, so it holds one at least.
-- `incomplete` means the recorder died before Stop; what it captured is kept.
+- A recording that has been paused also says how long: `"paused_seconds": 95`, the whole seconds its ended pauses lasted, and, only while it is paused, `"paused_at"`, when the pause it is in began. Neither is there before the first pause. Its timer shows the time since `started_at` less the pauses, and stands still while it is paused; `duration_seconds` leaves the pauses out too.
+- `incomplete` means the recorder died before Finish; what it captured is kept.
 - `transcribe` is the latest Transcribe run's status, or `null`; `progress` is how far it has got while it runs, its phase and the whole percent of that phase done (`{"phase": "identifying speakers", "percent": 40}`), else `null`; `failed` lists the actions whose latest run failed: `transcribe`, `summarize`, `publish_agaric`, `publish_gitlab`, `publish_github`.
 
 ## Installing and updating
@@ -173,7 +179,7 @@ Minutas lives in a GitHub repository. `install.sh` installs and updates it: it c
 
 | Step | What it puts in place | Skipped when |
 | --- | --- | --- |
-| System packages | `python3-gi`, `gir1.2-gtk-4.0`, `gir1.2-adw-1`, GTK's GStreamer media backend for Play, `gir1.2-ecal-2.0`, `gir1.2-edataserver-1.2`, GStreamer's base and good plugins and `gst-launch-1.0` (Opus, Ogg, and capture through PipeWire's PulseAudio server), `gio`, `secret-tool` and `curl`, through `apt` | All are installed |
+| System packages | `python3-gi`, `gir1.2-gtk-4.0`, `gir1.2-adw-1`, GTK's GStreamer media backend for Play, `gir1.2-ecal-2.0`, `gir1.2-edataserver-1.2`, `gir1.2-gstreamer-1.0` for the recorder, GStreamer's base and good plugins and `gst-launch-1.0` (Opus, Ogg, and capture through PipeWire's PulseAudio server), `gio`, `secret-tool` and `curl`, through `apt` | All are installed |
 | uv | `uv` and `uvx` at the version pinned in the repository, in `~/.local/bin`, from uv's release archive on GitHub, unpacked only once it matches the sha256 pinned beside the version | That version is there |
 | Speech environment | Parakeet through NeMo, pyannote.audio, Silero VAD and CPU-only PyTorch, synced from `uv.lock` into `~/.local/share/minutas/speech` with a uv-managed Python | `uv.lock` didn't change |
 | App | The program in `~/.local/share/minutas/app`, a virtual environment on Ubuntu's Python with its system packages, holding the package and its dependencies from `uv.lock`; the `minutas` command in `~/.local/bin`; a desktop file for the Recordings window | Files are identical |
@@ -190,7 +196,7 @@ Minutas lives in a GitHub repository. `install.sh` installs and updates it: it c
 - **Failures:** a failed step stops the script with what went wrong and what to do; running it again carries on from there.
 - **sudo:** asked only when `apt` actually has something to install, saying that is what it is for. Without a terminal to ask in, as under Update Minutas, the step stops with the `apt` command to run in one; so does the Hugging Face token step.
 - **Updating:** `minutas update` fetches the repository's tags, checks out the latest release tag and re-runs `install.sh`; on the latest tag it says so, and `install.sh` finishes an update that stopped partway or prints `ok` for every step. It updates the clone `install.sh` last ran from, which the App step links at `~/.local/share/minutas/app/repository`; release tags are `v<version>`, and the highest version is the latest. The Recordings window's Update Minutas runs it as a command, with a banner while it runs, its output going to `DATA/update.log` so that closing the window doesn't cut it off; then it says what came of it: already on the latest release; updated, and the window must be closed and opened again to run the new version, and when `install.sh` says so, the session logged out and back in; or failed, with the last line it printed and Details for all of it.
-- **Two Pythons:** the window and the calendar use Ubuntu's Python, for its PyGObject bindings; the speech stack uses its own uv-managed Python, so it works on Ubuntu 24.04 and later whatever Python each release ships.
+- **Two Pythons:** the window, the calendar and the recorder's pipeline use Ubuntu's Python, for its PyGObject bindings; the speech stack uses its own uv-managed Python, so it works on Ubuntu 24.04 and later whatever Python each release ships.
 - **Log out once:** GNOME on Wayland loads a new or changed extension only at the next login, so the script says when that's needed, at the extension step and again at the end.
 - **Tested:** CI runs `install.sh` twice on Ubuntu 24.04, without the models; the second run must print `ok` for every step. `MINUTAS_SKIP_MODELS=1` leaves out the Hugging Face token and model steps there.
 
@@ -209,7 +215,7 @@ The first version supports Devin and Claude Code, GitLab, GitHub and GNOME on Ub
 
 ## Recordings window
 
-Every recording is a row, newest first, with a menu on the line that shows its name: Rename… and Move to Trash…. Expanding it shows its speakers, its audio files and its five actions, each with its last result: an output link, or why it failed and a Retry button.
+Every recording is a row, newest first, with a menu on the line that shows its name: Rename… and Move to Trash…. The one in progress says Recording, and Paused while it is. Expanding it shows its speakers, its audio files and its five actions, each with its last result: an output link, or why it failed and a Retry button.
 
 - **Search:** the header's search button, or Ctrl+F, opens a search bar over the list, and Escape closes it; opening a recording from the top bar closes a search that hides it. The list keeps the recordings with every word typed, whatever its case and accents, in the name, in the line under it, which starts with the date, or in the transcript, speakers' names included; with none, "No recordings match" takes the list's place. A transcript is read at the first search that needs it, and again only once its recording changes: a keystroke reads no file.
 - **Name:** Rename… asks for a name, starting from the current one, and says where that came from (calendar, summary, default or typed); a typed name is kept for good, and the next Publish to Agaric applies it.
@@ -221,14 +227,14 @@ Every recording is a row, newest first, with a menu on the line that shows its n
 - **Publish to GitHub:** enabled once a summary exists; its dialog asks for the link, starting from the recording's last one, else the Settings' default, and says before posting whether it will get a comment or a new issue, and that the transcript goes to a secret gist anyone with its link can read, without the audio. Without `gh` 2.45 or newer on the PATH, it is disabled and says how to install it.
 - **Audio files:** the mic and call tracks, each with Play and Save a copy; Delete now removes both, Open folder opens the recording's folder, and the row says when the age limit will delete them.
 - **Deleting the audio:** asks first; the history entry and its outputs stay. Without the tracks, Run again is disabled, and publishing leaves the audio out and says so.
-- **Move to Trash:** asks first, then moves the whole recording's folder, its audio, transcript, summary and run history, to the desktop's Trash, where it can be restored; what was published stays in Agaric, GitLab and GitHub. It refuses, saying why, while the recording is in progress, while a transcription is queued or running (Cancel it first), or while Summarize or a publish runs for it. A trash that fails says why and deletes nothing: it never falls back to deleting.
+- **Move to Trash:** asks first, then moves the whole recording's folder, its audio, transcript, summary and run history, to the desktop's Trash, where it can be restored; what was published stays in Agaric, GitLab and GitHub. It refuses, saying why, while the recording is in progress (the top-bar menu's Discard… ends one and sends it there), while a transcription is queued or running (Cancel it first), or while Summarize or a publish runs for it. A trash that fails says why and deletes nothing: it never falls back to deleting.
 - **Audio limits:** delete tracks as Delete now does, but only once the latest transcription has succeeded and never the recording in progress; they run when a recording stops, when the window opens and when they are saved, with no timer of their own. A change to them waits for Save, unlike every other setting, and Save first warns how many recordings' audio, and how much of it, goes at once, with Accept and Cancel: a scroll over a limit would otherwise delete audio unasked. Save sits below the two limits and is on only while the limits shown differ from the saved ones; closing the Settings then asks first, with Cancel, Discard and Save, and Save there gives the same warning and closes once it is accepted.
 - **Links:** open in the default app: `summary.md` in the text editor, `agaric://` links in Agaric, GitLab and GitHub links in the browser.
 - **Settings:** a dialog over the window, opened from its main menu or the top-bar menu. Transcription: the vocabularies of the word list, one word or phrase a line: the glossary, `${XDG_CONFIG_HOME:-~/.config}/minutas/glossary.txt`, and any others, a text file each in `${XDG_CONFIG_HOME:-~/.config}/minutas/vocabulary/`, named by its file; each with a switch saying whether it is used, the glossary's on until turned off, and Open, which opens it in the text editor; the others with Delete, which asks first and moves the file to the Trash; New… asks a name, refused as a context preset's is, makes the file empty and switched on, and opens it; every transcription from then on boosts the words of those switched on, each once, skips one deleted since and fails, naming it, on one it can't read; a note says to keep them to words the meetings use. Summary: the summarizer, the Devin CLI or Claude Code, then its model and effort, Devin's from what `devin models list --format json` offers and Claude Code's from its model aliases (Fable, Opus, Sonnet, Haiku) and effort levels, each summarizer keeping its own while the other is chosen, and the skill file, Markdown, with Open, which opens it or the built-in one, and Use built-in to go back to the one Minutas ships; Summary context: the context presets, a Markdown file each in `${XDG_CONFIG_HOME:-~/.config}/minutas/context/`, named by its file, each with Open, which opens it in the text editor, and Delete, which asks first and moves the file to the Trash; New… asks a name, refuses one that is taken, starts with a dot or holds a slash, makes the file empty and opens it; a note says that links aren't followed, as the summarizer reads nothing but its prompt, so references are pasted in as text; Agaric; GitLab; GitHub: the default link Publish to GitHub starts from, an issue or repository link, refused when it is neither, and cleared when emptied; the audio limits with how much audio is kept against them; Top-bar menu: how many recent recordings it lists, from 1 to 20, five by default, which the menu follows at once. Later: the echo-cancelled mic switch.
 - **Agaric:** the agent token, pasted as the config Agaric shows or alone, kept in the GNOME keyring through Python's keyring package and never shown back; whether a token is stored, and without one how to get Agaric's config; the space it publishes to, shown even when it is the only one; and the fix when Agaric isn't running or refuses the token. Agaric is asked through `minutas settings agaric`, run as a command, so the window never waits on it.
 - **GitLab:** the default link, a project or issue link, checked as Publish to GitLab's dialog checks it, and empty for none; whether `glab` is logged in to that link's server, gitlab.com without one, or why not, as `glab auth status` finds it; and a personal access token with the api scope, pasted and handed to `glab auth login --stdin --use-keyring` for that server, which keeps it in the GNOME keyring; Minutas never keeps or shows it back. glab is asked through `minutas settings gitlab`, run as a command, so the window never waits on it.
 - **Main menu:** Settings; Update Minutas (see Installing and updating); About Minutas, with the version, the license, the website and where to report an issue.
-- **Top-bar menu:** record and stop, the last recordings (as many as the Settings say), Recordings and Settings.
+- **Top-bar menu:** Record, or for a recording in progress Pause or Resume, Finish and Discard…; the last recordings (as many as the Settings say), with Cancel transcription or Transcribe again under the ones it applies to; Recordings and Settings.
 
 ## When an action fails
 
@@ -251,6 +257,7 @@ A run still marked Running when the app starts again, after a logout or a crash,
 | Action | What can fail | What the history does |
 | --- | --- | --- |
 | Recording | The recorder dies, an audio device disappears, the disk fills | Keeps what was captured, marks the recording incomplete with the time it stopped, and still offers Transcribe |
+| Discard | The Trash refuses the folder | The recording stays, stopped and not transcribed, and a notification says why; nothing is deleted instead, and Transcribe and Move to Trash are still there |
 | Transcribe | Out of memory, a model fails to load, a crash | Failed with the log; Retry runs again from the tracks |
 | Summarize | The summarizer not logged in, a non-zero exit, empty output, no answer at all, a context preset that can't be read, a Claude Code older than 2.1.166 | Failed with the summarizer's output in Details; one that stalls is stopped after a generous timeout; a context preset that can't be read fails the run naming its file; an older Claude Code fails it unasked, saying its version and to run `claude update`; the run keeps the prompt it used, Custom included, and the names of its context presets, so Retry sends the same ones, their files read again, and fails naming one deleted since rather than summarize without it |
 | Publish to Agaric | Agaric not running, the agent token revoked, a file over 50 MB, the name already taken by another page | Failed with Agaric's message; `add_meeting` is one transaction, so a failed call leaves nothing behind. A taken name stops the run and asks: Use that page (adds the files to it) or Rename; a rename to a taken name asks for another name |
@@ -259,7 +266,7 @@ A run still marked Running when the app starts again, after a logout or a crash,
 
 - **Where failures show:** a red status on the run, a warning mark on the recording in the top-bar menu, and a GNOME notification.
 - **Details:** the full output of the tool that failed, ready to copy.
-- **Cancel:** stops a queued or running run; a cancelled run can be retried like a failed one.
+- **Cancel:** stops a queued or running run; a cancelled run can be retried like a failed one. A transcription can be cancelled and retried from the top-bar menu too.
 - **Dependencies:** Publish to GitLab and Publish to GitHub stay disabled until a summary succeeds, and say why.
 
 ## Transcription quality plan
@@ -315,7 +322,7 @@ The scorer comes first, so every later step is measured; the tool is usable end 
 - [x] **M5:** community-1 on the call track; speakers named in the Recordings window from the attendees or a custom name
 - [x] **M6:** Summarize: built-in presets (General, Standup, 1:1, Stakeholder call), saved presets, Custom with Save as preset, deleting saved presets, Devin CLI, `summary.md`, the proposed page name from its `Title:` line; Publish to Agaric adds the summary and renames the page when its automatic name changed
 - [x] **M7:** Publish to GitLab through `glab api`: comment or new issue (title and body only), transcript and audio uploads, Retry carrying on from the failed step, the output link; Publish to GitHub through `gh`: comment or new issue, the transcript in a secret gist, no audio
-- [x] **M8:** GNOME extension: record and stop, the consent reminder on Record, recent recordings with a mark on failed runs, Open history, notifications for a ready transcript or a failed run; `install.sh` complete, with the glab and extension steps, and `minutas update`
+- [x] **M8:** GNOME extension: record, pause and resume, finish and discard, the consent reminder on Record, recent recordings with a mark on failed runs and their transcription cancelled or run again, Open history, notifications for a ready transcript or a failed run; `install.sh` complete, with the glab and extension steps, and `minutas update`
 - [ ] **Later:** voice memory; fine-tuning on Rioplatense speech if the test set shows a gap; a Codex summarizer; macOS and Windows
 
 ## Open questions

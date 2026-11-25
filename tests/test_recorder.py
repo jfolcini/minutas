@@ -1,4 +1,6 @@
 import subprocess
+import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -107,8 +109,9 @@ def test_start_launches_one_pipeline_for_both_tracks_in_a_user_unit(
             f"--setenv=XDG_CONFIG_HOME={xdg_dirs / 'config'}",
             f"--working-directory={folder}",
             "--",
-            "gst-launch-1.0",
-            "-e",
+            sys.executable,
+            "-m",
+            "minutas.capture",
             "pulsesrc",
             "!",
             "audioconvert",
@@ -244,3 +247,30 @@ def test_stop_waits_for_the_unit_to_stop(fake_run: FakeRun) -> None:
     recorder.stop()
 
     assert fake_run.commands() == [STOP]
+
+
+@pytest.mark.parametrize(
+    ("ask", "sent"), [(recorder.pause, "SIGUSR1"), (recorder.resume, "SIGUSR2")]
+)
+def test_pause_and_resume_signal_the_units_program(
+    fake_run: FakeRun, ask: Callable[[], None], sent: str
+) -> None:
+    ask()
+
+    assert fake_run.commands() == [
+        ["systemctl", "--user", "kill", f"--signal={sent}", "minutas-recorder.service"]
+    ]
+
+
+@pytest.mark.parametrize("ask", [recorder.pause, recorder.resume])
+def test_a_signal_systemd_could_not_send_says_why(
+    fake_run: FakeRun, ask: Callable[[], None]
+) -> None:
+    fake_run.returncode = 5
+    fake_run.stderr = "Failed to kill unit minutas-recorder.service: Unit not loaded.\n"
+
+    with pytest.raises(
+        recorder.RecorderError,
+        match=r"^Failed to kill unit minutas-recorder\.service: Unit not loaded\.$",
+    ):
+        ask()

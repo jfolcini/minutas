@@ -56,9 +56,20 @@ case "\$*" in
     write "{\"version\":1,\"recording\":{\"id\":\"\$id\",\"started_at\":\"\$at\"},\"recent\":[]}"
     echo "{\"id\": \"\$id\", \"started_at\": \"\$at\"}"
     ;;
+  "record pause")
+    read -r id at <"$WORK/active"
+    write "{\"version\":1,\"recording\":{\"id\":\"\$id\",\"started_at\":\"\$at\",\"paused_at\":\"\$(date --iso-8601=seconds)\"},\"recent\":[]}"
+    ;;
+  "record resume")
+    read -r id at <"$WORK/active"
+    write "{\"version\":1,\"recording\":{\"id\":\"\$id\",\"started_at\":\"\$at\",\"paused_seconds\":2},\"recent\":[]}"
+    ;;
   "record stop")
     read -r id at <"$WORK/active"
     write "{\"version\":1,\"recording\":null,\"recent\":[{\"id\":\"\$id\",\"name\":\"Meeting\",\"started_at\":\"\$at\",\"duration_seconds\":7,\"incomplete\":false,\"transcribe\":\"queued\",\"failed\":[]}]}"
+    ;;
+  "record discard")
+    write '{"version":1,"recording":null,"recent":[]}'
     ;;
 esac
 EOF
@@ -86,6 +97,13 @@ B="Main.panel.statusArea['$UUID']"
 # The visible items, and every separator: the menu shows or hides those only as it opens or closes.
 MENU="$B.menu._getMenuItems().filter(i => i.actor.visible || i.label?.text === '').flatMap(i => i._getMenuItems ? i._getMenuItems().map(j => j.label.text + (j.get_n_children() > 2 ? ' [warning icon]' : '')) : [i.label.text || '---'])"
 PANEL="({recordingStyle: $B.has_style_class_name('screen-recording-indicator'), timerVisible: $B.get_first_child().get_child_at_index(1).visible})"
+PILL="({recording: $B.has_style_class_name('screen-recording-indicator'), paused: $B.has_style_class_name('screen-sharing-indicator'), icon: $B.get_first_child().get_child_at_index(0).icon_name})"
+RECORDING_ITEMS='"Finish","Discard…",'
+# The confirmation dialogs on screen (the Shell keeps hidden ones of its own); of the open ones
+# (0 is the Shell's State.OPENED), the title and the buttons.
+DIALOGS="Main.layoutManager.modalDialogGroup.get_children().filter(d => d.buttonLayout && d.visible)"
+DIALOG="$DIALOGS.filter(d => d.state === 0).map(d => [d.contentLayout.get_first_child().title, ...d.buttonLayout.get_children().map(b => b.label)])"
+FOCUS="global.stage.key_focus?.label"
 TIMER="$B.get_first_child().get_child_at_index(1).text"
 NOTES="Main.messageTray.getSources().filter(s => s.title === 'Minutas').flatMap(s => s.notifications.map(n => n.title + ' | ' + n.body))"
 failures=0
@@ -120,6 +138,23 @@ expect_opened() {
   fail "expected $INSTALL_URL $1 time(s) in $WORK/browser.log"
 }
 expect_log() { check "ran minutas $1" grep -qxF -- "$1" "$WORK/minutas.log"; }
+# Polls, because the command starts asynchronously.
+expect_ran() {
+  for _ in $(seq 40); do
+    grep -qxF -- "$1" "$WORK/minutas.log" && echo "  ok: ran minutas $1" && return
+    sleep 0.25
+  done
+  fail "expected minutas $1 in $WORK/minutas.log"
+}
+expect_not_ran() { check "did not run minutas $1" bash -c '! grep -qxF -- "$1" "$2"' _ "$1" "$WORK/minutas.log"; }
+# A key pressed and released on a keyboard of the test's own.
+press() {
+  ev "(() => { const {Clutter} = imports.gi;
+    globalThis.__smokeKeyboard ??= Clutter.get_default_backend().get_default_seat().create_virtual_device(Clutter.InputDeviceType.KEYBOARD_DEVICE);
+    const time = Clutter.get_current_event_time();
+    __smokeKeyboard.notify_keyval(time, Clutter.KEY_$1, Clutter.KeyState.PRESSED);
+    __smokeKeyboard.notify_keyval(time, Clutter.KEY_$1, Clutter.KeyState.RELEASED); })()" >/dev/null
+}
 click() { ev "$B.menu._getMenuItems().flatMap(i => i._getMenuItems ? i._getMenuItems() : [i]).find(i => i.label.text.startsWith('$1')).activate(null)" >/dev/null; }
 write_status() { mkdir -p "$DATA" && printf '%s' "$1" >"$DATA/.status.tmp" && mv "$DATA/.status.tmp" "$DATA/status.json"; }
 # A recent recording; an eighth argument is its progress.
@@ -150,7 +185,7 @@ expect "$MENU" '["Record","---","---","Recordings","Settings"]'
 
 echo "== Record"
 click Record
-expect "$MENU" '["Stop",'
+expect "$MENU" "[\"Pause\",$RECORDING_ITEMS"
 expect_log "record start"
 expect "$PANEL" '{"recordingStyle":true,"timerVisible":true}'
 expect "$NOTES" "Tell participants you're recording"
@@ -158,14 +193,33 @@ expect "Main.messageTray.getSources().filter(s => s.title === 'Minutas').flatMap
 first_tick=$(ev "$TIMER")
 sleep 2
 check "timer advances from $first_tick" test "$(ev "$TIMER")" != "$first_tick"
+expect "$PILL" '{"recording":true,"paused":false,"icon":"audio-input-microphone-symbolic"}'
 screenshot menu-recording.png
 
-echo "== Stop"
-click Stop
+echo "== Pause: the indicator says so, and the timer stands still"
+click Pause
+expect "$MENU" "[\"Resume\",$RECORDING_ITEMS"
+expect_log "record pause"
+expect "$PILL" '{"recording":false,"paused":true,"icon":"media-playback-pause-symbolic"}'
+expect "$PANEL" '{"recordingStyle":false,"timerVisible":true}'
+paused_tick=$(ev "$TIMER")
+sleep 2
+check "timer stays at $paused_tick" test "$(ev "$TIMER")" = "$paused_tick"
+screenshot menu-paused.png
+
+echo "== Resume"
+click Resume
+expect "$MENU" "[\"Pause\",$RECORDING_ITEMS"
+expect_log "record resume"
+expect "$PILL" '{"recording":true,"paused":false,"icon":"audio-input-microphone-symbolic"}'
+
+echo "== Finish"
+click Finish
+expect_ran "record stop"
+expect "$DIALOG" "'[]'"
 expect "$MENU" '["Record","---","Meeting · '
-expect "$MENU" ' · 0:07 · transcribing…","---","Recordings","Settings"]'
+expect "$MENU" ' · 0:07 · transcribing…","Cancel transcription","---","Recordings","Settings"]'
 expect "$PANEL" '{"recordingStyle":false,"timerVisible":false}'
-expect_log "record stop"
 read -r id at <"$WORK/active"
 meeting=$(recent "$id" Meeting "$at" 7 false '"succeeded"' '["summarize"]')
 
@@ -178,6 +232,18 @@ ev "$ITEM._smokeMark = true" >/dev/null
 write_status "{\"version\":1,\"recording\":null,\"recent\":[$(speakers 41)]}"
 expect "$MENU" ' · 0:07 · identifying speakers… 41%"'
 expect "$ITEM._smokeMark === true" "'true'"
+
+echo "== a queued or running transcription can be cancelled, and a cancelled or failed one run again"
+click Cancel
+expect_ran "transcribe --cancel $id"
+write_status "{\"version\":1,\"recording\":null,\"recent\":[$(recent "$id" Meeting "$at" 7 false '"cancelled"' '[]')]}"
+expect "$MENU" ' · 0:07 · transcription cancelled","Transcribe again","---","Recordings","Settings"]'
+screenshot menu-cancelled.png
+click Transcribe
+expect_ran "transcribe $id"
+write_status "{\"version\":1,\"recording\":null,\"recent\":[$(recent "$id" Meeting "$at" 7 false '"failed"' '["transcribe"]')]}"
+expect "$MENU" ' · 0:07 · transcription failed [warning icon]","Transcribe again","---","Recordings","Settings"]'
+expect "$NOTES" "Transcribe failed | Meeting"
 
 echo "== transcript ready, and clicking it opens the history"
 write_status "{\"version\":1,\"recording\":null,\"recent\":[$(recent "$id" Meeting "$at" 7 false '"succeeded"' '[]')]}"
@@ -198,10 +264,38 @@ sleep 1
 expect "$MENU" ' · 0:07 [warning icon]'
 check "the invalid file is logged" grep -q 'Minutas: keeping the last status' "$OUT/shell.log"
 
+echo "== Discard asks first, with Cancel focused: Enter and Escape leave the recording going"
+click Record
+expect "$MENU" "[\"Pause\",$RECORDING_ITEMS"
+for key in Return Escape; do
+  click Discard
+  expect "$DIALOG" '[["Discard the recording?","Cancel","Discard"]]'
+  expect "$FOCUS" "'\"Cancel\"'"
+  expect "${DIALOGS}[0].buttonLayout.get_last_child().style" '#c01c28'
+  gdbus call --session --dest org.gnome.Shell --object-path /org/gnome/Shell/Screenshot \
+    --method org.gnome.Shell.Screenshot.Screenshot false false "$OUT/dialog-discard.png" >/dev/null || fail "screenshot dialog-discard.png"
+  press "$key"
+  expect "$DIALOG" "'[]'"
+done
+sleep 1
+expect_not_ran "record discard"
+expect "$MENU" "[\"Pause\",$RECORDING_ITEMS"
+
+echo "== Discard, confirmed from the keyboard"
+click Discard
+expect "$DIALOG" '[["Discard the recording?","Cancel","Discard"]]'
+press Tab
+expect "$FOCUS" "'\"Discard\"'"
+press Return
+expect_ran "record discard"
+expect "$DIALOG" "'[]'"
+expect "$MENU" '["Record","---","---","Recordings","Settings"]'
+expect "$PANEL" '{"recordingStyle":false,"timerVisible":false}'
+
 echo "== the recorder dies"
 now=$(date --iso-8601=seconds) id2=$(date +%Y-%m-%dT%H-%M-%S)
 write_status "{\"version\":1,\"recording\":{\"id\":\"$id2\",\"started_at\":\"$now\"},\"recent\":[$meeting]}"
-expect "$MENU" '["Stop",'
+expect "$MENU" "[\"Pause\",$RECORDING_ITEMS"
 write_status "{\"version\":1,\"recording\":null,\"recent\":[$(recent "$id2" Standup "$now" 3 true null '[]'),$meeting]}"
 expect "$NOTES" "Recording stopped unexpectedly | Standup"
 expect "$MENU" '["Record","---","Standup · '
@@ -289,7 +383,7 @@ ev "const {GLib, GObject} = imports.gi; globalThis.__soak = [];
   }" >/dev/null
 TRACK="(() => { const e = Main.extensionManager.lookup('$UUID').stateObj;
   const items = e._button.menu._getMenuItems().flatMap(i => [i, ...(i._getMenuItems?.() ?? [])]);
-  const objects = [['button', e._button], ['menu', e._button.menu], ['notification source', e._source],
+  const objects = [['button', e._button], ['menu', e._button.menu], ['notification source', e._source], ['dialog', e._dialog],
     ...(e._source?.notifications ?? []).map(n => ['notification', n]), ...items.map(i => ['menu item', i])];
   for (const [kind, object] of objects.filter(([, o]) => o)) { const ref = new WeakRef(object); __soak.push([kind, kind, () => ref.deref() !== undefined]); }
   const monitor = new WeakRef(e._monitor); __soak.push(['file monitor', 'file monitor', () => monitor.deref()?.is_cancelled() === false]); })()"
@@ -319,15 +413,21 @@ for i in $(seq 5); do
   )
   now=$(date --iso-8601=seconds)
   write_status "{\"version\":1,\"recording\":{\"id\":\"soak-$i\",\"started_at\":\"$now\"},\"recent\":[$history]}"
-  until_menu '["Stop",'
+  until_menu '["Pause",'
   if [ "$i" -eq 1 ]; then
     echo "  recording: the timer"
     expect "$(there "category === 'GLib source'")" '"1 GLib source"'
   fi
+  # A confirmation dialog left open when the extension is disabled goes with it.
+  click Discard
   ev "$TRACK" >/dev/null
   gnome-extensions disable "$UUID"
+  if [ "$i" -eq 1 ]; then
+    echo "  disabled with a dialog open: it is gone"
+    expect "$DIALOGS.length" "'0'"
+  fi
   gnome-extensions enable "$UUID"
-  until_menu '["Stop",'
+  until_menu '["Pause",'
   incomplete=$(recent "soak-$i" "Soak $i" "$now" 60 true '"queued"' '[]')
   write_status "{\"version\":1,\"recording\":null,\"recent\":[$incomplete${history:+,$history}]}"
   until_menu "[\"Record\",\"---\",\"Soak $i · "

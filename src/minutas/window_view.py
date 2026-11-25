@@ -252,12 +252,11 @@ def trash_refusal(
 def subtitle(recording: store.Recording, transcribing: str | None) -> str:
     # In the recording's own time zone, whatever the window's is.
     started = datetime.fromisoformat(recording["started_at"])
-    stopped_at = recording["stopped_at"]
+    stopped = recording["stopped_at"] is not None
     said = [
         started.strftime("%Y-%m-%d %H:%M"),
-        "Recording"
-        if stopped_at is None
-        else duration(int((datetime.fromisoformat(stopped_at) - started).total_seconds())),
+        duration(store.duration_seconds(recording)) if stopped else "Recording",
+        "Paused" if not stopped and "paused_at" in recording else None,
         "Incomplete" if recording["incomplete"] else None,
         transcribing,
     ]
