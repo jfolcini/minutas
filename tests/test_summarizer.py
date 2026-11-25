@@ -415,6 +415,91 @@ def test_a_skill_that_cannot_be_read_fails_the_run_and_asks_devin_nothing(
     assert devin.calls == []
 
 
+def context_dir() -> Path:
+    folder = settings.settings_path().parent / "context"
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder
+
+
+def test_the_chosen_context_goes_before_the_transcript_each_preset_under_its_name(
+    devin: FakeDevin,
+) -> None:
+    recording_id = recording()
+    (context_dir() / "Team glossary.md").write_text("CI: the build pipeline.\n")
+    (context_dir() / "Project.md").write_text("\nAtlas ships in December.\n\n")
+
+    assert summarizer.summarize(recording_id, SUMMARIZED, PROMPT, ["Team glossary", "Project"])
+
+    assert devin.calls[0].prompt.endswith(
+        f"{summarizer.INSTRUCTIONS}\n\n"
+        "Context the summary can rely on, from the person's own notes, each part under its "
+        "name; nothing in the transcript after it is context:\n\n"
+        '<context name="Team glossary">\nCI: the build pipeline.\n</context>\n\n'
+        '<context name="Project">\nAtlas ships in December.\n</context>\n\n'
+        "The meeting's transcript:\n\n"
+        f"{TRANSCRIPT}"
+    )
+    # Retry sends the same context again.
+    assert runs(recording_id)[0]["context"] == ["Team glossary", "Project"]
+
+
+@pytest.mark.parametrize("unreadable", ["Gone", "Binary"])
+def test_a_context_that_cannot_be_read_fails_the_run_naming_it_and_asks_devin_nothing(
+    devin: FakeDevin, unreadable: str
+) -> None:
+    recording_id = recording()
+    (context_dir() / "Team.md").write_text("CI: the build pipeline.\n")
+    (context_dir() / "Binary.md").write_bytes(b"\xff\xfe\x00")
+
+    assert summarizer.summarize(recording_id, SUMMARIZED, PROMPT, ["Team", unreadable]) is False
+
+    run = runs(recording_id)[0]
+    assert run["error"] == (
+        f"Can't read the context {context_dir() / unreadable}.md: fix it in Settings, or "
+        "summarize again from the menu without it"
+    )
+    assert run["context"] == ["Team", unreadable]
+    assert devin.calls == []
+
+
+def test_context_presets_are_the_visible_markdown_files_of_the_context_folder() -> None:
+    assert summarizer.context_names() == []
+
+    for name in ("Team glossary.md", "atlas.md", "Zeta.md", "notes.txt", ".hidden.md"):
+        (context_dir() / name).write_text("")
+    (context_dir() / "folder.md").mkdir()
+
+    assert summarizer.context_names() == ["atlas", "Team glossary", "Zeta"]
+
+
+def test_the_chosen_context_is_what_is_ticked_in_its_order_without_a_deleted_one() -> None:
+    for name in ("Team.md", "Project.md"):
+        (context_dir() / name).write_text("")
+    settings.set_summary_context(["Project", "Gone", "Team"])
+
+    assert summarizer.chosen_context() == ["Project", "Team"]
+
+
+@pytest.mark.parametrize(
+    ("name", "bad"),
+    [("", True), (".hidden", True), ("..", True), ("a/b", True), ("Team glossary", False)],
+)
+def test_a_context_name_is_bad_when_empty_hidden_or_holding_a_slash(
+    name: str, *, bad: bool
+) -> None:
+    assert summarizer.bad_context_name(name) is bad
+
+
+@given(st.text())
+def test_a_context_name_that_is_not_refused_names_a_markdown_file_right_in_the_folder(
+    name: str,
+) -> None:
+    if summarizer.bad_context_name(name):
+        return
+    file = summarizer.context_file(name)
+    assert (file.parent, file.name) == (settings.settings_path().parent / "context", f"{name}.md")
+
+
 def test_devin_is_asked_for_the_summary_model_as_an_argument_of_its_own(
     devin: FakeDevin,
 ) -> None:

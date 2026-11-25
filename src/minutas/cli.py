@@ -218,9 +218,12 @@ def summarize(args: argparse.Namespace) -> int:
     prompt = args.prompt.strip()
     if not prompt:
         return fail("A prompt can't be blank.")
+    bad = next((name for name in args.context if summarizer.bad_context_name(name)), None)
+    if bad is not None:
+        return fail(f"No context preset can be named {bad}.")
     if not (store.recording_dir(recording_id) / summarizer.TRANSCRIPT).is_file():
         return fail(f"{recording_id} has no transcript yet: transcribe it first.")
-    return 0 if summarizer.summarize(recording_id, now(), prompt) else 1
+    return 0 if summarizer.summarize(recording_id, now(), prompt, args.context) else 1
 
 
 def choose_space(*, token_kept: bool) -> int:
@@ -300,6 +303,21 @@ def settings_gitlab(args: argparse.Namespace) -> int:
     return 0
 
 
+def add_summarize_arguments(summarize_command: argparse.ArgumentParser) -> None:
+    summarize_command.add_argument("recording_id")
+    summarize_command.add_argument(
+        "--prompt", required=True, help="what the summary should cover, as a preset says it"
+    )
+    summarize_command.add_argument(
+        "--context",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="a context preset to add, by name; repeat for each",
+    )
+    summarize_command.set_defaults(handler=summarize)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="minutas",
@@ -339,14 +357,11 @@ def build_parser() -> argparse.ArgumentParser:
     history_command.add_argument("--recording", metavar="ID", help="open this recording")
     history_command.set_defaults(handler=history)
 
-    summarize_command = commands.add_parser(
-        "summarize", help="summarize a recording with the summarizer chosen in Settings"
+    add_summarize_arguments(
+        commands.add_parser(
+            "summarize", help="summarize a recording with the summarizer chosen in Settings"
+        )
     )
-    summarize_command.add_argument("recording_id")
-    summarize_command.add_argument(
-        "--prompt", required=True, help="what the summary should cover, as a preset says it"
-    )
-    summarize_command.set_defaults(handler=summarize)
 
     publish = commands.add_parser("publish", help="publish a recording")
     publish_commands = publish.add_subparsers(title="commands", required=True)

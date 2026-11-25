@@ -3,6 +3,7 @@ import json
 import os
 import subprocess
 import sys
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from importlib.metadata import version
 from pathlib import Path
@@ -896,10 +897,12 @@ class FakeSummarizer:
 
     def __init__(self) -> None:
         self.succeeds = True
-        self.summarized: list[tuple[str, datetime, str]] = []
+        self.summarized: list[tuple[str, datetime, str, Sequence[str]]] = []
 
-    def summarize(self, recording_id: str, started: datetime, prompt: str) -> bool:
-        self.summarized.append((recording_id, started, prompt))
+    def summarize(
+        self, recording_id: str, started: datetime, prompt: str, context: Sequence[str]
+    ) -> bool:
+        self.summarized.append((recording_id, started, prompt, context))
         return self.succeeds
 
 
@@ -928,7 +931,20 @@ def test_summarize_summarizes_the_recording_with_the_prompt(
     assert main(["summarize", recording_id, "--prompt=- Only the blockers. "]) == code
 
     assert fake_summarizer.summarized == [
-        (recording_id, START + timedelta(hours=1), "- Only the blockers.")
+        (recording_id, START + timedelta(hours=1), "- Only the blockers.", [])
+    ]
+
+
+def test_summarize_adds_the_context_presets_named_in_their_order(
+    fake_summarizer: FakeSummarizer,
+) -> None:
+    recording_id = transcribed()
+
+    arguments = ["--prompt=Summarize.", "--context=Team glossary", "--context=-Project"]
+    assert main(["summarize", recording_id, *arguments]) == 0
+
+    assert fake_summarizer.summarized == [
+        (recording_id, START + timedelta(hours=1), "Summarize.", ["Team glossary", "-Project"])
     ]
 
 
@@ -937,8 +953,12 @@ def test_summarize_summarizes_the_recording_with_the_prompt(
     [
         (["--prompt", " \n "], "A prompt can't be blank."),
         (["--prompt", "Summarize."], "No recording 2026-11-18T13-05-42."),
+        (
+            ["--prompt", "Summarize.", "--context=Team", "--context=../.ssh/id_ed25519"],
+            "No context preset can be named ../.ssh/id_ed25519.",
+        ),
     ],
-    ids=["blank prompt", "unknown recording"],
+    ids=["blank prompt", "unknown recording", "bad context name"],
 )
 def test_summarize_refuses_a_blank_prompt_or_an_unknown_recording(
     fake_summarizer: FakeSummarizer,
@@ -946,7 +966,7 @@ def test_summarize_refuses_a_blank_prompt_or_an_unknown_recording(
     arguments: list[str],
     error: str,
 ) -> None:
-    if error.startswith("A prompt"):
+    if not error.startswith("No recording"):
         transcribed()
 
     assert main(["summarize", "2026-11-18T13-05-42", *arguments]) == 1
