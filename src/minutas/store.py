@@ -241,6 +241,9 @@ def mark_resumed(recording_id: str, resumed: datetime) -> None:
 def mark_silent(recording_id: str, since: datetime) -> None:
     with lock():
         recording = load_recording(recording_id)
+        # The recorder can say it of a second from before a pause or a stop, which ended it.
+        if "paused_at" in recording or recording.get("stopped_at") is not None:
+            return
         recording["silent_since"] = since.isoformat(timespec="seconds")
         write_json(recording_dir(recording_id) / "recording.json", recording)
 

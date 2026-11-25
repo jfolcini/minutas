@@ -564,6 +564,10 @@ def test_work_fails_each_run_at_once_naming_a_vocabulary_it_cant_read_and_goes_o
         assert [(run["status"], run["error"]) for run in runs] == [("failed", said)]
 
 
+def test_a_vocabulary_deleted_before_it_is_read_adds_no_words(tmp_path: Path) -> None:
+    assert worker.vocabulary_words(tmp_path / "Acme.txt") == []
+
+
 @pytest.mark.usefixtures("speech", "sigterm")
 def test_work_passes_no_word_list_with_every_vocabulary_switched_off(system: FakeSystem) -> None:
     recording_id = recording()

@@ -18,7 +18,7 @@ from datetime import UTC, datetime
 from functools import partial
 from importlib.metadata import metadata
 from pathlib import Path
-from typing import cast, override
+from typing import NamedTuple, cast, override
 
 import gi
 from keyring.errors import KeyringError
@@ -72,6 +72,26 @@ GIST_NOTE = (
     "The transcript goes to a secret gist, which anyone with its link can read. GitHub takes no "
     "audio, so it is left out."
 )
+
+
+class LinkAsk(NamedTuple):
+    """What Publish to GitLab or GitHub asks for, and how it reads the link typed."""
+
+    parse: Callable[[str], gitlab.Target | github.Target | None]
+    ask: str
+    not_a_link: str
+    # Said under every answer; empty for none.
+    note: str
+    # The publish command's word for it.
+    command: str
+
+
+LINK_ASKS = {
+    PUBLISH_GITLAB: LinkAsk(gitlab.parse_link, ASK_LINK, NOT_A_LINK, "", "gitlab"),
+    PUBLISH_GITHUB: LinkAsk(
+        github.parse_link, ASK_GITHUB_LINK, NOT_A_GITHUB_LINK, GIST_NOTE, "github"
+    ),
+}
 GITHUB_LINK_NOTE = (
     "Where Publish to GitHub starts: an issue link to comment on it, or a repository link to open "
     "a new issue. Empty for none."
@@ -114,8 +134,8 @@ SILENCE_NOTE = (
     "that long, in case the recording was forgotten."
 )
 ECHO_CANCEL_NOTE = (
-    "For calls on speakers: records the microphone with the computer's sound taken out. "
-    "Applies from the next recording."
+    "Records the microphone with the computer's sound taken out, so a call on speakers isn't "
+    "transcribed twice. Applies from the next recording."
 )
 NEW_VOCABULARY_NOTE = "Its file then opens in the text editor: one word or phrase a line."
 VOCABULARY_TRASH_WARNING = (
@@ -280,6 +300,8 @@ class SettingsDialog(Adw.PreferencesDialog):
     def __init__(self, window: "HistoryWindow") -> None:
         super().__init__(title="Settings")
         self.found: list[summarizer.Model] = []
+        # How many times glab has been asked: only the latest question's answer is shown.
+        self.glab_asked = 0
         titles = [tool.title for tool in summarizer.TOOLS]
         self.summarizer = Adw.ComboRow(title="Summarizer", model=Gtk.StringList.new(titles))
         self.summarizer.set_selected(summarizer.TOOLS.index(summarizer.chosen()))
@@ -1615,12 +1637,20 @@ class HistoryWindow(Adw.ApplicationWindow):
             | Gio.SubprocessFlags.STDOUT_SILENCE
             | Gio.SubprocessFlags.STDERR_PIPE,
         )
-        command.communicate_utf8_async(token, None, self.glab_answered, dialog)
+        dialog.glab_asked += 1
+        command.communicate_utf8_async(token, None, self.glab_answered, dialog, dialog.glab_asked)
 
     def glab_answered(
-        self, command: Gio.Subprocess, result: Gio.AsyncResult, dialog: SettingsDialog
+        self,
+        command: Gio.Subprocess,
+        result: Gio.AsyncResult,
+        dialog: SettingsDialog,
+        asked: int,
     ) -> None:
         _, _, said = command.communicate_utf8_finish(result)
+        # A slower answer to an earlier question would show the wrong server's login.
+        if asked != dialog.glab_asked:
+            return
         # A group's description is always markup; what glab says is not.
         shown = GLib.markup_escape_text(last_line(said or "") or GLAB_SILENT)
         dialog.gitlab.set_description(f"{shown}\n\n{GITLAB_NOTE}")
@@ -1651,9 +1681,9 @@ class HistoryWindow(Adw.ApplicationWindow):
         if action == PUBLISH:
             self.publish(recording_id)
         elif action == PUBLISH_GITLAB:
-            self.ask_link(recording_id, shown.link or settings.gitlab_link() or "")
+            self.ask_link(recording_id, action, shown.link or settings.gitlab_link() or "")
         elif action == PUBLISH_GITHUB:
-            self.ask_github_link(recording_id, shown.link or settings.github_link() or "")
+            self.ask_link(recording_id, action, shown.link or settings.github_link() or "")
         elif action == SUMMARIZE:
             self.summarize(recording_id, str(shown.prompt), shown.context)
         elif shown.cancels is not None:
@@ -1707,11 +1737,11 @@ class HistoryWindow(Adw.ApplicationWindow):
     def publish(self, recording_id: str, *options: str) -> None:
         self.start(PUBLISH, recording_id, ["publish", "agaric", recording_id, *options])
 
-    def ask_link(self, recording_id: str, link: str) -> None:
-        """Asks where to publish to GitLab, saying what the link typed will get."""
+    def ask_link(self, recording_id: str, action: str, link: str) -> None:
+        """Asks where to publish to GitLab or GitHub, saying what the link typed will get."""
         entry = Gtk.Entry(text=link, activates_default=True)
         dialog = Adw.AlertDialog(
-            heading="Publish to GitLab",
+            heading=window_view.COMMAND_TITLES[action],
             extra_child=entry,
             default_response="publish",
             close_response="cancel",
@@ -1719,69 +1749,33 @@ class HistoryWindow(Adw.ApplicationWindow):
         dialog.add_response("cancel", "Cancel")
         dialog.add_response("publish", "Publish")
         dialog.set_response_appearance("publish", Adw.ResponseAppearance.SUGGESTED)
-        entry.connect("changed", self.link_typed)
-        dialog.choose(self, None, self.link_chosen, entry, recording_id)
+        asks = LINK_ASKS[action]
+        entry.connect("changed", self.link_typed, asks)
+        dialog.choose(self, None, self.link_chosen, entry, recording_id, action)
         # Once presented: until then the entry is not inside the dialog.
-        self.link_typed(entry)
+        self.link_typed(entry, asks)
 
-    def link_typed(self, entry: Gtk.Entry) -> None:
+    def link_typed(self, entry: Gtk.Entry, asks: "LinkAsk") -> None:
         # The dialog is found, not held: a handler that held it would keep it for good.
         dialog = cast("Adw.AlertDialog", entry.get_ancestor(Adw.AlertDialog))
         typed = entry.get_text().strip()
-        target = gitlab.parse_link(typed)
-        if target is not None:
-            dialog.set_body(target.plan)
-        else:
-            dialog.set_body(NOT_A_LINK if typed else ASK_LINK)
+        target = asks.parse(typed)
+        said = target.plan if target is not None else (asks.not_a_link if typed else asks.ask)
+        dialog.set_body(f"{said}\n\n{asks.note}" if asks.note else said)
         dialog.set_response_enabled("publish", target is not None)
 
     def link_chosen(
-        self, dialog: Adw.AlertDialog, result: Gio.AsyncResult, entry: Gtk.Entry, recording_id: str
+        self,
+        dialog: Adw.AlertDialog,
+        result: Gio.AsyncResult,
+        entry: Gtk.Entry,
+        recording_id: str,
+        action: str,
     ) -> None:
-        target = gitlab.parse_link(entry.get_text())
+        asks = LINK_ASKS[action]
+        target = asks.parse(entry.get_text())
         if dialog.choose_finish(result) == "publish" and target is not None:
-            self.start(
-                PUBLISH_GITLAB, recording_id, ["publish", "gitlab", recording_id, target.link]
-            )
-
-    def ask_github_link(self, recording_id: str, link: str) -> None:
-        """Asks where to publish to GitHub, saying what the link typed will get, and where the
-        transcript goes."""
-        entry = Gtk.Entry(text=link, activates_default=True)
-        dialog = Adw.AlertDialog(
-            heading="Publish to GitHub",
-            extra_child=entry,
-            default_response="publish",
-            close_response="cancel",
-        )
-        dialog.add_response("cancel", "Cancel")
-        dialog.add_response("publish", "Publish")
-        dialog.set_response_appearance("publish", Adw.ResponseAppearance.SUGGESTED)
-        entry.connect("changed", self.github_link_typed)
-        dialog.choose(self, None, self.github_link_chosen, entry, recording_id)
-        # Once presented: until then the entry is not inside the dialog.
-        self.github_link_typed(entry)
-
-    def github_link_typed(self, entry: Gtk.Entry) -> None:
-        # The dialog is found, not held: a handler that held it would keep it for good.
-        dialog = cast("Adw.AlertDialog", entry.get_ancestor(Adw.AlertDialog))
-        typed = entry.get_text().strip()
-        target = github.parse_link(typed)
-        if target is not None:
-            said = target.plan
-        else:
-            said = NOT_A_GITHUB_LINK if typed else ASK_GITHUB_LINK
-        dialog.set_body(f"{said}\n\n{GIST_NOTE}")
-        dialog.set_response_enabled("publish", target is not None)
-
-    def github_link_chosen(
-        self, dialog: Adw.AlertDialog, result: Gio.AsyncResult, entry: Gtk.Entry, recording_id: str
-    ) -> None:
-        target = github.parse_link(entry.get_text())
-        if dialog.choose_finish(result) == "publish" and target is not None:
-            self.start(
-                PUBLISH_GITHUB, recording_id, ["publish", "github", recording_id, target.link]
-            )
+            self.start(action, recording_id, ["publish", asks.command, recording_id, target.link])
 
     def github_link_set(self, entry: Adw.EntryRow) -> None:
         """Saves the default GitHub link typed, or clears it when empty; refuses another."""
@@ -1815,15 +1809,15 @@ class HistoryWindow(Adw.ApplicationWindow):
         menu = Gio.Menu()
         menu.append_section(None, chosen)
         menu.append_section(None, others)
-        if summarizer.context_names():
-            menu.append_section("Context", self.context_menu())
+        if names := summarizer.context_names():
+            menu.append_section("Context", self.context_menu(names))
         presets.set_menu_model(menu)
 
-    def context_menu(self) -> Gio.Menu:
-        """A check item for each context preset, ticked while every summary includes it."""
+    def context_menu(self, names: list[str]) -> Gio.Menu:
+        """A check item for each context preset named, ticked while every summary includes it."""
         ticked = settings.summary_context()
         menu = Gio.Menu()
-        for place, name in enumerate(summarizer.context_names()):
+        for place, name in enumerate(names):
             # A check item's action holds whether it is ticked, and takes no target.
             action = Gio.SimpleAction.new_stateful(
                 f"context-{place}", None, GLib.Variant("b", name in ticked)

@@ -16,6 +16,7 @@ goes unread with the rest of that file, so Claude Code has to be logged in with
 managed-mcp.json, Claude Code refuses --strict-mcp-config and the run fails.
 """
 
+import functools
 import json
 import os
 import re
@@ -197,7 +198,7 @@ LIST_MODELS = [DEVIN, "models", "list", "--format", "json", "--process-model", "
 MODELS_UNREADABLE = "Devin listed its models in a form Minutas can't read"
 VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)")
 VERSION_TIMEOUT_SECONDS = 10
-TIMED_OUT = f"{{name}} gave no answer in {TIMEOUT_SECONDS // 60} minutes: see Details, then Retry"
+TIMED_OUT = "{name} gave no answer in {minutes} minutes: see Details, then Retry"
 
 
 class SummarizerError(Exception):
@@ -234,22 +235,30 @@ def claude_problem() -> str:
     if path is None:
         return CLAUDE_MISSING
     try:
-        # The path just found, never a shell string. Every refresh of the window asks, so a claude
-        # that never answers must not hold it.
-        said = subprocess.run(  # noqa: S603
-            [path, "--version"],
-            capture_output=True,
-            text=True,
-            timeout=VERSION_TIMEOUT_SECONDS,
-            check=False,
-        ).stdout
+        # Every refresh of the window asks: the claude found is run again only once it changes.
+        said = claude_version(path, Path(path).stat().st_mtime_ns)
     except subprocess.TimeoutExpired:
+        # Not kept, as an exception never is: a slow start is asked again at the next refresh.
         said = ""
     version = VERSION.search(said)
     if version is None or tuple(map(int, version.groups())) < CLAUDE_MINIMUM:
         found = "unknown" if version is None else version[0]
         return CLAUDE_OLDER.format(path=path, version=found)
     return ""
+
+
+@functools.cache
+def claude_version(path: str, _changed: int) -> str:
+    """What the claude at path, as it was at that change, says its version is."""
+    # The path just found, never a shell string. A claude that never answers must not hold the
+    # window.
+    return subprocess.run(  # noqa: S603
+        [path, "--version"],
+        capture_output=True,
+        text=True,
+        timeout=VERSION_TIMEOUT_SECONDS,
+        check=False,
+    ).stdout
 
 
 def problem() -> str:
@@ -445,7 +454,9 @@ def ask(prompt: str, log: Path) -> tuple[str | None, str]:
                 raise SummarizerError(tool.missing) from None
             except subprocess.TimeoutExpired:
                 out.write(f"no answer in {TIMEOUT_SECONDS} s: stopped\n")
-                raise SummarizerError(TIMED_OUT.format(name=tool.name)) from None
+                raise SummarizerError(
+                    TIMED_OUT.format(name=tool.name, minutes=TIMEOUT_SECONDS // 60)
+                ) from None
             out.write(f"{result.stdout}{result.stderr}exit status {result.returncode}\n")
     if result.returncode != 0:
         # Not its last line, which can be Devin's "Logged in as …": Details holds all it said.

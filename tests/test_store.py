@@ -638,6 +638,25 @@ def test_a_pause_or_a_stop_ends_a_silence(end: Callable[[str], None]) -> None:
     assert "silent_since" not in store.load_recording(recording_id)
 
 
+@pytest.mark.parametrize(
+    "end",
+    [
+        lambda recording_id: store.mark_paused(recording_id, START + timedelta(seconds=90)),
+        lambda recording_id: store.mark_stopped(
+            recording_id, START + timedelta(seconds=90), incomplete=False
+        ),
+    ],
+)
+def test_a_silence_said_after_a_pause_or_a_stop_is_not_kept(end: Callable[[str], None]) -> None:
+    # The recorder's reading of a second before the pause can reach the store after it.
+    recording_id = store.create_recording(START)["id"]
+    end(recording_id)
+
+    store.mark_silent(recording_id, START + timedelta(seconds=60))
+
+    assert "silent_since" not in store.load_recording(recording_id)
+
+
 def test_status_says_since_when_the_active_recording_has_been_silent() -> None:
     recording_id = store.create_recording(START)["id"]
     store.mark_silent(recording_id, START + timedelta(seconds=60))

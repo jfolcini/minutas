@@ -213,17 +213,6 @@ def set_github_link(link: str | None) -> None:
     save({"github_link": link})
 
 
-def refused_audio_size(host: str) -> int | None:
-    """The size in bytes of the smallest audio the GitLab server refused as too big; None until
-    one has."""
-    return cast("dict[str, int]", load().get("gitlab_refused_audio", {})).get(host)
-
-
-def refuse_audio_size(host: str, size: int) -> None:
-    refused = cast("dict[str, int]", load().get("gitlab_refused_audio", {}))
-    save({"gitlab_refused_audio": {**refused, host: min(size, refused.get(host, size))}})
-
-
 def agaric_token() -> str | None:
     return keyring.get_password(KEYRING_SERVICE, AGARIC_KEYRING_USERNAME)
 

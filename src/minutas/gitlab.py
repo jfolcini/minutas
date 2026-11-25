@@ -3,8 +3,7 @@
 An issue link gets a comment, a project link a new issue. The transcript and the audio are
 uploaded to the project first, and the summary links them. A failed run keeps the audio it
 uploaded, so Retry to the same project doesn't upload it again. Audio over the server's upload
-limit is left out, with a note: only an admin can read the limit, so the smallest audio a server
-refused is remembered, and a later audio as big is left out without uploading.
+limit is left out, with a note.
 
 The Settings hand glab a token here, and ask whether it is logged in: glab holds the login.
 """
@@ -241,16 +240,10 @@ def upload(target: Target, what: str, file: Path, log: Path) -> str:
 def upload_audio(target: Target, mixed: Path, uploads: dict[str, str], log: Path) -> str | None:
     """Uploads the audio, adding it to uploads; returns the note when the server's limit leaves
     it out."""
-    size = mixed.stat().st_size
-    left_out = f"The audio was left out: it is over {target.host}'s upload limit"
-    refused = settings.refused_audio_size(target.host)
-    if refused is not None and size >= refused:
-        return left_out
     try:
         uploads["audio"] = upload(target, "audio", mixed, log)
     except UploadLimitError:
-        settings.refuse_audio_size(target.host, size)
-        return left_out
+        return f"The audio was left out: it is over {target.host}'s upload limit"
     return None
 
 

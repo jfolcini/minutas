@@ -83,9 +83,6 @@ def devin(monkeypatch: pytest.MonkeyPatch) -> FakeDevin:
     return fake
 
 
-CLAUDE_ON_PATH = "/opt/bin/claude"
-
-
 class FakeClaude:
     """Stands in for subprocess.run under the summarizer: `claude -p` answers as told, and
     `claude --version` with the version told."""
@@ -95,12 +92,16 @@ class FakeClaude:
         self.answer = Answer()
         self.missing = False
         self.hangs = False
-        # What `claude --version` prints; asking it is not among the calls.
+        # What `claude --version` prints; asking it is not among the calls, but counted.
         self.version = "2.1.166 (Claude Code)"
         self.version_hangs = False
+        self.versions_asked = 0
+        # Where it is installed: a file of its own in each test.
+        self.path = ""
 
     def __call__(self, args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        if args == [CLAUDE_ON_PATH, "--version"]:
+        if args == [self.path, "--version"]:
+            self.versions_asked += 1
             if self.version_hangs:
                 raise subprocess.TimeoutExpired(args, cast("float", kwargs["timeout"]))
             return subprocess.CompletedProcess(args, 0, f"{self.version}\n", "")
@@ -124,12 +125,16 @@ class FakeClaude:
 
 
 @pytest.fixture
-def claude(monkeypatch: pytest.MonkeyPatch) -> FakeClaude:
+def claude(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> FakeClaude:
     """Claude Code chosen in Settings, and standing in for it: on the PATH unless missing."""
     settings.set_summarizer("claude")
     fake = FakeClaude()
+    installed = tmp_path / "bin" / "claude"
+    installed.parent.mkdir()
+    installed.write_text("")
+    fake.path = str(installed)
     monkeypatch.setattr(subprocess, "run", fake)
-    monkeypatch.setattr(shutil, "which", lambda _: None if fake.missing else CLAUDE_ON_PATH)
+    monkeypatch.setattr(shutil, "which", lambda _: None if fake.missing else fake.path)
     return fake
 
 
@@ -698,7 +703,7 @@ def test_a_missing_claude_says_how_to_get_it(claude: FakeClaude) -> None:
 
 
 CLAUDE_OLDER = (
-    "The claude at /opt/bin/claude is version {version}; Summarize needs 2.1.166 or newer: "
+    "The claude at {path} is version {version}; Summarize needs 2.1.166 or newer: "
     "update it with `claude update`"
 )
 
@@ -711,7 +716,9 @@ def test_a_claude_older_than_its_deny_rule_fails_the_run_and_is_never_asked(
 
     assert summarizer.summarize(recording_id, SUMMARIZED, PROMPT) is False
 
-    assert runs(recording_id)[0]["error"] == CLAUDE_OLDER.format(version="2.1.165")
+    assert runs(recording_id)[0]["error"] == CLAUDE_OLDER.format(
+        path=claude.path, version="2.1.165"
+    )
     assert claude.calls == []
 
 
@@ -740,7 +747,7 @@ def test_a_claude_older_than_its_deny_rule_says_its_version_and_how_to_update(
 ) -> None:
     claude.version = version
 
-    assert summarizer.problem() == CLAUDE_OLDER.format(version=found)
+    assert summarizer.problem() == CLAUDE_OLDER.format(path=claude.path, version=found)
 
 
 def test_a_claude_that_never_gives_its_version_is_an_unknown_one_and_does_not_hold_the_window(
@@ -748,7 +755,30 @@ def test_a_claude_that_never_gives_its_version_is_an_unknown_one_and_does_not_ho
 ) -> None:
     claude.version_hangs = True
 
-    assert summarizer.problem() == CLAUDE_OLDER.format(version="unknown")
+    assert summarizer.problem() == CLAUDE_OLDER.format(path=claude.path, version="unknown")
+
+
+def test_claude_is_asked_its_version_once_until_it_is_updated(claude: FakeClaude) -> None:
+    # Every refresh of the window asks, and each would start a claude.
+    asked = [summarizer.problem(), summarizer.problem()]
+    claude.version = "2.1.165 (Claude Code)"
+    same = summarizer.problem()
+    updated = Path(claude.path).stat().st_mtime_ns + 1_000_000_000
+    os.utime(claude.path, ns=(updated, updated))
+
+    assert (asked, same, claude.versions_asked) == (["", ""], "", 1)
+    assert summarizer.problem() == CLAUDE_OLDER.format(path=claude.path, version="2.1.165")
+    assert claude.versions_asked == 2
+
+
+def test_a_claude_that_timed_out_giving_its_version_is_asked_again(claude: FakeClaude) -> None:
+    # A slow cold start is no old claude: the window asks again at its next refresh.
+    claude.version_hangs = True
+    summarizer.problem()
+    claude.version_hangs = False
+
+    assert summarizer.problem() == ""
+    assert claude.versions_asked == 2
 
 
 def test_a_missing_claude_is_the_problem_while_it_is_chosen(claude: FakeClaude) -> None:

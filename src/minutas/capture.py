@@ -73,8 +73,7 @@ class Silence:
     """Tells the recording, in the unit's working directory, once neither track has been heard
     for as long as the settings' silence reminder, and again once either is."""
 
-    def __init__(self, pipeline: Gst.Pipeline, now: Callable[[], datetime]) -> None:
-        self.pipeline = pipeline
+    def __init__(self, now: Callable[[], datetime]) -> None:
         self.now = now
         self.recording_id = Path.cwd().name
         self.hearing = Hearing()
@@ -103,13 +102,9 @@ class Silence:
         # Before the write, so a recording that can't be written to fails once a silence, not
         # once a second.
         self.said = True
-        store.mark_silent(self.recording_id, self.time_of_day(end - quiet))
+        # A silence never spans a pause, so it began as long ago as it has lasted.
+        store.mark_silent(self.recording_id, self.now() - timedelta(microseconds=quiet // 1000))
         store.write_status()
-
-    def time_of_day(self, running_time: int) -> datetime:
-        clock = cast("Gst.Clock", self.pipeline.get_clock())
-        running_now = clock.get_time() - self.pipeline.get_base_time()
-        return self.now() - timedelta(microseconds=(running_now - running_time) // 1000)
 
     def paused(self) -> None:
         # The store forgets the silence it was told of when it marks the pause.
@@ -124,7 +119,7 @@ def run(pipeline: Gst.Pipeline, now: Callable[[], datetime] = local_now) -> int:
     """
     loop = GLib.MainLoop()
     errors: list[str] = []
-    silence = Silence(pipeline, now)
+    silence = Silence(now)
 
     def set_state(state: Gst.State) -> bool:
         pipeline.set_state(state)

@@ -285,17 +285,17 @@ test('formatClock shows minutes and seconds, and hours once there are any', () =
 });
 
 test('elapsedSeconds counts from a start time with a UTC offset', () => {
-    expect(elapsedSeconds(ACTIVE, Date.parse('2026-11-18T12:06:47Z'))).toStrictEqual(65);
+    expect(elapsedSeconds(ACTIVE, Date.parse('2026-11-18T12:06:47Z'))).toBe(65);
 });
 
 test('elapsedSeconds never goes below zero when the clock is behind', () => {
-    expect(elapsedSeconds(ACTIVE, Date.parse('2026-11-18T12:00:00Z'))).toStrictEqual(0);
+    expect(elapsedSeconds(ACTIVE, Date.parse('2026-11-18T12:00:00Z'))).toBe(0);
 });
 
 test('elapsedSeconds leaves out the time a recording was paused', () => {
     expect(
         elapsedSeconds({...ACTIVE, paused_seconds: 30}, Date.parse('2026-11-18T12:06:47Z'))
-    ).toStrictEqual(35);
+    ).toBe(35);
 });
 
 test('elapsedSeconds stands still while a recording is paused', () => {
@@ -307,7 +307,7 @@ test('elapsedSeconds stands still while a recording is paused', () => {
 });
 
 test('recentLabel shows the name, local start and duration', () => {
-    expect(recentLabel(entry())).toStrictEqual('Meeting · 2026-11-18 12:00 · 30:34');
+    expect(recentLabel(entry())).toBe('Meeting · 2026-11-18 12:00 · 30:34');
 });
 
 test('recentLabel hints while the transcript is queued or running', () => {
@@ -321,7 +321,7 @@ test('recentLabel hints while the transcript is queued or running', () => {
 });
 
 test('recentLabel says how far a running transcription has got', () => {
-    expect(recentLabel(entry({transcribe: 'running', progress: SPEAKERS}))).toStrictEqual(
+    expect(recentLabel(entry({transcribe: 'running', progress: SPEAKERS}))).toBe(
         'Meeting · 2026-11-18 12:00 · 30:34 · identifying speakers… 40%'
     );
 });

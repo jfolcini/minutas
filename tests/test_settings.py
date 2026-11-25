@@ -184,23 +184,6 @@ def test_set_summary_skill_keeps_it_with_the_other_settings_and_none_clears_it()
     assert settings.summary_model() == "swe-2-high"
 
 
-def test_no_audio_is_refused_until_a_server_refuses_one() -> None:
-    assert settings.refused_audio_size("gitlab.example.com") is None
-
-
-def test_a_refused_size_is_kept_per_host_with_the_other_settings_and_only_shrinks() -> None:
-    settings.set_agaric_space_id("01HZWORK")
-
-    settings.refuse_audio_size("a.example.com", 900)
-    settings.refuse_audio_size("a.example.com", 1200)
-    settings.refuse_audio_size("b.example.com", 5000)
-    settings.refuse_audio_size("a.example.com", 700)
-
-    assert settings.refused_audio_size("a.example.com") == 700
-    assert settings.refused_audio_size("b.example.com") == 5000
-    assert settings.agaric_space_id() == "01HZWORK"
-
-
 def test_no_gitlab_link_is_set_until_one_is() -> None:
     assert settings.gitlab_link() is None
 
