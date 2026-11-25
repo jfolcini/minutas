@@ -12,12 +12,15 @@ from minutas.window_view import (
     RowView,
     SpeakerView,
     TrackView,
+    UpdateView,
     agaric,
     clean_name,
     duration,
     limits_warning,
     row,
+    trash_refusal,
     unrecorded_failure,
+    update,
 )
 
 STATUSES = ("queued", "running", "succeeded", "failed", "cancelled")
@@ -123,7 +126,7 @@ def test_a_typed_name_says_so() -> None:
 def test_a_name_from_the_calendar_says_so() -> None:
     view = shown([], {"name": "Weekly sync", "name_source": "calendar"})
 
-    assert (view.name, view.name_source) == ("Weekly sync", "Calendar event")
+    assert (view.name, view.name_source) == ("Weekly sync", "From the calendar event")
 
 
 def test_a_name_from_the_summary_says_so() -> None:
@@ -286,6 +289,32 @@ def test_the_audio_stays_while_it_is_being_transcribed(status: str) -> None:
 
     assert view.delete_disabled == "Cancel the transcription first"
     assert view.transcribe.disabled == ""
+
+
+@pytest.mark.parametrize(
+    ("changes", "runs", "running", "refused"),
+    [
+        ({}, [], (), ""),
+        ({}, [run("transcribe", "failed"), run("summarize", "succeeded")], (), ""),
+        ({"stopped_at": None}, [], (), "Still recording"),
+        ({}, [run("transcribe", "queued")], (), "Cancel the transcription first"),
+        # An older run still waiting counts too: the worker takes it from the folder.
+        (
+            {},
+            [run("transcribe", "running"), run("transcribe", "failed")],
+            (),
+            "Cancel the transcription first",
+        ),
+        ({}, [], ("summarize",), "Summarize is still running"),
+        ({}, [], ("publish_agaric",), "Publish to Agaric is still running"),
+        ({}, [], ("publish_gitlab",), "Publish to GitLab is still running"),
+    ],
+)
+def test_a_recording_goes_to_the_trash_only_once_nothing_works_on_it(
+    changes: dict[str, object], runs: list[store.Run], running: tuple[str, ...], refused: str
+) -> None:
+    assert trash_refusal(recording(**changes), runs, running) == refused
+    assert shown(runs, changes, running=running).trash_disabled == refused
 
 
 @pytest.mark.parametrize(
@@ -836,6 +865,11 @@ def test_every_row_keeps_the_rules(case: Row) -> None:
     # Cancel can always be pressed.
     assert (view.transcribe.disabled == "") is (transcribing or (stopped and tracks != ()))
     assert (view.delete_disabled == "") is (stopped and tracks != () and not transcribing)
+    # Nothing goes to the Trash while it is recorded, transcribed, or worked on by a command.
+    in_progress = any(
+        r["action"] == "transcribe" and r["status"] in {"queued", "running"} for r in runs
+    )
+    assert (view.trash_disabled == "") is (stopped and not in_progress and not running)
     assert [track.file for track in view.tracks if track.available] == (
         [name for name in store.TRACKS if name in tracks] if stopped else []
     )
@@ -1006,3 +1040,47 @@ GOES = (
 )
 def test_the_limits_warning_says_how_much_audio_goes_now(over: int, said: str) -> None:
     assert limits_warning(over, "1.2 GB") == said
+
+
+INSTALLED = "uv: ok\nApp: installed /home/ana/.local/share/minutas/app and the minutas command\n"
+REOPEN = "Close this window and open it again to run the new version."
+LOGGED_OUT = "\nLeft to do:\n- Log out and back in to load the top-bar extension.\n"
+
+
+@pytest.mark.parametrize(
+    ("said", "shown"),
+    [
+        (
+            f"Updating to v0.4.0.\n{INSTALLED}",
+            UpdateView("Updated", f"Updated to v0.4.0. {REOPEN}"),
+        ),
+        (
+            f"Updating to v0.4.0.\n{INSTALLED}{LOGGED_OUT}",
+            UpdateView(
+                "Updated",
+                f"Updated to v0.4.0. {REOPEN} Log out and back in to load the top-bar extension.",
+            ),
+        ),
+        (
+            "Already on the latest release, v0.4.0.\nuv: ok\nApp: ok\n",
+            UpdateView("Up to date", "Already on the latest release, v0.4.0."),
+        ),
+    ],
+)
+def test_an_update_that_worked_says_what_to_do_next(said: str, shown: UpdateView) -> None:
+    assert update(said, exited_ok=True) == shown
+
+
+def test_a_failed_update_says_the_fix_it_was_given_last() -> None:
+    said = (
+        "Updating to v0.4.0.\nSystem packages: ok\n"
+        "Hugging Face token: failed: none in the GNOME keyring  \n\n"
+    )
+
+    assert update(said, exited_ok=False) == UpdateView(
+        "Update failed", "Hugging Face token: failed: none in the GNOME keyring", failed=True
+    )
+
+
+def test_a_failed_update_that_said_nothing_says_so() -> None:
+    assert update("", exited_ok=False).body == "minutas update stopped without saying why"

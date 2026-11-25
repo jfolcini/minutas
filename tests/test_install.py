@@ -4,12 +4,17 @@ The PATH holds the fakes and a folder of links to the few system tools the steps
 real gsettings, glab, uv or Agaric is ever reached, whatever this machine has installed.
 """
 
+import hashlib
+import io
 import os
 import shutil
 import subprocess
+import tarfile
 from pathlib import Path
 
 import pytest
+
+from minutas import window_view
 
 REPO = Path(__file__).resolve().parent.parent
 INSTALL_SH = REPO / "install.sh"
@@ -17,7 +22,7 @@ UUID = "minutas@jfolcini.github.io"
 PYTHON = "/usr/bin/python3"
 EXTENSION_FILES = ("metadata.json", "extension.js", "status.js")
 SYSTEM_TOOLS = ("bash", "cat", "chmod", "cmp", "cp", "diff", "dirname", "ln", "mkdir", "mv")
-SYSTEM_TOOLS += ("readlink", "rm", "sed", "sh")
+SYSTEM_TOOLS += ("readlink", "rm", "sed", "sh", "gzip", "sha256sum", "tar")
 
 
 class Sandbox:
@@ -73,6 +78,80 @@ class Sandbox:
 @pytest.fixture
 def sandbox(tmp_path: Path) -> Sandbox:
     return Sandbox(tmp_path)
+
+
+# --- uv ----------------------------------------------------------------------------------------
+
+UV_ARCHIVE = "uv-x86_64-unknown-linux-gnu"
+UV_URL = f"https://github.com/astral-sh/uv/releases/download/0.13.6/{UV_ARCHIVE}.tar.gz"
+
+
+def uv_release(sandbox: Sandbox) -> str:
+    """uv 0.13.6's archive as GitHub serves it, to a curl that saves it; returns its sha256.
+
+    The machine is x86_64, whatever this one is.
+    """
+    built = sandbox.home.parent / f"{UV_ARCHIVE}.tar.gz"
+    with tarfile.open(built, "w:gz") as archive:
+        for name in ("uv", "uvx"):
+            script = f"#!/bin/sh\necho '{name} 0.13.6 (x86_64-unknown-linux-gnu)'\n".encode()
+            member = tarfile.TarInfo(f"{UV_ARCHIVE}/{name}")
+            member.size = len(script)
+            member.mode = 0o755
+            archive.addfile(member, io.BytesIO(script))
+    sandbox.fake("uname", "echo x86_64")
+    sandbox.fake(
+        "curl", f'while (($#)); do [[ $1 == -o ]] && out=$2; shift; done; cp {built} "$out"'
+    )
+    return hashlib.sha256(built.read_bytes()).hexdigest()
+
+
+def test_uv_is_downloaded_checked_against_its_pin_and_replaces_an_older_one(
+    sandbox: Sandbox,
+) -> None:
+    sha256 = uv_release(sandbox)
+    sandbox.fake("uv", "echo 'uv 0.13.5 (x86_64-unknown-linux-gnu)'", folder=sandbox.local_bin)
+
+    result = sandbox.run(f"uv_sha256[x86_64]={sha256}; step_uv")
+
+    assert result.stdout == f"uv: installed uv 0.13.6 in {sandbox.local_bin}\n"
+    download = sandbox.home / ".cache" / "minutas" / f"{UV_ARCHIVE}.tar.gz"
+    assert sandbox.calls() == ["uv --version", "uname -m", f"curl -fLsS -o {download} {UV_URL}"]
+    for name in ("uv", "uvx"):
+        said = subprocess.run(  # noqa: S603 - the test's own fake
+            [sandbox.local_bin / name], capture_output=True, text=True, check=True
+        )
+        assert said.stdout == f"{name} 0.13.6 (x86_64-unknown-linux-gnu)\n"
+    assert sandbox.run("step_uv").stdout == "uv: ok\n"
+
+
+def test_uv_that_does_not_match_its_pin_is_never_unpacked(sandbox: Sandbox) -> None:
+    # install.sh's own pin, which no archive built here matches.
+    uv_release(sandbox)
+
+    result = sandbox.run("step_uv")
+
+    assert result.returncode == 1
+    assert result.stderr == (
+        "uv: failed: the uv 0.13.6 download doesn't match the checksum install.sh pins for it, "
+        "so it wasn't installed. Run install.sh again; if it fails the same way, report it at "
+        "https://github.com/jfolcini/minutas/issues\n"
+    )
+    assert not sandbox.local_bin.exists()
+
+
+def test_uv_on_a_machine_without_a_pin_stops_the_script(sandbox: Sandbox) -> None:
+    uv_release(sandbox)
+    sandbox.fake("uname", "echo armv7l")
+
+    result = sandbox.run("step_uv")
+
+    assert result.returncode == 1
+    assert result.stderr == (
+        "uv: failed: uv 0.13.6 is pinned for x86_64 and aarch64 only, and this computer is "
+        "armv7l.\n"
+    )
+    assert sandbox.calls() == ["uname -m"]
 
 
 # --- glab --------------------------------------------------------------------------------------
@@ -422,3 +501,39 @@ def test_no_summarizer_says_how_to_install_either(sandbox: Sandbox) -> None:
         "`devin auth login`; or Claude Code with `curl -fsSL https://claude.ai/install.sh | bash`, "
         "then log in with `claude auth login`\n"
     )
+
+
+# --- Summary -----------------------------------------------------------------------------------
+
+STEPS = "step_gnome_extension; step_agaric_mcp; step_glab; step_summarizer"
+
+
+def test_the_summary_says_to_log_out_and_names_the_optional_tools_missing(
+    sandbox: Sandbox,
+) -> None:
+    gsettings(sandbox)
+    sandbox.fake("agaric-mcp", WITH_CALL)
+
+    result = sandbox.run(f"{{ {STEPS}; }} >/dev/null; summary")
+
+    assert result.stdout == (
+        "\n"
+        "Left to do:\n"
+        "- Log out and back in to load the top-bar extension.\n"
+        "- Optional, still missing: glab, Summarizer; their lines above say what needs them and "
+        "how to get them.\n"
+    )
+    # What the Recordings window looks for after an update.
+    assert f"- {window_view.LOG_OUT}\n" in result.stdout
+
+
+def test_the_summary_is_left_out_when_nothing_is_left_to_do(sandbox: Sandbox) -> None:
+    gsettings(sandbox)
+    sandbox.run("step_gnome_extension")
+    sandbox.fake("agaric-mcp", WITH_CALL)
+    sandbox.fake("glab", 'echo "glab 1.91.0"')
+    sandbox.fake("devin")
+
+    result = sandbox.run(f"{STEPS}; summary")
+
+    assert result.stdout == "GNOME extension: ok\nagaric-mcp: ok\nglab: ok\nSummarizer: ok\n"
