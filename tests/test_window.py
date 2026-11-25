@@ -1830,8 +1830,7 @@ def test_an_update_says_to_open_the_window_again_and_when_to_log_out(
     history: Callable[[], window.HistoryWindow], minutas_update: FakeUpdate
 ) -> None:
     minutas_update.will(
-        "Updating to v0.4.0.\nInstalls Minutas...\n\nuv: ok\nApp: installed\n"
-        f"\nLeft to do:\n- {window_view.LOG_OUT}\n"
+        f"Updating to v0.4.0.\nuv: ok\nApp: installed\n\nLeft to do:\n- {window_view.LOG_OUT}\n"
     )
     shown = history()
 
@@ -1846,6 +1845,25 @@ def test_an_update_says_to_open_the_window_again_and_when_to_log_out(
     assert list(buttons(dialog)) == ["Close"]
     press(dialog, "Close")
     assert shown.get_visible_dialog() is None
+
+
+def test_an_update_on_the_latest_release_says_only_that_whatever_the_last_one_printed(
+    history: Callable[[], window.HistoryWindow], minutas_update: FakeUpdate
+) -> None:
+    shown = history()
+    # A longer log from an earlier update, which said to log out.
+    (store.data_dir() / "update.log").write_text(
+        f"Updating to v0.3.0.\nuv: ok\nApp: installed\n\nLeft to do:\n- {window_view.LOG_OUT}\n"
+    )
+
+    dialog = update(shown)
+
+    assert minutas_update.called() == ["update"]
+    assert (dialog.get_heading(), dialog.get_body()) == (
+        "Up to date",
+        "Already on the latest release, v0.4.0.",
+    )
+    press(dialog, "Close")
 
 
 def test_a_failed_update_says_the_fix_and_shows_all_it_printed(

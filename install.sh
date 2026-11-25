@@ -39,8 +39,8 @@ models=(
   "pyannote/speaker-diarization-community-1 3533c8cf8e369892e6b79ff1bf80f7b0286a54ee *"
 )
 token_attributes=(service minutas username huggingface)
-# What each step reported, and whether GNOME Shell has a new extension to load: for the summary.
-declare -A reported=()
+# For the summary: the optional tools missing, and whether GNOME Shell has a new extension to load.
+missing_tools=()
 log_out=false
 
 intro() {
@@ -58,10 +58,7 @@ fails says how to fix it, and running install.sh again carries on from there.
 EOF
 }
 
-report() {
-  printf '%s: %s\n' "$1" "$2"
-  reported[$1]=$2
-}
+report() { printf '%s: %s\n' "$1" "$2"; }
 
 fail() {
   printf '%s: failed: %s\n' "$1" "$2" >&2
@@ -257,6 +254,7 @@ step_agaric_mcp() {
     report agaric-mcp ok
     return
   fi
+  missing_tools+=(agaric-mcp)
   report agaric-mcp "no agaric-mcp with \`call\` at $own or on the PATH; Publish to Agaric needs it. Install Agaric 0.26 or newer and start it once"
 }
 
@@ -274,6 +272,7 @@ step_glab() {
     fi
     found="the PATH has glab ${BASH_REMATCH[0]}"
   fi
+  missing_tools+=(glab)
   report glab "$found; Publish to GitLab stays off until glab 1.91 or newer is installed from GitLab's own .deb: https://gitlab.com/gitlab-org/cli/-/releases"
 }
 
@@ -282,20 +281,18 @@ step_devin() {
     report "Devin CLI" ok
     return
   fi
+  missing_tools+=("Devin CLI")
   report "Devin CLI" "not installed; Summarize needs it. Install it with \`curl -fsSL https://cli.devin.ai/install.sh | bash\`, then log in with \`devin auth login\`"
 }
 
 # What is left for the person to do, if anything.
 summary() {
-  local left=() missing=() tool list
+  local left=() list
   if [[ $log_out == true ]]; then
     left+=("Log out and back in to load the top-bar extension.")
   fi
-  for tool in agaric-mcp glab "Devin CLI"; do
-    [[ ${reported[$tool]:-ok} == ok ]] || missing+=("$tool")
-  done
-  if ((${#missing[@]} > 0)); then
-    list=$(printf '%s, ' "${missing[@]}")
+  if ((${#missing_tools[@]} > 0)); then
+    list=$(printf '%s, ' "${missing_tools[@]}")
     left+=("Optional, still missing: ${list%, }; their lines above say what needs them and how to get them.")
   fi
   if ((${#left[@]} > 0)); then
@@ -305,7 +302,8 @@ summary() {
 }
 
 main() {
-  intro
+  # The intro says what it may ask for, which it can ask only in a terminal: not under Update Minutas.
+  if [[ -t 0 ]]; then intro; fi
   step_system_packages
   step_uv
   step_speech_environment

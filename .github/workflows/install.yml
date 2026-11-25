@@ -58,8 +58,7 @@ jobs:
         shell: bash
         run: |
           ./install.sh 2>&1 | tee second-run.log
-          # The intro, up to its blank line, reads the same on every run; every line after it counts.
-          if sed '1,/^$/d' second-run.log | grep -Ev '^[^:]+: (ok|skipped: MINUTAS_SKIP_MODELS=1)$'; then
+          if grep -Ev '^[^:]+: (ok|skipped: MINUTAS_SKIP_MODELS=1)$' second-run.log; then
             echo "::error::The second run did something (lines above); every step must print ok."
             exit 1
           fi

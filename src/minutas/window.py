@@ -1113,6 +1113,8 @@ class HistoryWindow(Adw.ApplicationWindow):
         asking for, must not cut it off midway.
         """
         log = store.data_dir() / "update.log"
+        # The launcher writes over the file without truncating it: the last update's tail stays.
+        log.unlink(missing_ok=True)
         launcher = Gio.SubprocessLauncher.new(Gio.SubprocessFlags.STDERR_MERGE)
         launcher.set_stdout_file_path(str(log))
         command = launcher.spawnv([*MINUTAS, "update"])
