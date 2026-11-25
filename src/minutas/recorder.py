@@ -18,7 +18,6 @@ from minutas import store
 UNIT = "minutas-recorder.service"
 # 16 kHz mono is what every speech model downstream takes, so no bits go above that band.
 CAPTURE_CAPS = "audio/x-raw,rate=16000,channels=1"
-MIC_TRACK, CALL_TRACK = store.TRACKS
 # A runaway pipeline is killed at its limit instead of swapping the desktop to death; the tracks
 # keep what it wrote and the recording is marked incomplete. Neither MemoryHigh nor swap: both
 # would stall capture instead.
@@ -56,20 +55,22 @@ def track_branch(source: list[str], file_name: str) -> list[str]:
     ]
 
 
-def capturing(folder: Path) -> bool:
+def capturing(folder: Path, tracks: tuple[str, str]) -> bool:
     # filesink creates both files before the sources connect, so only bytes prove capture.
-    return all(store.has_audio(folder / name) for name in store.TRACKS)
+    return all(store.has_audio(folder / name) for name in tracks)
 
 
 def start(
     folder: Path,
     *,
     on_exit: list[str],
+    tracks: tuple[str, str] = store.TRACKS,
     clock: Callable[[], float] = time.monotonic,
     wait: Callable[[float], None] = time.sleep,
 ) -> None:
     """Starts recording into folder and returns once both tracks hold audio.
 
+    tracks: the files the mic and the call go to, the parts of a recording that is continued.
     on_exit runs when the recorder stops for any reason; systemd passes it the outcome in
     SERVICE_RESULT. A recorder that dies or captures nothing raises RecorderError, once it has
     stopped and its on_exit has run.
@@ -91,13 +92,13 @@ def start(
             f"--working-directory={folder}",
             # The app's own Python, which is Ubuntu's: its PyGObject reaches GStreamer.
             *("--", sys.executable, "-m", "minutas.capture"),
-            *track_branch(["pulsesrc"], MIC_TRACK),
-            *track_branch(["pulsesrc", "device=@DEFAULT_MONITOR@"], CALL_TRACK),
+            *track_branch(["pulsesrc"], tracks[0]),
+            *track_branch(["pulsesrc", "device=@DEFAULT_MONITOR@"], tracks[1]),
         ]
     )
     # systemd-run returns once the process is forked, before GStreamer has opened anything.
     deadline = clock() + CAPTURE_TIMEOUT_SECONDS
-    while not capturing(folder):
+    while not capturing(folder, tracks):
         if clock() >= deadline or not is_running():
             # Stop waits for on_exit too, so the caller finds the folder settled; on a unit that
             # is already gone it fails, which changes nothing.

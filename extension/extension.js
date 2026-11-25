@@ -19,8 +19,8 @@ import {
     lastLine,
     notificationsFor,
     parseStatus,
+    recentControls,
     recentLabel,
-    transcriptionControl,
 } from './status.js';
 
 const ICON = 'audio-input-microphone-symbolic';
@@ -68,8 +68,8 @@ export default class MinutasExtension extends Extension {
         this._recordingItems = [
             this._pauseItem,
             menu.addAction('Finish', () => this._run(['record', 'stop'], "Couldn't finish the recording")),
-            menu.addAction('Discard…', () => this._askToDiscard()),
         ];
+        this._discardItem = menu.addAction('Discard…', () => this._askToDiscard());
         menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
         this._recentSection = new PopupMenu.PopupMenuSection();
         menu.addMenuItem(this._recentSection);
@@ -121,6 +121,7 @@ export default class MinutasExtension extends Extension {
         this._recordItem = null;
         this._pauseItem = null;
         this._recordingItems = null;
+        this._discardItem = null;
         this._recentSection = null;
         this._recentItems = null;
         this._commandItems = null;
@@ -180,7 +181,8 @@ export default class MinutasExtension extends Extension {
         // While a transcription runs only its label changes, every few seconds: set in place, the
         // items of an open menu keep the pointer's hover and the keyboard's focus.
         const shape = recent
-            .map(entry => `${entry.id} ${hasWarning(entry)} ${transcriptionControl(entry)?.label}`).join('\n');
+            .map(entry => `${entry.id} ${hasWarning(entry)} ${recentControls(entry).map(control => control.label)}`)
+            .join('\n');
         if (shape === this._recentShape) {
             recent.forEach((entry, i) => (this._recentItems[i].label.text = recentLabel(entry)));
             return;
@@ -191,8 +193,7 @@ export default class MinutasExtension extends Extension {
             const item = this._recentSection.addAction(recentLabel(entry), () => this._openHistory(entry.id));
             if (hasWarning(entry))
                 item.add_child(new St.Icon({icon_name: 'dialog-warning-symbolic', style_class: 'popup-menu-icon'}));
-            const control = transcriptionControl(entry);
-            if (control) {
+            for (const control of recentControls(entry)) {
                 // Under its recording and set in from it, by the room an ornament would take.
                 this._recentSection.addAction(control.label, () => this._run(control.args, control.failureTitle))
                     .setOrnament(PopupMenu.Ornament.NONE);
@@ -273,6 +274,8 @@ export default class MinutasExtension extends Extension {
         this._recordItem.visible = this._installed && !recording;
         for (const item of this._recordingItems)
             item.visible = this._installed && recording;
+        // The Trash would take what a continued recording held before its stop: Finish ends it.
+        this._discardItem.visible = this._installed && recording && !this._status.recording.continued;
         for (const item of this._commandItems)
             item.visible = this._installed;
     }

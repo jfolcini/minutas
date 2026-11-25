@@ -61,17 +61,22 @@ class FakeRecorder:
         self.error: recorder.RecorderError | None = None
         self.on_failed_start: Callable[[Path], None] = lambda _: None
         self.started: list[tuple[Path, list[str]]] = []
+        # The files each start recorded into.
+        self.tracks: list[tuple[str, str]] = []
         self.stops = 0
         self.pauses = 0
         self.resumes = 0
         # What the unit runs once its recorder has stopped.
         self.on_stop: Callable[[], object] = lambda: None
 
-    def start(self, folder: Path, *, on_exit: list[str]) -> None:
+    def start(
+        self, folder: Path, *, on_exit: list[str], tracks: tuple[str, str] = store.TRACKS
+    ) -> None:
         if self.error is not None:
             self.on_failed_start(folder)
             raise self.error
         self.started.append((folder, on_exit))
+        self.tracks.append(tracks)
 
     def is_running(self) -> bool:
         return self.running
@@ -1712,3 +1717,233 @@ def test_update_after_a_failed_install_sh_runs_it_again(releases: Releases) -> N
     assert main(["update"]) == 3
 
     assert releases.installed.read_text() == "v0.11.0\nv0.11.0\n"
+
+
+STOPPED = START + timedelta(seconds=60)
+CONTINUED = START + timedelta(seconds=100)
+
+
+def false_stop(*transcriptions: str) -> str:
+    """A recording stopped a minute in, with both tracks and its transcriptions so far."""
+    recording_id = store.create_recording(START)["id"]
+    for name in store.TRACKS:
+        with_audio(recording_id, name)
+    store.mark_stopped(recording_id, STOPPED, incomplete=False)
+    runs = [{**queued(STOPPED.isoformat()), "status": status} for status in transcriptions]
+    (store.recording_dir(recording_id) / "runs.json").write_text(json.dumps(runs))
+    return recording_id
+
+
+@pytest.mark.parametrize("transcription", ["queued", "running"])
+def test_record_continue_records_into_the_recording_again_and_cancels_its_transcription(
+    fake_recorder: FakeRecorder,
+    fake_worker: FakeWorker,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    transcription: str,
+) -> None:
+    recording_id = false_stop("failed", transcription)
+    monkeypatch.setattr(cli, "now", lambda: CONTINUED)
+
+    assert main(["record", "continue", recording_id]) == 0
+
+    assert capsys.readouterr() == ("", "")
+    assert fake_recorder.started == [
+        (
+            store.recording_dir(recording_id),
+            [sys.executable, "-m", "minutas", "record", "stopped", recording_id],
+        )
+    ]
+    assert fake_recorder.tracks == [("mic.continued.opus", "call.continued.opus")]
+    assert fake_worker.cancelled == [(recording_id, 1)]
+    # The time since the stop is one more pause: the timer goes on from the minute it had.
+    assert read_status() == {
+        "version": 1,
+        "recording": {
+            "id": recording_id,
+            "started_at": "2026-11-18T13:05:42+00:00",
+            "paused_seconds": 40,
+            "continued": True,
+        },
+        "recent": [],
+    }
+
+
+@pytest.mark.parametrize("transcriptions", [[], ["failed"], ["queued", "cancelled"]])
+def test_record_continue_cancels_no_transcription_that_has_ended(
+    fake_recorder: FakeRecorder, fake_worker: FakeWorker, transcriptions: list[str]
+) -> None:
+    recording_id = false_stop(*transcriptions)
+
+    assert main(["record", "continue", recording_id]) == 0
+
+    assert len(fake_recorder.started) == 1
+    assert fake_worker.cancelled == []
+
+
+def test_a_continued_recording_pauses_and_finishes_as_a_new_one_and_keeps_its_typed_name(
+    fake_recorder: FakeRecorder,
+    fake_worker: FakeWorker,
+    fake_calendar: FakeCalendar,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recording_id = false_stop("cancelled")
+    store.set_typed_name(recording_id, "Planning")
+    fake_calendar.event = WEEKLY_SYNC
+    fake_recorder.on_stop = lambda: main(["record", "stopped", recording_id])
+    monkeypatch.setenv("SERVICE_RESULT", "success")
+    # Continue, pause, resume, the stop, and the transcription it queues.
+    clock = iter([CONTINUED + timedelta(seconds=s) for s in (0, 10, 15, 30, 31)])
+    monkeypatch.setattr(cli, "now", lambda: next(clock))
+
+    assert main(["record", "continue", recording_id]) == 0
+    fake_recorder.running = True
+    assert [main(["record", command]) for command in ("pause", "resume", "stop")] == [0, 0, 0]
+
+    assert (fake_recorder.pauses, fake_recorder.resumes, fake_recorder.stops) == (1, 1, 1)
+    assert fake_calendar.asked == [(START, CONTINUED + timedelta(seconds=30))]
+    assert store.load_recording(recording_id) == {
+        "id": recording_id,
+        "started_at": "2026-11-18T13:05:42+00:00",
+        "stopped_at": "2026-11-18T13:07:52+00:00",
+        "incomplete": False,
+        "name": "Planning",
+        "name_source": "typed",
+        "attendees": ["Ana Díaz", "bob.ruiz"],
+        # The 40 s it was stopped for and the 5 s it was paused for.
+        "paused_seconds": 45,
+        "continued": True,
+    }
+    assert [run["status"] for run in store.load_runs(recording_id)] == ["cancelled", "queued"]
+    assert fake_worker.starts == 1
+    recent = read_status()["recent"]
+    assert isinstance(recent, list)
+    assert [(entry["name"], entry["duration_seconds"]) for entry in recent] == [("Planning", 85)]
+
+
+def test_record_continue_takes_up_a_recording_whose_recorder_died(
+    fake_recorder: FakeRecorder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    abandoned_id = abandoned_recording()
+    folder = store.recording_dir(abandoned_id)
+    (folder / "call.opus").write_bytes(b"OggS")
+    written = (folder / "mic.opus").stat().st_mtime
+    os.utime(folder / "call.opus", (written, written))
+    monkeypatch.setattr(cli, "now", lambda: CONTINUED)
+
+    assert main(["record", "continue", abandoned_id]) == 0
+
+    assert fake_recorder.tracks == [store.PARTS]
+    # It stopped when its audio was last written, 30 s in.
+    assert store.load_recording(abandoned_id).get("paused_seconds") == 70
+
+
+def test_record_continue_while_recording_refuses(
+    fake_recorder: FakeRecorder, capsys: pytest.CaptureFixture[str]
+) -> None:
+    recording_id = false_stop("queued")
+    fake_recorder.running = True
+
+    assert main(["record", "continue", recording_id]) == 1
+
+    assert capsys.readouterr().err == "Already recording.\n"
+    assert fake_recorder.started == []
+    assert store.load_recording(recording_id)["stopped_at"] == "2026-11-18T13:06:42+00:00"
+
+
+def test_record_continue_refuses_an_unknown_recording(
+    fake_recorder: FakeRecorder, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["record", "continue", "2026-11-18T13-05-43"]) == 1
+
+    assert capsys.readouterr().err == "No recording 2026-11-18T13-05-43.\n"
+    assert fake_recorder.started == []
+
+
+def test_record_continue_refuses_a_recording_that_cannot_be_continued_and_says_why(
+    fake_recorder: FakeRecorder, fake_worker: FakeWorker, capsys: pytest.CaptureFixture[str]
+) -> None:
+    recording_id = false_stop("succeeded")
+    before = (store.recording_dir(recording_id) / "recording.json").read_text()
+    abandoned_id = store.create_recording(START + timedelta(hours=1))["id"]
+    store.write_status()
+
+    assert main(["record", "continue", recording_id]) == 1
+
+    assert capsys.readouterr().err == f"Can't continue {recording_id}: it has been transcribed.\n"
+    assert (fake_recorder.started, fake_worker.cancelled) == ([], [])
+    assert (store.recording_dir(recording_id) / "recording.json").read_text() == before
+    # The status says what closing the recording whose recorder had died changed.
+    assert store.load_recording(abandoned_id)["incomplete"] is True
+    assert read_status()["recording"] is None
+
+
+def test_record_continue_whose_recorder_captures_nothing_leaves_the_recording_stopped_again(
+    fake_recorder: FakeRecorder,
+    fake_worker: FakeWorker,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    recording_id = false_stop("running")
+    fake_recorder.error = recorder.RecorderError("no audio reached its tracks")
+
+    def exit_command_ran(_: Path) -> None:
+        """Its unit ran, so its exit command did."""
+        main(["record", "stopped", recording_id])
+
+    fake_recorder.on_failed_start = exit_command_ran
+    monkeypatch.setenv("SERVICE_RESULT", "exit-code")
+    # Continue, the recorder's exit two seconds on, the transcription it queues, and after.
+    clock = iter([CONTINUED + timedelta(seconds=s) for s in (0, 2, 3, 4)])
+    monkeypatch.setattr(cli, "now", lambda: next(clock))
+
+    assert main(["record", "continue", recording_id]) == 1
+
+    assert capsys.readouterr().err == "Could not start the recorder: no audio reached its tracks\n"
+    # As its exit command left it, the two seconds the recorder tried for included.
+    recording = store.load_recording(recording_id)
+    assert (recording["stopped_at"], recording["incomplete"]) == ("2026-11-18T13:07:24+00:00", True)
+    assert store.duration_seconds(recording) == 62
+    # The transcription it cancelled is queued again, as after any stop.
+    assert fake_worker.cancelled == [(recording_id, 0)]
+    assert [run["status"] for run in store.load_runs(recording_id)] == ["running", "queued"]
+    assert read_status()["recording"] is None
+
+
+def test_record_continue_whose_recorder_never_started_leaves_the_recording_stopped_as_it_was(
+    fake_recorder: FakeRecorder, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    recording_id = false_stop("failed")
+    store.mark_stopped(recording_id, STOPPED, incomplete=True)
+    # No unit, so no exit command either.
+    fake_recorder.error = recorder.RecorderError("Failed to connect to bus")
+    monkeypatch.setattr(cli, "now", lambda: CONTINUED)
+
+    assert main(["record", "continue", recording_id]) == 1
+
+    assert capsys.readouterr().err == "Could not start the recorder: Failed to connect to bus\n"
+    recording = store.load_recording(recording_id)
+    assert (recording["stopped_at"], recording["incomplete"]) == ("2026-11-18T13:07:22+00:00", True)
+    assert store.duration_seconds(recording) == 60
+    assert [run["status"] for run in store.load_runs(recording_id)] == ["failed"]
+    status = read_status()
+    assert status["recording"] is None
+    recent = status["recent"]
+    assert isinstance(recent, list)
+    assert [(entry["id"], entry["continuable"]) for entry in recent] == [(recording_id, True)]
+
+
+def test_record_discard_refuses_a_continued_recording(
+    fake_recorder: FakeRecorder, fake_trash: FakeTrash, capsys: pytest.CaptureFixture[str]
+) -> None:
+    recording_id = false_stop("cancelled")
+    assert main(["record", "continue", recording_id]) == 0
+    fake_recorder.running = True
+
+    assert main(["record", "discard"]) == 1
+
+    assert capsys.readouterr().err == (
+        "A continued recording can't be discarded: Finish ends it.\n"
+    )
+    assert (fake_recorder.stops, fake_trash.trashed) == (0, [])
+    assert "discarded" not in store.load_recording(recording_id)

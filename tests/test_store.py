@@ -552,6 +552,7 @@ def test_status_lists_the_active_recording_and_five_newest_stopped() -> None:
         "transcribe": None,
         "progress": None,
         "failed": [],
+        "continuable": False,
     }
 
 
@@ -1254,3 +1255,227 @@ def test_audio_size_is_what_both_tracks_take_and_nothing_once_deleted() -> None:
     store.delete_tracks(recording_id)
 
     assert store.audio_size(recording_id) == 0
+
+
+def with_audio(recording_id: str, names: tuple[str, ...] = store.TRACKS) -> str:
+    for name in names:
+        (store.recording_dir(recording_id) / name).write_bytes(b"OggS")
+    return recording_id
+
+
+def stopped_recording() -> store.Recording:
+    recording = default_recording()
+    recording["stopped_at"] = "2026-11-18T13:06:42+00:00"
+    return recording
+
+
+@pytest.mark.parametrize(
+    "transcriptions",
+    [[], ["queued"], ["running"], ["failed"], ["cancelled"], ["succeeded", "failed"]],
+)
+def test_a_stopped_recording_not_transcribed_with_both_tracks_can_be_continued(
+    transcriptions: list[str],
+) -> None:
+    runs = [a_run("summarize", "succeeded"), *(a_run("transcribe", s) for s in transcriptions)]
+
+    assert store.continue_refusal(stopped_recording(), runs, store.TRACKS) is None
+
+
+@pytest.mark.parametrize(
+    ("stopped", "transcriptions", "audio", "refusal"),
+    [
+        (False, [], store.TRACKS, "it is still being recorded"),
+        (True, ["failed", "succeeded"], store.TRACKS, "it has been transcribed"),
+        (True, [], ("mic.opus",), "its audio is gone"),
+        (True, [], (), "its audio is gone"),
+        (
+            True,
+            ["cancelled"],
+            (*store.TRACKS, "call.continued.opus"),
+            "what it recorded after the last Continue is still to be joined: transcribe it first",
+        ),
+    ],
+)
+def test_a_recording_that_cannot_be_continued_says_why(
+    transcriptions: list[str], audio: tuple[str, ...], refusal: str, *, stopped: bool
+) -> None:
+    recording = stopped_recording() if stopped else default_recording()
+    runs = [a_run("transcribe", status) for status in transcriptions]
+
+    assert store.continue_refusal(recording, runs, audio) == refusal
+
+
+@given(
+    stopped=st.booleans(),
+    runs=st.lists(st.tuples(st.sampled_from(store.ACTIONS), st.sampled_from(STATUSES)), max_size=5),
+    audio=st.sets(st.sampled_from([*store.TRACKS, *store.PARTS])),
+)
+def test_only_a_stopped_untranscribed_recording_with_its_two_tracks_and_no_part_can_be_continued(
+    runs: list[tuple[str, str]], audio: set[str], *, stopped: bool
+) -> None:
+    recording = stopped_recording() if stopped else default_recording()
+
+    refusal = store.continue_refusal(recording, [a_run(*run) for run in runs], audio)
+
+    transcriptions = [status for action, status in runs if action == "transcribe"]
+    assert (refusal is None) == (
+        stopped and transcriptions[-1:] != ["succeeded"] and audio == set(store.TRACKS)
+    )
+
+
+def test_a_continued_recording_goes_on_from_where_it_stopped() -> None:
+    recording_id = make_stopped(START, seconds=60, incomplete=True)
+    store.set_typed_name(recording_id, "Planning")
+    store.mark_discarded(recording_id)
+
+    store.mark_continued(recording_id, START + timedelta(seconds=100))
+
+    assert store.load_recording(recording_id) == {
+        "id": "2026-11-18T13-05-42",
+        "started_at": "2026-11-18T13:05:42+00:00",
+        "stopped_at": None,
+        "incomplete": False,
+        "name": "Planning",
+        "name_source": "typed",
+        # The time since it stopped, as one more pause.
+        "paused_seconds": 40,
+        "continued": True,
+    }
+
+    store.mark_stopped(recording_id, START + timedelta(seconds=130), incomplete=False)
+
+    assert store.duration_seconds(store.load_recording(recording_id)) == 90
+
+
+def test_a_recording_continued_after_a_pause_keeps_its_earlier_pauses() -> None:
+    recording_id = store.create_recording(START)["id"]
+    store.mark_paused(recording_id, START + timedelta(seconds=10))
+    store.mark_stopped(recording_id, START + timedelta(seconds=30), incomplete=False)
+
+    store.mark_continued(recording_id, START + timedelta(seconds=45))
+
+    recording = store.load_recording(recording_id)
+    assert recording.get("paused_seconds") == 35
+    assert "paused_at" not in recording
+
+
+@given(
+    spans=st.lists(
+        st.tuples(
+            st.integers(min_value=0, max_value=7200),
+            st.integers(min_value=0, max_value=7200),
+            st.booleans(),
+        ),
+        max_size=6,
+    ),
+    last=st.integers(min_value=0, max_value=7200),
+)
+def test_a_recording_lasts_as_long_as_it_was_neither_paused_nor_stopped(
+    spans: list[tuple[int, int, bool]], last: int
+) -> None:
+    recording = default_recording()
+    clock = START
+    for recorded, away, stopped in spans:
+        clock += timedelta(seconds=recorded)
+        if stopped:
+            recording["stopped_at"] = clock.isoformat()
+            clock += timedelta(seconds=away)
+            store.reopen(recording, clock)
+        else:
+            recording["paused_at"] = clock.isoformat()
+            clock += timedelta(seconds=away)
+            store.end_pause(recording, clock)
+    recording["stopped_at"] = (clock + timedelta(seconds=last)).isoformat()
+
+    assert recording["started_at"] == "2026-11-18T13:05:42+00:00"
+    assert store.duration_seconds(recording) == sum(recorded for recorded, _, _ in spans) + last
+    assert recording.get("paused_seconds", 0) == sum(away for _, away, _ in spans)
+
+
+def recent_continuable() -> list[tuple[object, object]]:
+    recent = cast("list[dict[str, object]]", read_status()["recent"])
+    return [(entry["id"], entry["continuable"]) for entry in recent]
+
+
+def test_status_says_which_recent_recordings_can_be_continued() -> None:
+    transcribed = with_audio(make_stopped(START))
+    store.save_runs(transcribed, TRANSCRIBED)
+    deleted = make_stopped(START + timedelta(hours=1))
+    to_join = with_audio(make_stopped(START + timedelta(hours=2)), (*store.TRACKS, *store.PARTS))
+    false_stop = with_audio(make_stopped(START + timedelta(hours=3)))
+    store.save_runs(false_stop, [a_run("transcribe", "running")])
+
+    store.write_status()
+
+    assert recent_continuable() == [
+        (false_stop, True),
+        (to_join, False),
+        (deleted, False),
+        (transcribed, False),
+    ]
+
+
+def test_status_offers_no_recording_to_continue_while_one_is_in_progress() -> None:
+    false_stop = with_audio(make_stopped(START))
+    store.create_recording(START + timedelta(hours=1))
+
+    store.write_status()
+
+    assert recent_continuable() == [(false_stop, False)]
+
+
+def test_status_says_the_active_recording_was_continued() -> None:
+    recording_id = make_stopped(START, seconds=60)
+    store.mark_continued(recording_id, START + timedelta(seconds=90))
+
+    store.write_status()
+
+    assert read_status()["recording"] == {
+        "id": "2026-11-18T13-05-42",
+        "started_at": "2026-11-18T13:05:42+00:00",
+        "paused_seconds": 30,
+        "continued": True,
+    }
+
+
+def test_audio_kept_is_the_tracks_and_parts_that_hold_audio() -> None:
+    recording_id = with_audio(make_stopped(START), ("call.opus", "mic.continued.opus"))
+    (store.recording_dir(recording_id) / "mic.opus").touch()
+    (store.recording_dir(recording_id) / "call.continued.opus").touch()
+
+    assert store.audio_kept(recording_id) == ["call.opus", "mic.continued.opus"]
+
+
+def test_delete_tracks_removes_what_was_recorded_after_continue_too() -> None:
+    # And what a join that was cancelled had written.
+    names = (*store.TRACKS, "mic.continued.opus", "call.continued.opus", "mic.joined.opus")
+    recording_id = with_audio(make_stopped(START), names)
+
+    store.delete_tracks(recording_id)
+
+    assert sorted(path.name for path in store.recording_dir(recording_id).iterdir()) == [
+        "recording.json",
+        "runs.json",
+    ]
+
+
+def test_the_sizes_the_limits_count_leave_out_what_is_still_to_be_joined() -> None:
+    recording_id = with_audio(make_stopped(START), (*store.TRACKS, *store.PARTS))
+
+    assert store.audio_size(recording_id) == 8
+
+
+def test_close_abandoned_on_a_continued_recording_stops_at_the_last_audio_written() -> None:
+    recording_id = with_audio(make_stopped(START, seconds=60))
+    store.mark_continued(recording_id, START + timedelta(seconds=100))
+    folder = store.recording_dir(recording_id)
+    for name, seconds in [("mic.opus", 60), ("call.opus", 60), ("mic.continued.opus", 130)]:
+        (folder / name).write_bytes(b"OggS")
+        written = (START + timedelta(seconds=seconds)).timestamp()
+        os.utime(folder / name, (written, written))
+
+    store.close_abandoned()
+
+    recording = store.load_recording(recording_id)
+    assert (recording["stopped_at"], recording["incomplete"]) == ("2026-11-18T13:07:52+00:00", True)
+    assert store.duration_seconds(recording) == 90

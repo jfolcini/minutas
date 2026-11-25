@@ -42,6 +42,7 @@ class FakeClock:
         self.now = 0.0
         self.waits = 0
         self.fill_on_wait: int | None = None
+        self.fill: tuple[str, ...] = ("mic.opus", "call.opus")
 
     def clock(self) -> float:
         return self.now
@@ -50,7 +51,7 @@ class FakeClock:
         self.now += seconds
         self.waits += 1
         if self.waits == self.fill_on_wait:
-            fill_tracks(self.folder)
+            fill_tracks(self.folder, self.fill)
 
 
 def fill_tracks(folder: Path, names: tuple[str, ...] = ("mic.opus", "call.opus")) -> None:
@@ -274,3 +275,23 @@ def test_a_signal_systemd_could_not_send_says_why(
         match=r"^Failed to kill unit minutas-recorder\.service: Unit not loaded\.$",
     ):
         ask()
+
+
+def test_start_records_into_the_files_it_is_given_and_waits_for_those(
+    fake_run: FakeRun, folder: Path, fake_clock: FakeClock
+) -> None:
+    # The tracks already hold what was recorded before Continue: they prove no capture.
+    fill_tracks(folder)
+    parts = ("mic.continued.opus", "call.continued.opus")
+    fake_clock.fill = parts
+    fake_clock.fill_on_wait = 2
+
+    recorder.start(
+        folder, on_exit=["python"], tracks=parts, clock=fake_clock.clock, wait=fake_clock.wait
+    )
+
+    assert [arg for arg in fake_run.calls[0][0] if arg.startswith("location=")] == [
+        "location=mic.continued.opus",
+        "location=call.continued.opus",
+    ]
+    assert fake_clock.waits == 2

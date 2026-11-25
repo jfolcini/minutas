@@ -71,6 +71,10 @@ case "\$*" in
   "record discard")
     write '{"version":1,"recording":null,"recent":[]}'
     ;;
+  "record continue "*)
+    read -r id at <"$WORK/active"
+    write "{\"version\":1,\"recording\":{\"id\":\"\$id\",\"started_at\":\"\$at\",\"paused_seconds\":3,\"continued\":true},\"recent\":[]}"
+    ;;
 esac
 EOF
   chmod +x "$WORK/bin/minutas"
@@ -157,8 +161,8 @@ press() {
 }
 click() { ev "$B.menu._getMenuItems().flatMap(i => i._getMenuItems ? i._getMenuItems() : [i]).find(i => i.label.text.startsWith('$1')).activate(null)" >/dev/null; }
 write_status() { mkdir -p "$DATA" && printf '%s' "$1" >"$DATA/.status.tmp" && mv "$DATA/.status.tmp" "$DATA/status.json"; }
-# A recent recording; an eighth argument is its progress.
-recent() { echo "{\"id\":\"$1\",\"name\":\"$2\",\"started_at\":\"$3\",\"duration_seconds\":$4,\"incomplete\":$5,\"transcribe\":$6,\"failed\":$7${8:+,\"progress\":$8}}"; }
+# A recent recording; an eighth argument is its progress, a ninth whether it can be continued.
+recent() { echo "{\"id\":\"$1\",\"name\":\"$2\",\"started_at\":\"$3\",\"duration_seconds\":$4,\"incomplete\":$5,\"transcribe\":$6,\"failed\":$7${8:+,\"progress\":$8}${9:+,\"continuable\":$9}}"; }
 screenshot() {
   ev "$B.menu.open()" >/dev/null
   sleep 1
@@ -222,6 +226,17 @@ expect "$MENU" ' · 0:07 · transcribing…","Cancel transcription","---","Recor
 expect "$PANEL" '{"recordingStyle":false,"timerVisible":false}'
 read -r id at <"$WORK/active"
 meeting=$(recent "$id" Meeting "$at" 7 false '"succeeded"' '["summarize"]')
+
+echo "== a recording stopped by mistake is continued; Finish ends it, and Discard is not offered"
+write_status "{\"version\":1,\"recording\":null,\"recent\":[$(recent "$id" Meeting "$at" 7 false '"queued"' '[]' '' true)]}"
+expect "$MENU" ' · 0:07 · transcribing…","Cancel transcription","Continue recording","---","Recordings","Settings"]'
+screenshot menu-continuable.png
+click Continue
+expect_ran "record continue $id"
+expect "$MENU" '["Pause","Finish","---","---","Recordings","Settings"]'
+expect "$PANEL" '{"recordingStyle":true,"timerVisible":true}'
+click Finish
+expect "$MENU" ' · 0:07 · transcribing…","Cancel transcription","---","Recordings","Settings"]'
 
 echo "== a running transcription says how far it has got, on the same item"
 speakers() { recent "$id" Meeting "$at" 7 false '"running"' '[]' "{\"phase\":\"identifying speakers\",\"percent\":$1}"; }

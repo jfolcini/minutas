@@ -1,5 +1,8 @@
 """Runs queued Transcribe runs one at a time, oldest first, in a systemd user unit.
 
+A run first joins onto the tracks what the recording recorded after Continue: the recorder's
+unit, whose exit command gets a few seconds, has no time for it.
+
 The worker holds DATA/worker.lock while it runs and gives it up, inside the store lock, only
 once it finds no queued run. A run queued while the lock is held is sure to be seen; one queued
 after has to start a new worker.
@@ -24,10 +27,12 @@ UNIT = "minutas-transcribe.service"
 ACTION = "transcribe"
 WORDS = "words.txt"
 INTERRUPTED = "interrupted"
-# Sent to every process of the unit: it ends the transcriber, which takes the signal's default
-# action, and leaves the worker, which handles it and goes on with the queue.
+# Sent to every process of the unit: it ends the joiner or the transcriber, which take the
+# signal's default action, and leaves the worker, which handles it and goes on with the queue.
 CANCEL_SIGNAL = signal.SIGUSR1
 STOP_TRANSCRIBER = ["systemctl", "--user", "kill", f"--signal={CANCEL_SIGNAL.name}", UNIT]
+# minutas.join, on the app's own Python, which is Ubuntu's: its PyGObject reaches GStreamer.
+JOINER = [sys.executable, "-m", "minutas.join"]
 SPEECH_MISSING = "Speech environment not found; run install.sh"
 OUT_OF_MEMORY = "Transcription ran out of its memory limit"
 VOCABULARY_UNREADABLE = "Can't read the vocabulary {path}: fix it in Settings, or switch it off"
@@ -298,6 +303,32 @@ def follow(recording_id: str, index: int, printed: Iterable[str]) -> None:
             shown = progress
 
 
+def join_parts(folder: Path, log: IO[str]) -> int:
+    """Joins what the recording recorded after Continue onto its tracks; the joiner's exit
+    status, 0 with nothing to join."""
+    if not any(store.has_audio(folder / part) for part in store.PARTS):
+        return 0
+    joiner = subprocess.run(  # noqa: S603 - this module's own argument list
+        JOINER, cwd=folder, stdin=subprocess.DEVNULL, stderr=log, check=False
+    )
+    return joiner.returncode
+
+
+def why_it_failed(program: str, returncode: int, log: Path) -> Outcome:
+    # A killed program gave no reason, its last line is only what it was logging; the OOM kill
+    # at MemoryMax is a SIGKILL.
+    if returncode == -signal.SIGKILL:
+        return failed(OUT_OF_MEMORY, log.name)
+    if returncode < 0:
+        return failed(f"The {program} was killed by {signal.Signals(-returncode).name}", log.name)
+    reason = f"The {program} exited with status {returncode}"
+    # Line by line: a long log never sits in memory whole.
+    with log.open(errors="replace") as lines:
+        for line in lines:
+            reason = line.strip() or reason
+    return failed(reason, log.name)
+
+
 def transcribe(recording_id: str, index: int) -> Outcome:
     python = speech_python()
     if not python.is_file():
@@ -316,36 +347,27 @@ def transcribe(recording_id: str, index: int) -> Outcome:
         (folder / WORDS).write_text("".join(f"{word}\n" for word in words), encoding="utf-8")
         command += ["--words", str(folder / WORDS)]
     log = store.run_log(recording_id, index)
-    with (
-        log.open("w") as stderr,
-        subprocess.Popen(  # noqa: S603 - this module's own argument list
+    # stderr is the log, whose last line is the reason either program failed.
+    with log.open("w") as stderr:
+        returncode = join_parts(folder, stderr)
+        if returncode != 0:
+            return why_it_failed("joiner", returncode, log)
+        with subprocess.Popen(  # noqa: S603 - this module's own argument list
             command,
             stdin=subprocess.DEVNULL,
-            # Its progress; stderr is the log, whose last line is the reason it failed.
+            # Its progress.
             stdout=subprocess.PIPE,
             stderr=stderr,
             # Whatever a library prints there is read without failing the run.
             encoding="utf-8",
             errors="replace",
-        ) as process,
-    ):
-        follow(recording_id, index, cast("IO[str]", process.stdout))
-        returncode = process.wait()
+        ) as process:
+            follow(recording_id, index, cast("IO[str]", process.stdout))
+            returncode = process.wait()
     if returncode == 0:
         store.write_transcript(recording_id)
         return Outcome(status="succeeded", error=None, details=log.name, output=store.TRANSCRIPT)
-    # A killed transcriber gave no reason, its last line is only what it was logging; the OOM
-    # kill at MemoryMax is a SIGKILL.
-    if returncode == -signal.SIGKILL:
-        return failed(OUT_OF_MEMORY, log.name)
-    if returncode < 0:
-        return failed(f"The transcriber was killed by {signal.Signals(-returncode).name}", log.name)
-    reason = f"The transcriber exited with status {returncode}"
-    # Line by line: a long log never sits in memory whole.
-    with log.open(errors="replace") as lines:
-        for line in lines:
-            reason = line.strip() or reason
-    return failed(reason, log.name)
+    return why_it_failed("transcriber", returncode, log)
 
 
 def interrupt(_signal: int, _frame: FrameType | None) -> None:

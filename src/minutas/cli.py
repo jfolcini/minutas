@@ -35,6 +35,11 @@ def fail(reason: str) -> int:
     return 1
 
 
+def exit_command(recording_id: str) -> list[str]:
+    """What the recorder's unit runs once it has stopped."""
+    return [sys.executable, "-m", "minutas", "record", "stopped", recording_id]
+
+
 def record_start(_: argparse.Namespace) -> int:
     if recorder.is_running():
         return fail("Already recording.")
@@ -44,7 +49,7 @@ def record_start(_: argparse.Namespace) -> int:
     except FileExistsError:
         # Recording ids are to the second; the existing recording stays as it is.
         return fail("A recording started this same second; try again.")
-    on_exit = [sys.executable, "-m", "minutas", "record", "stopped", recording["id"]]
+    on_exit = exit_command(recording["id"])
     try:
         recorder.start(store.recording_dir(recording["id"]), on_exit=on_exit)
     except recorder.RecorderError as error:
@@ -126,6 +131,9 @@ def record_discard(_: argparse.Namespace) -> int:
     recording = recording_in_progress()
     if recording is None:
         return nothing_recording()
+    if recording.get("continued", False):
+        # The Trash would take what it held before the stop too.
+        return fail("A continued recording can't be discarded: Finish ends it.")
     # Before the stop, whose record stopped would else look up its event and transcribe it.
     store.mark_discarded(recording["id"])
     try:
@@ -219,15 +227,59 @@ def record_stopped(args: argparse.Namespace) -> int:
     return queue_transcription(args.recording_id)
 
 
-def cancel_transcription(recording_id: str) -> int:
+def transcription_in_progress(recording_id: str) -> int | None:
+    """Its latest transcription's place in its runs, while that one is queued or running."""
     transcriptions = [
         (index, run["status"])
         for index, run in enumerate(store.load_runs(recording_id))
         if run["action"] == worker.ACTION
     ]
     if not transcriptions or transcriptions[-1][1] not in {"queued", "running"}:
+        return None
+    return transcriptions[-1][0]
+
+
+def cancel_transcription(recording_id: str) -> int:
+    transcribing = transcription_in_progress(recording_id)
+    if transcribing is None:
         return fail(f"No transcription of {recording_id} is queued or running.")
-    worker.cancel(recording_id, transcriptions[-1][0])
+    worker.cancel(recording_id, transcribing)
+    return 0
+
+
+def record_continue(args: argparse.Namespace) -> int:
+    recording_id = args.recording_id
+    if not store.is_recording(recording_id):
+        return fail(f"No recording {recording_id}.")
+    if recorder.is_running():
+        return fail("Already recording.")
+    store.close_abandoned()
+    recording = store.load_recording(recording_id)
+    refusal = store.continue_refusal(
+        recording, store.load_runs(recording_id), store.audio_kept(recording_id)
+    )
+    if refusal is not None:
+        store.write_status()
+        return fail(f"Can't continue {recording_id}: {refusal}.")
+    # A transcript of what came before the stop alone is not wanted.
+    transcribing = transcription_in_progress(recording_id)
+    if transcribing is not None:
+        worker.cancel(recording_id, transcribing)
+    store.mark_continued(recording_id, now())
+    try:
+        recorder.start(
+            store.recording_dir(recording_id),
+            on_exit=exit_command(recording_id),
+            tracks=store.PARTS,
+        )
+    except recorder.RecorderError as error:
+        # A unit that ran has stopped the recording again, as any stop does; one that never
+        # started ran no exit command.
+        if store.load_recording(recording_id)["stopped_at"] is None:
+            store.mark_stopped(recording_id, now(), incomplete=recording["incomplete"])
+        store.write_status()
+        return fail(f"Could not start the recorder: {error}")
+    store.write_status()
     return 0
 
 
@@ -422,6 +474,11 @@ def build_parser() -> argparse.ArgumentParser:
         ("discard", record_discard, "stop the recording and move it to the Trash, untranscribed"),
     ):
         record_commands.add_parser(name, help=does).set_defaults(handler=handler)
+    continued = record_commands.add_parser(
+        "continue", help="record into a stopped recording again, after a stop by mistake"
+    )
+    continued.add_argument("recording_id")
+    continued.set_defaults(handler=record_continue)
     stopped = record_commands.add_parser(
         "stopped", help="mark a recording stopped (the recorder's unit runs this when it exits)"
     )

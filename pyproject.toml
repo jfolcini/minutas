@@ -199,8 +199,9 @@ layers = [
     "minutas.window",
     # GitLab's mixes the tracks; both name a new issue as Publish to Agaric does for a page.
     "(minutas.gitlab) | (minutas.github)",
-    # The recorder unit's program: the recorder names its signals and never imports it.
-    "minutas.capture",
+    # The recorder unit's program, and the joiner the worker runs: the recorder names the first
+    # one's signals, and neither it nor the worker imports the program it runs.
+    "(minutas.capture) | (minutas.join)",
     "(minutas.recorder) | (minutas.worker) | (minutas.agaric) | (minutas.summarizer) | (minutas.window_view) | (minutas.calendar)",
     "minutas.store",
     "minutas.settings",

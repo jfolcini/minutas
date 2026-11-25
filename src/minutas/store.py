@@ -19,14 +19,20 @@ from minutas.atomic import write_json, write_text
 
 RECORDING_ID_FORMAT = "%Y-%m-%dT%H-%M-%S"
 TRACKS = ("mic.opus", "call.opus")
+# What each track records after Continue, until the transcription worker joins it onto the track:
+# never a track itself, so nothing plays, sizes or publishes it.
+PARTS = ("mic.continued.opus", "call.continued.opus")
+# Each track with its part joined on, while the joiner writes and checks it.
+JOINED = ("mic.joined.opus", "call.joined.opus")
 SEGMENTS = "transcript.json"
 TRANSCRIPT = "transcript.md"
 # The transcriber's key for the mic track's speaker, who has no other name.
 ME = "Me"
 SUMMARY = "summary.md"
 ACTIONS = ("transcribe", "summarize", "publish_agaric", "publish_gitlab", "publish_github")
-# What status.json says of the recording in progress; the last two only once it has been paused.
-ACTIVE_IN_STATUS = ("id", "started_at", "paused_at", "paused_seconds")
+# What status.json says of the recording in progress; the pause keys only once it has been
+# paused, the last only once it has been continued.
+ACTIVE_IN_STATUS = ("id", "started_at", "paused_at", "paused_seconds", "continued")
 INTERRUPTED = "interrupted"
 # Where a name can come from, lowest first: a name gives way only to one from as high a source.
 NAME_ORDER = ("default", "summary", "calendar", "typed")
@@ -51,6 +57,8 @@ class Recording(TypedDict):
     paused_seconds: NotRequired[int]
     # Discard stopped it: its stop looks up no calendar event and queues no transcription.
     discarded: NotRequired[bool]
+    # It was stopped and then recorded into again: Discard would take what it held before.
+    continued: NotRequired[bool]
 
 
 class Segment(TypedDict):
@@ -222,6 +230,25 @@ def mark_resumed(recording_id: str, resumed: datetime) -> None:
         write_json(recording_dir(recording_id) / "recording.json", recording)
 
 
+def reopen(recording: Recording, continued: datetime) -> None:
+    """Opens a stopped recording again. The time since it stopped is one more pause: it has
+    lasted as long as it had, and goes on from there."""
+    recording["paused_at"] = cast("str", recording["stopped_at"])
+    end_pause(recording, continued)
+    recording["stopped_at"] = None
+    recording["incomplete"] = False
+    recording["continued"] = True
+    # A discard the Trash refused is over: this stop transcribes it.
+    recording.pop("discarded", None)
+
+
+def mark_continued(recording_id: str, continued: datetime) -> None:
+    with lock():
+        recording = load_recording(recording_id)
+        reopen(recording, continued)
+        write_json(recording_dir(recording_id) / "recording.json", recording)
+
+
 def mark_discarded(recording_id: str) -> None:
     with lock():
         recording = load_recording(recording_id)
@@ -372,7 +399,8 @@ def set_summary_name(recording_id: str, name: str) -> None:
 
 def delete_tracks(recording_id: str) -> None:
     """Removes the audio; the recording, its transcript and its run log stay."""
-    for name in TRACKS:
+    # A join that was cancelled leaves what it had written.
+    for name in (*TRACKS, *PARTS, *JOINED):
         (recording_dir(recording_id) / name).unlink(missing_ok=True)
 
 
@@ -380,6 +408,28 @@ def audio_size(recording_id: str) -> int:
     """The bytes its tracks take."""
     folder = recording_dir(recording_id)
     return sum((folder / name).stat().st_size for name in TRACKS if (folder / name).is_file())
+
+
+def audio_kept(recording_id: str) -> list[str]:
+    """Its tracks and parts that hold audio."""
+    folder = recording_dir(recording_id)
+    return [name for name in (*TRACKS, *PARTS) if has_audio(folder / name)]
+
+
+def continue_refusal(recording: Recording, runs: Sequence[Run], audio: Iterable[str]) -> str | None:
+    """Why it can't be recorded into again, from its runs and audio_kept; None when it can."""
+    transcriptions = [run["status"] for run in runs if run["action"] == "transcribe"]
+    kept = set(audio)
+    if recording["stopped_at"] is None:
+        return "it is still being recorded"
+    if transcriptions[-1:] == ["succeeded"]:
+        return "it has been transcribed"
+    if not kept.issuperset(TRACKS):
+        return "its audio is gone"
+    # A second part would write over the first.
+    if kept.intersection(PARTS):
+        return "what it recorded after the last Continue is still to be joined: transcribe it first"
+    return None
 
 
 def may_lose_audio(recording: Recording, runs: Sequence[Run]) -> bool:
@@ -454,14 +504,15 @@ def close_abandoned() -> None:
         return
     folder = recording_dir(recording["id"])
     stopped = datetime.fromisoformat(recording["started_at"])
-    for name in TRACKS:
+    for name in (*TRACKS, *PARTS):
         if (folder / name).exists():
             written = datetime.fromtimestamp((folder / name).stat().st_mtime, tz=stopped.tzinfo)
             stopped = max(stopped, written)
     mark_stopped(recording["id"], stopped, incomplete=True)
 
 
-def recent_entry(recording: Recording) -> dict[str, object]:
+def recent_entry(recording: Recording, *, idle: bool) -> dict[str, object]:
+    """What status.json says of a stopped recording; idle: nothing is being recorded."""
     runs = load_runs(recording["id"])
     latest = {run["action"]: run["status"] for run in runs}
     transcriptions = [run for run in runs if run["action"] == "transcribe"]
@@ -474,6 +525,8 @@ def recent_entry(recording: Recording) -> dict[str, object]:
         "transcribe": latest.get("transcribe"),
         "progress": transcriptions[-1].get("progress") if transcriptions else None,
         "failed": [action for action in ACTIONS if latest.get(action) == "failed"],
+        "continuable": idle
+        and continue_refusal(recording, runs, audio_kept(recording["id"])) is None,
     }
 
 
@@ -488,6 +541,8 @@ def write_status() -> None:
             "recording": None
             if active is None
             else {key: active[key] for key in ACTIVE_IN_STATUS if key in active},
-            "recent": [recent_entry(r) for r in stopped[: settings.recent_in_menu()]],
+            "recent": [
+                recent_entry(r, idle=active is None) for r in stopped[: settings.recent_in_menu()]
+            ],
         }
         write_json(data_dir() / "status.json", status)
