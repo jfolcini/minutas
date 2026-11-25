@@ -265,6 +265,10 @@ class Recording:
         self.pipeline = cast("Gst.Pipeline", Gst.parse_launchv(tracks(mic, call)))
         self.clock = GstCheck.TestClock.new()
         self.pipeline.use_clock(self.clock)
+        # This clock lets a live source hand a buffer on at its start; a microphone hands it on
+        # once it holds all of it, so the time of day is a buffer's length ahead of the clock.
+        given = [arg.removeprefix("samplesperbuffer=") for arg in mic if "samplesperbuffer=" in arg]
+        self.buffer_length = int(given[0] if given else 1024) * Gst.SECOND // 16_000
 
     def run(self, script: Generator[None]) -> int:
         """Runs the program, with the script taking its steps inside its main loop.
@@ -284,7 +288,10 @@ class Recording:
         GLib.idle_add(lambda: not gave_up and next(script, False) is not False)
         # The time of day moves with the clock, as a pause moves it and the running time not.
         exit_status = capture.run(
-            self.pipeline, now=lambda: START + timedelta(microseconds=self.clock.get_time() // 1000)
+            self.pipeline,
+            now=lambda: (
+                START + timedelta(microseconds=(self.clock.get_time() + self.buffer_length) // 1000)
+            ),
         )
         if not gave_up:
             GLib.source_remove(watchdog)
