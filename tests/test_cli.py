@@ -1976,10 +1976,13 @@ def test_record_continue_whose_recorder_captures_nothing_leaves_the_recording_st
     assert read_status()["recording"] is None
 
 
-def test_record_continue_whose_recorder_never_started_leaves_the_recording_stopped_as_it_was(
-    fake_recorder: FakeRecorder, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+def test_record_continue_whose_recorder_never_started_stops_the_recording_as_any_stop_does(
+    fake_recorder: FakeRecorder,
+    fake_worker: FakeWorker,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    recording_id = false_stop("failed")
+    recording_id = false_stop("running")
     store.mark_stopped(recording_id, STOPPED, incomplete=True)
     # No unit, so no exit command either.
     fake_recorder.error = recorder.RecorderError("Failed to connect to bus")
@@ -1991,7 +1994,9 @@ def test_record_continue_whose_recorder_never_started_leaves_the_recording_stopp
     recording = store.load_recording(recording_id)
     assert (recording["stopped_at"], recording["incomplete"]) == ("2026-11-18T13:07:22+00:00", True)
     assert store.duration_seconds(recording) == 60
-    assert [run["status"] for run in store.load_runs(recording_id)] == ["failed"]
+    # The transcription it cancelled is queued again.
+    assert fake_worker.cancelled == [(recording_id, 0)]
+    assert [run["status"] for run in store.load_runs(recording_id)] == ["running", "queued"]
     status = read_status()
     assert status["recording"] is None
     recent = status["recent"]
