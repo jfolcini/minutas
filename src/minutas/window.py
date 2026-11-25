@@ -234,7 +234,7 @@ class SettingsDialog(Adw.PreferencesDialog):
         self.recent.set_title("Recent recordings")
         self.recent.set_value(settings.recent_in_menu())
         self.recent.connect("notify::value", window.recent_chosen)
-        self.top_bar = Adw.PreferencesGroup(title="Top bar")
+        self.top_bar = Adw.PreferencesGroup(title="Top-bar menu")
         self.top_bar.add(self.recent)
 
         page = Adw.PreferencesPage()
@@ -678,6 +678,9 @@ class HistoryWindow(Adw.ApplicationWindow):
     def reveal(self, recording_id: str) -> None:
         row = self.rows.get(recording_id)
         if row is not None:
+            if recording_id not in self.matching:
+                # Asked for from the top bar while a search hides it; closing the search clears it.
+                self.search_bar.set_search_mode(False)
             row.set_expanded(True)
             self.viewport.scroll_to(row, None)
 

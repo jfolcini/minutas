@@ -2460,7 +2460,7 @@ def test_the_top_bar_lists_as_many_recordings_as_set_and_follows_at_once(
     adjustment = count.get_adjustment()
 
     assert (dialog.top_bar.get_title(), count.get_title(), count.get_value()) == (
-        "Top bar",
+        "Top-bar menu",
         "Recent recordings",
         12.0,
     )
@@ -2660,6 +2660,13 @@ def test_the_search_follows_what_changes_and_reads_a_transcript_only_once_it_did
 
     assert found(shown) == ["Weekly sync"]
 
+    # A recording that goes takes what the search kept of it along.
+    shutil.rmtree(store.recording_dir("2026-11-18T14-05-42"))
+    store.write_status()
+    wait_until(lambda: len(shown.rows) == 2)
+
+    assert shown.searched.keys() == {FIRST, "2026-11-18T15-05-42"}
+
 
 def test_reveal_expands_the_recording_and_ignores_one_that_is_gone(
     history: Callable[[], window.HistoryWindow],
@@ -2672,6 +2679,27 @@ def test_reveal_expands_the_recording_and_ignores_one_that_is_gone(
     shown.reveal("2026-11-18T15-05-42")
 
     assert [row.get_expanded() for row in shown.rows.values()] == [False, True]
+
+
+def test_reveal_closes_a_search_that_hides_the_recording_and_keeps_one_that_shows_it(
+    history: Callable[[], window.HistoryWindow],
+) -> None:
+    recording()
+    recording(started=START + timedelta(hours=1))
+    store.set_typed_name(FIRST, "Retro")
+    shown = history()
+    ctrl_f(shown)
+    search(shown, "retro")
+
+    shown.reveal(FIRST)
+
+    assert (shown.search_bar.get_search_mode(), found(shown)) == (True, ["Retro"])
+
+    shown.reveal("2026-11-18T14-05-42")
+
+    assert (shown.search_bar.get_search_mode(), shown.search.get_text()) == (False, "")
+    assert found(shown) == ["Meeting", "Retro"]
+    assert shown.rows["2026-11-18T14-05-42"].get_expanded() is True
 
 
 def test_reveal_scrolls_to_a_recording_far_down_the_list(
