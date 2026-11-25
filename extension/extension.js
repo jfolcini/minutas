@@ -33,6 +33,8 @@ export default class MinutasExtension extends Extension {
         this._statusReads = 0;
         this._timerId = null;
         this._source = null;
+        this._recentItems = [];
+        this._recentShape = null;
 
         this._button = new PanelMenu.Button(0.0, this.metadata.name);
         const box = new St.BoxLayout({style_class: 'panel-status-indicators-box'});
@@ -85,6 +87,7 @@ export default class MinutasExtension extends Extension {
         this._elapsedLabel = null;
         this._recordItem = null;
         this._recentSection = null;
+        this._recentItems = null;
     }
 
     _readStatus() {
@@ -133,12 +136,21 @@ export default class MinutasExtension extends Extension {
             this._stopTimer();
         }
 
+        // While a transcription runs only its label changes, every few seconds: set in place, the
+        // items of an open menu keep the pointer's hover and the keyboard's focus.
+        const shape = recent.map(entry => `${entry.id} ${hasWarning(entry)}`).join('\n');
+        if (shape === this._recentShape) {
+            recent.forEach((entry, i) => (this._recentItems[i].label.text = recentLabel(entry)));
+            return;
+        }
+        this._recentShape = shape;
         this._recentSection.removeAll();
-        for (const entry of recent) {
+        this._recentItems = recent.map(entry => {
             const item = this._recentSection.addAction(recentLabel(entry), () => this._openHistory(entry.id));
             if (hasWarning(entry))
                 item.add_child(new St.Icon({icon_name: 'dialog-warning-symbolic', style_class: 'popup-menu-icon'}));
-        }
+            return item;
+        });
     }
 
     _showElapsed() {

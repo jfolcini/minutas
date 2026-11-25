@@ -977,6 +977,7 @@ def test_a_running_transcription_shows_how_far_it_has_got_until_it_ends(
     controls = shown.details[FIRST]
 
     assert ("Transcribe", "Identifying speakers · 40%") in lines(row)
+    assert row.get_subtitle() == f"{SUBTITLE} · Identifying speakers · 40%"
     assert controls.transcribe.progress.get_visible() is True
     assert controls.transcribe.progress.get_fraction() == 0.4
     assert [
@@ -989,6 +990,7 @@ def test_a_running_transcription_shows_how_far_it_has_got_until_it_ends(
     store.write_status()
     wait_until(lambda: ("Transcribe", "Identifying speakers · 75%") in lines(row))
     assert controls.transcribe.progress.get_fraction() == 0.75
+    assert row.get_subtitle() == f"{SUBTITLE} · Identifying speakers · 75%"
     store.save_runs(FIRST, [run("transcribe", "succeeded", output="transcript.md")])
     store.write_status()
     wait_until(lambda: ("Transcribe", "Succeeded") in lines(row))

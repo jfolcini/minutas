@@ -243,12 +243,12 @@ def row(  # noqa: PLR0913 - each is a separate input to the row; all after track
         transcribe = replace(transcribe, label="Cancel", disabled="", cancels=transcription[0])
     if transcription is not None and transcription[1]["status"] == "running":
         progress = transcription[1].get("progress")
+        if progress is not None:
+            # The collapsed row says it too, in place of "Transcribing".
+            transcribing = f"{progress['phase'].capitalize()} · {progress['percent']}%"
+            transcribe = replace(transcribe, result=transcribing)
         transcribe = replace(
-            transcribe,
-            result=transcribe.result
-            if progress is None
-            else f"{progress['phase'].capitalize()} · {progress['percent']}%",
-            progress=0.0 if progress is None else progress["percent"] / 100,
+            transcribe, progress=0.0 if progress is None else progress["percent"] / 100
         )
 
     # Started from its menu of presets; its only button is Retry, after a run that did not end well.

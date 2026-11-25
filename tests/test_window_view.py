@@ -276,7 +276,9 @@ def test_a_running_transcription_shows_its_phase_and_how_far_it_has_got(
     view = shown([run("transcribe", "running", **changes)])
 
     assert view.transcribe == action(result, "Cancel", cancels=0, progress=fraction)
-    assert view.subtitle == "2026-11-18 13:05 · 30 min · Transcribing"
+    # The collapsed row says it too, once the transcriber has said any.
+    said = "Transcribing" if progress is None else result
+    assert view.subtitle == f"2026-11-18 13:05 · 30 min · {said}"
 
 
 def test_only_a_running_transcription_shows_progress() -> None:
