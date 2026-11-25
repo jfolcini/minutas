@@ -25,6 +25,8 @@ TRANSCRIPT = "transcript.md"
 ME = "Me"
 SUMMARY = "summary.md"
 ACTIONS = ("transcribe", "summarize", "publish_agaric", "publish_gitlab", "publish_github")
+# What status.json says of the recording in progress; the last two only once it has been paused.
+ACTIVE_IN_STATUS = ("id", "started_at", "paused_at", "paused_seconds")
 INTERRUPTED = "interrupted"
 # Where a name can come from, lowest first: a name gives way only to one from as high a source.
 NAME_ORDER = ("default", "summary", "calendar", "typed")
@@ -43,6 +45,12 @@ class Recording(TypedDict):
     # The name of each speaker on the call, by the transcriber's key for it ("Speaker 1"),
     # which is also its name until a person gives it one.
     speakers: NotRequired[dict[str, str]]
+    # When the pause it is in began; there only while it is paused.
+    paused_at: NotRequired[str]
+    # How long its ended pauses lasted, all together.
+    paused_seconds: NotRequired[int]
+    # Discard stopped it: its stop looks up no calendar event and queues no transcription.
+    discarded: NotRequired[bool]
 
 
 class Segment(TypedDict):
@@ -180,10 +188,50 @@ def discard_if_silent(recording_id: str) -> None:
         folder.rmdir()
 
 
+def end_pause(recording: Recording, ended: datetime) -> None:
+    """Adds the pause it is in, if any, to its ended ones."""
+    if "paused_at" not in recording:
+        return
+    lasted = int((ended - datetime.fromisoformat(recording["paused_at"])).total_seconds())
+    # A recorder that died while paused stopped when its audio was last written, before the pause.
+    recording["paused_seconds"] = recording.get("paused_seconds", 0) + max(0, lasted)
+    del recording["paused_at"]
+
+
+def duration_seconds(recording: Recording) -> int:
+    """How long it recorded for, its pauses left out; nothing until it stops."""
+    started = datetime.fromisoformat(recording["started_at"])
+    stopped = datetime.fromisoformat(recording["stopped_at"] or recording["started_at"])
+    # A recorder that died while paused may have last written its audio before earlier pauses.
+    return max(0, int((stopped - started).total_seconds()) - recording.get("paused_seconds", 0))
+
+
+def mark_paused(recording_id: str, paused: datetime) -> None:
+    with lock():
+        recording = load_recording(recording_id)
+        recording["paused_at"] = paused.isoformat(timespec="seconds")
+        write_json(recording_dir(recording_id) / "recording.json", recording)
+
+
+def mark_resumed(recording_id: str, resumed: datetime) -> None:
+    with lock():
+        recording = load_recording(recording_id)
+        end_pause(recording, resumed)
+        write_json(recording_dir(recording_id) / "recording.json", recording)
+
+
+def mark_discarded(recording_id: str) -> None:
+    with lock():
+        recording = load_recording(recording_id)
+        recording["discarded"] = True
+        write_json(recording_dir(recording_id) / "recording.json", recording)
+
+
 def mark_stopped(recording_id: str, stopped: datetime, *, incomplete: bool) -> None:
     # Under the lock, so a name typed at the same moment is not written over, nor writes over this.
     with lock():
         recording = load_recording(recording_id)
+        end_pause(recording, stopped)
         recording["stopped_at"] = stopped.isoformat(timespec="seconds")
         recording["incomplete"] = incomplete
         write_json(recording_dir(recording_id) / "recording.json", recording)
@@ -412,8 +460,6 @@ def close_abandoned() -> None:
 
 
 def recent_entry(recording: Recording) -> dict[str, object]:
-    started = datetime.fromisoformat(recording["started_at"])
-    stopped = datetime.fromisoformat(recording["stopped_at"] or recording["started_at"])
     runs = load_runs(recording["id"])
     latest = {run["action"]: run["status"] for run in runs}
     transcriptions = [run for run in runs if run["action"] == "transcribe"]
@@ -421,7 +467,7 @@ def recent_entry(recording: Recording) -> dict[str, object]:
         "id": recording["id"],
         "name": recording["name"],
         "started_at": recording["started_at"],
-        "duration_seconds": int((stopped - started).total_seconds()),
+        "duration_seconds": duration_seconds(recording),
         "incomplete": recording["incomplete"],
         "transcribe": latest.get("transcribe"),
         "progress": transcriptions[-1].get("progress") if transcriptions else None,
@@ -439,7 +485,7 @@ def write_status() -> None:
             "version": 1,
             "recording": None
             if active is None
-            else {"id": active["id"], "started_at": active["started_at"]},
+            else {key: active[key] for key in ACTIVE_IN_STATUS if key in active},
             "recent": [recent_entry(r) for r in stopped[: settings.recent_in_menu()]],
         }
         write_json(data_dir() / "status.json", status)

@@ -1,12 +1,14 @@
 """Records the mic and the computer's audio as two Ogg Opus tracks in a systemd user unit.
 
 A user unit outlives the lock screen and a GNOME Shell restart. One GStreamer pipeline records
-both tracks, so they share a clock and stay aligned.
+both tracks, so they share a clock and stay aligned; minutas.capture runs it in the unit.
 """
 
 import os
 import shlex
+import signal
 import subprocess
+import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -23,6 +25,8 @@ MIC_TRACK, CALL_TRACK = store.TRACKS
 MEMORY_LIMITS = ("MemoryMax=256M", "MemorySwapMax=0")
 # A working recorder fills both tracks within a fraction of a second; a broken one dies as fast.
 CAPTURE_TIMEOUT_SECONDS = 2.0
+# What the unit's program, minutas.capture, pauses and resumes on.
+PAUSE_SIGNAL, RESUME_SIGNAL = signal.SIGUSR1, signal.SIGUSR2
 POLL_SECONDS = 0.05
 
 
@@ -73,7 +77,7 @@ def start(
     run_or_raise(
         [
             *("systemd-run", "--user", f"--unit={UNIT}", "--collect", "--quiet"),
-            # gst-launch -e turns SIGINT into end-of-stream, which closes both files properly.
+            # minutas.capture turns SIGINT into end-of-stream, which closes both files properly.
             "--property=KillSignal=SIGINT",
             "--property=TimeoutStopSec=5",
             *(f"--property={limit}" for limit in MEMORY_LIMITS),
@@ -85,8 +89,8 @@ def start(
                 if name in os.environ
             ),
             f"--working-directory={folder}",
-            *("--", "gst-launch-1.0", "-e"),
-            # Relative locations: gst-launch re-splits its arguments on spaces.
+            # The app's own Python, which is Ubuntu's: its PyGObject reaches GStreamer.
+            *("--", sys.executable, "-m", "minutas.capture"),
             *track_branch(["pulsesrc"], MIC_TRACK),
             *track_branch(["pulsesrc", "device=@DEFAULT_MONITOR@"], CALL_TRACK),
         ]
@@ -110,3 +114,16 @@ def is_running() -> bool:
 def stop() -> None:
     """Returns once the recorder has closed its files and its exit command has run."""
     run_or_raise(["systemctl", "--user", "stop", UNIT])
+
+
+def signal_unit(sent: signal.Signals) -> None:
+    run_or_raise(["systemctl", "--user", "kill", f"--signal={sent.name}", UNIT])
+
+
+def pause() -> None:
+    """Stops capturing until resume; what was captured stays, and the tracks stay aligned."""
+    signal_unit(PAUSE_SIGNAL)
+
+
+def resume() -> None:
+    signal_unit(RESUME_SIGNAL)

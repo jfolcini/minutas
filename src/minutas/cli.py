@@ -58,15 +58,84 @@ def record_start(_: argparse.Namespace) -> int:
     return 0
 
 
+def nothing_recording() -> int:
+    store.close_abandoned()
+    store.write_status()
+    return fail("Nothing is recording.")
+
+
 def record_stop(_: argparse.Namespace) -> int:
     if not recorder.is_running():
-        store.close_abandoned()
-        store.write_status()
-        return fail("Nothing is recording.")
+        return nothing_recording()
     try:
         recorder.stop()
     except recorder.RecorderError as error:
         return fail(f"Could not stop the recorder: {error}")
+    return 0
+
+
+def recording_in_progress() -> store.Recording | None:
+    return store.open_recording() if recorder.is_running() else None
+
+
+def record_pause(_: argparse.Namespace) -> int:
+    recording = recording_in_progress()
+    if recording is None:
+        return nothing_recording()
+    if "paused_at" in recording:
+        return fail("Already paused.")
+    try:
+        recorder.pause()
+    except recorder.RecorderError as error:
+        return fail(f"Could not pause the recorder: {error}")
+    store.mark_paused(recording["id"], now())
+    store.write_status()
+    return 0
+
+
+def record_resume(_: argparse.Namespace) -> int:
+    recording = recording_in_progress()
+    if recording is None:
+        return nothing_recording()
+    if "paused_at" not in recording:
+        return fail("Not paused.")
+    try:
+        recorder.resume()
+    except recorder.RecorderError as error:
+        return fail(f"Could not resume the recorder: {error}")
+    store.mark_resumed(recording["id"], now())
+    store.write_status()
+    return 0
+
+
+def move_to_trash(folder: Path) -> str | None:
+    """Why the folder could not go to the desktop's Trash; None once it is there."""
+    from gi.repository import Gio, GLib  # noqa: PLC0415 - Ubuntu's PyGObject, for this alone
+
+    try:
+        # A status rewrite in another process must not find the folder half gone.
+        with store.lock():
+            # Never deleted instead, whatever the trash says: a recording is never lost.
+            Gio.File.new_for_path(str(folder)).trash(None)
+    except GLib.Error as error:
+        return error.message
+    return None
+
+
+def record_discard(_: argparse.Namespace) -> int:
+    recording = recording_in_progress()
+    if recording is None:
+        return nothing_recording()
+    # Before the stop, whose record stopped would else look up its event and transcribe it.
+    store.mark_discarded(recording["id"])
+    try:
+        recorder.stop()
+    except recorder.RecorderError as error:
+        return fail(f"Could not stop the recorder: {error}")
+    refused = move_to_trash(store.recording_dir(recording["id"]))
+    store.write_status()
+    if refused is not None:
+        return fail(f"Stopped recording, but could not move it to the Trash: {refused}")
     return 0
 
 
@@ -137,10 +206,12 @@ def record_stopped(args: argparse.Namespace) -> int:
     # Kept audio is bounded where that costs nothing, and before status.json tells the window.
     store.delete_audio_over_limits(stopped, *settings.audio_limits())
     store.write_status()
-    # A recorder that captured nothing leaves a recording that record start discards.
-    if not store.holds_audio(args.recording_id):
+    recording = store.load_recording(args.recording_id)
+    # A recorder that captured nothing leaves a recording that record start discards; one
+    # stopped by record discard goes to the Trash as it is.
+    if not store.holds_audio(args.recording_id) or recording.get("discarded", False):
         return 0
-    started = datetime.fromisoformat(store.load_recording(args.recording_id)["started_at"])
+    started = datetime.fromisoformat(recording["started_at"])
     event = calendar.lookup(started, stopped)
     if event is not None:
         store.set_calendar_event(args.recording_id, event.name, list(event.attendees))
@@ -148,9 +219,23 @@ def record_stopped(args: argparse.Namespace) -> int:
     return queue_transcription(args.recording_id)
 
 
+def cancel_transcription(recording_id: str) -> int:
+    transcriptions = [
+        (index, run["status"])
+        for index, run in enumerate(store.load_runs(recording_id))
+        if run["action"] == worker.ACTION
+    ]
+    if not transcriptions or transcriptions[-1][1] not in {"queued", "running"}:
+        return fail(f"No transcription of {recording_id} is queued or running.")
+    worker.cancel(recording_id, transcriptions[-1][0])
+    return 0
+
+
 def transcribe(args: argparse.Namespace) -> int:
     if not store.is_recording(args.recording_id):
         return fail(f"No recording {args.recording_id}.")
+    if args.cancel:
+        return cancel_transcription(args.recording_id)
     if not store.holds_audio(args.recording_id):
         return fail(f"The tracks of {args.recording_id} are gone.")
     return queue_transcription(args.recording_id)
@@ -309,10 +394,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.set_defaults(handler=None)
     commands = parser.add_subparsers(title="commands")
 
-    record = commands.add_parser("record", help="start or stop recording a meeting")
+    record = commands.add_parser("record", help="record a meeting")
     record_commands = record.add_subparsers(title="commands", required=True)
-    record_commands.add_parser("start", help="start recording").set_defaults(handler=record_start)
-    record_commands.add_parser("stop", help="stop recording").set_defaults(handler=record_stop)
+    for name, handler, does in (
+        ("start", record_start, "start recording"),
+        ("pause", record_pause, "stop capturing until resume; the recording stays open"),
+        ("resume", record_resume, "capture again after a pause"),
+        ("stop", record_stop, "finish the recording and transcribe it"),
+        ("discard", record_discard, "stop the recording and move it to the Trash, untranscribed"),
+    ):
+        record_commands.add_parser(name, help=does).set_defaults(handler=handler)
     stopped = record_commands.add_parser(
         "stopped", help="mark a recording stopped (the recorder's unit runs this when it exits)"
     )
@@ -330,6 +421,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     transcribe_command = commands.add_parser("transcribe", help="transcribe a recording again")
     transcribe_command.add_argument("recording_id")
+    transcribe_command.add_argument(
+        "--cancel", action="store_true", help="cancel its queued or running transcription instead"
+    )
     transcribe_command.set_defaults(handler=transcribe)
     commands.add_parser(
         "worker", help="transcribe the queued recordings (the transcription unit runs this)"
