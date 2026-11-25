@@ -1,0 +1,23 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "categories": {
+    "correctness": "error"
+  },
+  "env": {
+    "es2024": true
+  },
+  "globals": {
+    "console": "readonly",
+    "global": "readonly",
+    "print": "readonly",
+    "printerr": "readonly",
+    "TextDecoder": "readonly",
+    "TextEncoder": "readonly"
+  },
+  "rules": {
+    "eqeqeq": "error",
+    "no-undef": "error",
+    "no-unused-vars": "error",
+    "prefer-const": "error"
+  }
+}
