@@ -283,38 +283,19 @@ def test_audio_over_the_servers_limit_is_left_out_and_the_run_succeeds_with_a_no
         LEFT_OUT,
         {"transcript": TRANSCRIPT_LINK},
     )
-    assert settings.refused_audio_size(HOST) == len(MIX)
 
 
-def test_audio_as_big_as_one_the_host_refused_is_left_out_without_uploading(
-    system: FakeSystem,
-) -> None:
-    settings.refuse_audio_size(HOST, len(MIX))
+def test_after_a_refusal_the_next_publish_tries_the_audio_again(system: FakeSystem) -> None:
+    # An admin can raise the server's limit at any time, and only the server knows it.
     recording_id = recording()
-
-    assert gitlab.publish(recording_id, PUBLISHED, target()) is True
-
-    assert [call.kind for call in system.calls] == ["transcript", "notes"]
-    assert runs(recording_id)[0].get("note") == LEFT_OUT
-
-
-def test_audio_smaller_than_the_smallest_the_host_refused_is_uploaded(system: FakeSystem) -> None:
-    settings.refuse_audio_size(HOST, len(MIX) + 1)
-    recording_id = recording()
+    system.answers["audio"] = [TOO_BIG]
+    gitlab.publish(recording_id, PUBLISHED, target())
+    system.calls.clear()
 
     assert gitlab.publish(recording_id, PUBLISHED, target()) is True
 
     assert [call.kind for call in system.calls] == ["transcript", "audio", "notes"]
-    assert runs(recording_id)[0].get("note") is None
-
-
-def test_another_hosts_refusal_does_not_leave_the_audio_out(system: FakeSystem) -> None:
-    settings.refuse_audio_size("other.example.com", 1)
-    recording_id = recording()
-
-    assert gitlab.publish(recording_id, PUBLISHED, target()) is True
-
-    assert [call.kind for call in system.calls] == ["transcript", "audio", "notes"]
+    assert runs(recording_id)[-1].get("note") is None
 
 
 @pytest.mark.parametrize(
