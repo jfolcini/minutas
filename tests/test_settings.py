@@ -259,6 +259,28 @@ def test_a_hand_edited_count_of_recent_recordings_out_of_range_is_the_default(
     assert settings.recent_in_menu() == 5
 
 
+def test_echo_cancellation_is_on_until_turned_off() -> None:
+    assert settings.echo_cancel() is True
+
+
+@pytest.mark.parametrize("on", [True, False])
+def test_set_echo_cancel_keeps_it_with_the_other_settings(*, on: bool) -> None:
+    settings.set_agaric_space_id("01HZWORK")
+
+    settings.set_echo_cancel(on=on)
+
+    assert settings.echo_cancel() is on
+    assert settings.agaric_space_id() == "01HZWORK"
+
+
+# Only a hand edit writes these; none turns off what the Settings' switch shows as on.
+@pytest.mark.parametrize("value", [None, 0, "false", "no", [False]])
+def test_a_hand_edited_echo_cancel_that_is_no_switch_is_on(value: object) -> None:
+    settings.save({"echo_cancel": value})
+
+    assert settings.echo_cancel() is True
+
+
 def test_no_context_is_ticked_until_some_is() -> None:
     assert settings.summary_context() == []
 

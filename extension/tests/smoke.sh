@@ -51,6 +51,10 @@ if [ -e "$WORK/fail-next" ]; then
 fi
 case "\$*" in
   "record start")
+    if [ -e "$WORK/warn-next" ]; then
+      rm "$WORK/warn-next"
+      echo "Echo cancellation didn't start, so the microphone is recorded as it is" >&2
+    fi
     id=\$(date +%Y-%m-%dT%H-%M-%S) at=\$(date --iso-8601=seconds)
     echo "\$id \$at" >"$WORK/active"
     write "{\"version\":1,\"recording\":{\"id\":\"\$id\",\"started_at\":\"\$at\"},\"recent\":[]}"
@@ -280,7 +284,10 @@ expect "$MENU" ' · 0:07 [warning icon]'
 check "the invalid file is logged" grep -q 'Minutas: keeping the last status' "$OUT/shell.log"
 
 echo "== Discard asks first, with Cancel focused: Enter and Escape leave the recording going"
+# A recording that started with a warning says it as it starts, while there is time to act.
+touch "$WORK/warn-next"
 click Record
+expect "$NOTES" "Tell participants you're recording | Echo cancellation didn't start, so the microphone is recorded as it is"
 expect "$MENU" "[\"Pause\",$RECORDING_ITEMS"
 for key in Return Escape; do
   click Discard

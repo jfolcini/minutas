@@ -163,15 +163,34 @@ language = "system"
 types = ["shell"]
 stages = ["pre-commit"]
 
-# The tool is the extension's npm dev dependency (`just ext setup`), pinned by
-# extension/package-lock.json; ESLint finds extension/eslint.config.js from each file.
-# WHY: an undefined name or unused variable in the extension surfaces only when GNOME Shell loads it
+# The extension's tools are its npm dev dependencies (`just ext setup`), pinned by
+# extension/package-lock.json, with their config in extension/.
+# WHY: hand-kept formatting drifts and churns the extension's diffs
 [[repos.hooks]]
-id = "eslint"
-name = "eslint (extension)"
-entry = "extension/node_modules/.bin/eslint"
+id = "oxfmt"
+name = "oxfmt (extension, write)"
+entry = "extension/node_modules/.bin/oxfmt -c extension/.oxfmtrc.json"
 language = "system"
 files = '^extension/.*\.js$'
+stages = ["pre-commit"]
+
+# WHY: an undefined name or unused variable in the extension surfaces only when GNOME Shell loads it
+[[repos.hooks]]
+id = "oxlint"
+name = "oxlint (extension)"
+entry = "extension/node_modules/.bin/oxlint -c extension/.oxlintrc.json --deny-warnings"
+language = "system"
+files = '^extension/.*\.js$'
+stages = ["pre-commit"]
+
+# WHY: a red unit test of the extension's logic found by CI after the commit instead of before it
+[[repos.hooks]]
+id = "vitest"
+name = "vitest (extension)"
+entry = "bash -c 'cd extension && node_modules/.bin/vitest run'"
+language = "system"
+files = '^extension/'
+pass_filenames = false
 stages = ["pre-commit"]
 
 # WHY: workflow syntax and expression errors surface only on the next CI run

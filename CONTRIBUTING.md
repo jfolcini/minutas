@@ -13,7 +13,7 @@ git clone https://github.com/jfolcini/minutas
 cd minutas
 uv sync                 # the virtualenv, the package and the whole toolchain
 uv run prek install     # wires the pre-commit, commit-msg, prepare-commit-msg and pre-push hooks
-uv run just ext setup   # the extension's ESLint and TypeScript, from extension/package-lock.json
+uv run just ext setup   # the extension's oxfmt, oxlint, TypeScript and vitest, from extension/package-lock.json
 ```
 
 The extension's tools need Node and npm; its tests need GNOME Shell and gjs (`sudo apt install gnome-shell gjs` on Ubuntu 24.04).
@@ -41,21 +41,57 @@ The test suite runs the Recordings window for real, on Ubuntu's own PyGObject, G
 | Push and confirm the remote has the commit | `just push` | |
 | Is a PR ready to merge | `just merge-ready <pr>` | needs `gh` |
 | The extension's checks (CI's extension job) | `just ext check` | |
-| Lint the extension | `just ext lint` | `cd extension && npx eslint .` |
+| Format the extension | `just ext fmt` | `cd extension && npx oxfmt .` |
+| Lint the extension | `just ext lint` | `cd extension && npx oxfmt --check . && npx oxlint --deny-warnings` |
 | Type-check the extension's Shell-free modules | `just ext typecheck` | `cd extension && npx tsc -p .` |
-| The extension's unit tests | `just ext test` | `gjs -m extension/tests/status.test.js` |
+| The extension's unit tests | `just ext test` | `cd extension && npx vitest run` |
 | Load and drive the extension in a headless GNOME Shell | `just ext smoke [out-dir]` | `bash extension/tests/smoke.sh [out-dir]` |
 | Install the extension into your session and enable it (log out once on Wayland) | `just ext install` | |
 | Try the installed extension in a GNOME Shell window | `just ext nested` | |
 | Follow GNOME Shell's log | `just ext logs` | `journalctl -f -o cat /usr/bin/gnome-shell` |
 
-- **At commit**, the hooks fix whitespace, formatting and fixable lint findings in place and abort the commit once: re-stage and commit again. They also run ty, typos, ESLint on the extension, the Markdown, shell and workflow linters, and gitleaks.
+- **At commit**, the hooks fix whitespace, formatting and fixable lint findings in place and abort the commit once: re-stage and commit again. They also run ty, typos, oxlint and the vitest tests on the extension, the Markdown, shell and workflow linters, and gitleaks.
 - **At push**, the hooks run the test suite with its coverage floor and `pip-audit` over `uv.lock`, and refuse a direct push to `main`.
 - **CI** runs the same hooks (`.github/workflows/_validate.yml`), the tests, the extension's checks, and a link check over the Markdown.
 
 The README's screenshots are the real Recordings window and its Settings, drawn by GTK from made-up recordings that `scripts/screenshots.py` writes into a temporary folder, on a display and session bus of its own: it never reads or writes your recordings, settings or keyring. Run `just screenshots` after a change to what the window shows, and commit the images it rewrites. It needs the window's packages above, and `sudo apt install fonts-cantarell` for GNOME's font.
 
 Coverage is measured with branches, and `pytest` fails under the floor set in `pyproject.toml` (`[tool.coverage.report] fail_under`); on a pull request every changed line must be covered. The tests run in random order (pytest-randomly; rerun a failure with the `--randomly-seed=…` it prints), with a per-test timeout, with every annotation checked at run time by beartype, and with warnings as errors.
+
+### Echo cancellation on speakers
+
+The suite has no PipeWire, microphone or speakers, so whether the echo-cancelled mic keeps the call out of the mic track is checked by hand, after a change to the recorder's echo canceller. It needs only what install.sh installs. First make the speakers the output, unmuted and at the volume of a call, in GNOME's Settings › Sound or with `wpctl status`, `wpctl set-default <sink id>` and `wpctl set-mute <sink id> 0`: the canceller takes out what the default output plays, so headphones left as the output prove nothing. Then make sure Echo cancellation is on in Minutas's Settings, as it is unless turned off:
+
+```bash
+# The far side: any speech, here the oldest recording's call track, picked before this one starts.
+speech=$(ls ~/.local/share/minutas/recordings/*/call.opus | head -n 1)
+minutas record start
+systemctl --user is-active minutas-echo-cancel.service   # active
+pw-link --output | grep minutas-echo-cancelled           # the source the mic track records
+cd "$(mktemp -d)"
+wav="audioconvert ! audioresample ! audio/x-raw,rate=16000,channels=1,format=S16LE ! wavenc ! filesink"
+# The plain mic and the echo-cancelled one, over the same 20 seconds.
+timeout --signal=INT 20 gst-launch-1.0 -e \
+  pulsesrc ! $wav location=plain.wav \
+  pulsesrc device=minutas-echo-cancelled ! $wav location=cancelled.wav &
+# Say nothing while the far side plays.
+sleep 2; timeout 15 pw-play "$speech"; wait
+minutas record stop
+systemctl --user is-active minutas-echo-cancel.service   # inactive: it stopped with the recorder
+python3 - plain.wav cancelled.wav <<'LEVELS'
+import array, math, sys, wave
+
+for name in sys.argv[1:]:
+    with wave.open(name) as audio:
+        samples = array.array("h", audio.readframes(audio.getnframes()))
+    # Around the mean: a mic's DC offset, which the canceller removes, would pass with nothing cancelled.
+    mean = sum(samples) / len(samples)
+    rms = math.sqrt(sum((sample - mean) ** 2 for sample in samples) / len(samples))
+    print(f"{name}: {20 * math.log10(max(rms, 1) / 32768):.1f} dBFS")
+LEVELS
+```
+
+It cancels when `cancelled.wav` is at least 15 dB below `plain.wav` and, played, holds the speech faintly or not at all; the recording's own Microphone track, played from the Recordings window, then sounds as `cancelled.wav` does, and its line doesn't say No echo cancellation. Run it once more talking over the speech: your voice must stay in `cancelled.wav`, about as loud as in `plain.wav`.
 
 ## Patch submission
 

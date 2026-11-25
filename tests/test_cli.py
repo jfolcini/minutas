@@ -63,6 +63,10 @@ class FakeRecorder:
         self.started: list[tuple[Path, list[str]]] = []
         # The files each start recorded into.
         self.tracks: list[tuple[str, str]] = []
+        # Whether each start was asked for the echo-cancelled mic, and whether one that is
+        # gets it.
+        self.echo_cancel: list[bool] = []
+        self.canceller_starts = True
         self.stops = 0
         self.pauses = 0
         self.resumes = 0
@@ -70,13 +74,20 @@ class FakeRecorder:
         self.on_stop: Callable[[], object] = lambda: None
 
     def start(
-        self, folder: Path, *, on_exit: list[str], tracks: tuple[str, str] = store.TRACKS
-    ) -> None:
+        self,
+        folder: Path,
+        *,
+        on_exit: list[str],
+        tracks: tuple[str, str] = store.TRACKS,
+        echo_cancel: bool = False,
+    ) -> bool:
         if self.error is not None:
             self.on_failed_start(folder)
             raise self.error
         self.started.append((folder, on_exit))
         self.tracks.append(tracks)
+        self.echo_cancel.append(echo_cancel)
+        return echo_cancel and self.canceller_starts
 
     def is_running(self) -> bool:
         return self.running
@@ -171,6 +182,51 @@ def test_record_start_creates_the_recording_and_starts_the_recorder(
         )
     ]
     assert read_status()["recording"] == printed
+
+
+NO_ECHO_CANCELLATION = (
+    "Echo cancellation didn't start, so the microphone is recorded as it is; "
+    "journalctl --user -u minutas-echo-cancel.service says why.\n"
+)
+
+
+def test_record_start_with_echo_cancellation_off_records_the_plain_mic_and_notes_nothing(
+    fake_recorder: FakeRecorder, capsys: pytest.CaptureFixture[str]
+) -> None:
+    settings.set_echo_cancel(on=False)
+
+    assert main(["record", "start"]) == 0
+
+    printed = json.loads(capsys.readouterr().out)
+    assert fake_recorder.echo_cancel == [False]
+    assert "echo_cancelled" not in store.load_recording(printed["id"])
+
+
+def test_record_start_records_the_cancelled_mic_by_default_and_notes_it(
+    fake_recorder: FakeRecorder, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["record", "start"]) == 0
+
+    printed, said = capsys.readouterr()
+    assert said == ""
+    assert fake_recorder.echo_cancel == [True]
+    assert store.load_recording(json.loads(printed)["id"])["echo_cancelled"] is True
+
+
+def test_record_start_whose_echo_canceller_fails_records_the_plain_mic_and_says_so(
+    fake_recorder: FakeRecorder, capsys: pytest.CaptureFixture[str]
+) -> None:
+    settings.set_echo_cancel(on=True)
+    fake_recorder.canceller_starts = False
+
+    assert main(["record", "start"]) == 0
+
+    printed, said = capsys.readouterr()
+    assert said == NO_ECHO_CANCELLATION
+    recording = store.load_recording(json.loads(printed)["id"])
+    assert recording["echo_cancelled"] is False
+    # It records all the same.
+    assert read_status()["recording"] == json.loads(printed)
 
 
 def test_record_start_while_recording_refuses(
@@ -1946,6 +2002,53 @@ def test_record_continue_whose_recorder_never_started_stops_the_recording_as_any
     recent = status["recent"]
     assert isinstance(recent, list)
     assert [(entry["id"], entry["continuable"]) for entry in recent] == [(recording_id, True)]
+
+
+@pytest.mark.parametrize(
+    ("noted", "setting", "asked"),
+    [
+        # Its mic track was the echo-cancelled one, so its part is too, whatever the setting now.
+        ({"echo_cancelled": True}, False, True),
+        # It was the plain one: because the setting was off, or because the canceller failed.
+        ({}, True, False),
+        ({"echo_cancelled": False}, True, False),
+    ],
+)
+def test_record_continue_records_the_mic_the_recording_started_with_whatever_the_setting_is_now(
+    fake_recorder: FakeRecorder,
+    capsys: pytest.CaptureFixture[str],
+    noted: dict[str, bool],
+    *,
+    setting: bool,
+    asked: bool,
+) -> None:
+    recording_id = false_stop()
+    for echo_cancelled in noted.values():
+        store.mark_echo_cancelled(recording_id, echo_cancelled=echo_cancelled)
+    settings.set_echo_cancel(on=setting)
+
+    assert main(["record", "continue", recording_id]) == 0
+
+    assert capsys.readouterr() == ("", "")
+    assert fake_recorder.echo_cancel == [asked]
+    recording = store.load_recording(recording_id)
+    assert {key: recording[key] for key in recording if key == "echo_cancelled"} == noted
+
+
+def test_record_continue_whose_echo_canceller_fails_records_the_plain_mic_and_says_so(
+    fake_recorder: FakeRecorder, capsys: pytest.CaptureFixture[str]
+) -> None:
+    recording_id = false_stop()
+    store.mark_echo_cancelled(recording_id, echo_cancelled=True)
+    fake_recorder.canceller_starts = False
+
+    assert main(["record", "continue", recording_id]) == 0
+
+    assert capsys.readouterr() == ("", NO_ECHO_CANCELLATION)
+    assert fake_recorder.tracks == [store.PARTS]
+    # Its mic track is no longer the echo-cancelled mic all through.
+    recording = store.load_recording(recording_id)
+    assert (recording["echo_cancelled"], recording["stopped_at"]) == (False, None)
 
 
 def test_record_discard_refuses_a_continued_recording(

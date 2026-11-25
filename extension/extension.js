@@ -59,15 +59,16 @@ export default class MinutasExtension extends Extension {
         // Connected before the items are added: the menu hides its separators on the same signal,
         // after looking at what this shows.
         this._menuOpenId = menu.connect('open-state-changed', (_menu, open) => {
-            if (open)
-                this._showInstallState();
+            if (open) this._showInstallState();
         });
         this._installItem = menu.addAction('Install Minutas…', () => this._openInstallPage());
         this._recordItem = menu.addAction('Record', () => this._startRecording());
         this._pauseItem = menu.addAction('Pause', () => this._togglePause());
         this._recordingItems = [
             this._pauseItem,
-            menu.addAction('Finish', () => this._run(['record', 'stop'], "Couldn't finish the recording")),
+            menu.addAction('Finish', () =>
+                this._run(['record', 'stop'], "Couldn't finish the recording")
+            ),
         ];
         this._discardItem = menu.addAction('Discard…', () => this._askToDiscard());
         menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
@@ -76,7 +77,9 @@ export default class MinutasExtension extends Extension {
         menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
         this._commandItems = [
             this._recentSection.actor,
-            menu.addAction('Recordings', () => this._run(['history'], "Couldn't open the recordings")),
+            menu.addAction('Recordings', () =>
+                this._run(['history'], "Couldn't open the recordings")
+            ),
             menu.addAction('Settings', () => this._run(['settings'], "Couldn't open the settings")),
         ];
         this._showInstallState();
@@ -135,8 +138,7 @@ export default class MinutasExtension extends Extension {
                 const [, contents] = file.load_contents_finish(result);
                 status = parseStatus(new TextDecoder().decode(contents));
             } catch (e) {
-                if (e.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED))
-                    return;
+                if (e.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED)) return;
                 if (!e.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.NOT_FOUND)) {
                     console.warn(`Minutas: cannot read ${file.get_path()}: ${e.message}`);
                     return;
@@ -144,8 +146,7 @@ export default class MinutasExtension extends Extension {
                 status = EMPTY_STATUS;
             }
             // Reads overlap when one replace fires several events; only the newest counts.
-            if (read !== this._statusReads)
-                return;
+            if (read !== this._statusReads) return;
             if (status === null) {
                 console.warn(`Minutas: keeping the last status; ${file.get_path()} is not valid`);
                 return;
@@ -164,7 +165,9 @@ export default class MinutasExtension extends Extension {
         this._pauseItem.label.text = paused ? 'Resume' : 'Pause';
         this._icon.icon_name = paused ? PAUSED_ICON : ICON;
         this._elapsedLabel.visible = recording !== null;
-        const [pill, other] = paused ? [PAUSED_STYLE, RECORDING_STYLE] : [RECORDING_STYLE, PAUSED_STYLE];
+        const [pill, other] = paused
+            ? [PAUSED_STYLE, RECORDING_STYLE]
+            : [RECORDING_STYLE, PAUSED_STYLE];
         this._button.remove_style_class_name(other);
         if (recording) {
             this._button.add_style_class_name(pill);
@@ -181,7 +184,10 @@ export default class MinutasExtension extends Extension {
         // While a transcription runs only its label changes, every few seconds: set in place, the
         // items of an open menu keep the pointer's hover and the keyboard's focus.
         const shape = recent
-            .map(entry => `${entry.id} ${hasWarning(entry)} ${recentControls(entry).map(control => control.label)}`)
+            .map(
+                entry =>
+                    `${entry.id} ${hasWarning(entry)} ${recentControls(entry).map(control => control.label)}`
+            )
             .join('\n');
         if (shape === this._recentShape) {
             recent.forEach((entry, i) => (this._recentItems[i].label.text = recentLabel(entry)));
@@ -190,12 +196,20 @@ export default class MinutasExtension extends Extension {
         this._recentShape = shape;
         this._recentSection.removeAll();
         this._recentItems = recent.map(entry => {
-            const item = this._recentSection.addAction(recentLabel(entry), () => this._openHistory(entry.id));
+            const item = this._recentSection.addAction(recentLabel(entry), () =>
+                this._openHistory(entry.id)
+            );
             if (hasWarning(entry))
-                item.add_child(new St.Icon({icon_name: 'dialog-warning-symbolic', style_class: 'popup-menu-icon'}));
+                item.add_child(
+                    new St.Icon({
+                        icon_name: 'dialog-warning-symbolic',
+                        style_class: 'popup-menu-icon',
+                    })
+                );
             for (const control of recentControls(entry)) {
                 // Under its recording and set in from it, by the room an ornament would take.
-                this._recentSection.addAction(control.label, () => this._run(control.args, control.failureTitle))
+                this._recentSection
+                    .addAction(control.label, () => this._run(control.args, control.failureTitle))
                     .setOrnament(PopupMenu.Ornament.NONE);
             }
             return item;
@@ -214,36 +228,48 @@ export default class MinutasExtension extends Extension {
     }
 
     _startRecording() {
-        this._run(['record', 'start'], "Couldn't start recording",
+        this._run(
+            ['record', 'start'],
+            "Couldn't start recording",
             // CRITICAL shows through Do Not Disturb, which is often on in exactly the
-            // meetings this reminder is for; it stays up until dismissed.
-            () => this._notify("Tell participants you're recording", null, null,
-                MessageTray.Urgency.CRITICAL));
+            // meetings this reminder is for; it stays up until dismissed. A warning, such as echo
+            // cancellation not starting, comes with it while there is still time to act on it.
+            warning =>
+                this._notify(
+                    "Tell participants you're recording",
+                    warning || null,
+                    null,
+                    MessageTray.Urgency.CRITICAL
+                )
+        );
     }
 
     _togglePause() {
         if (this._status.recording?.paused_at)
             this._run(['record', 'resume'], "Couldn't resume the recording");
-        else
-            this._run(['record', 'pause'], "Couldn't pause the recording");
+        else this._run(['record', 'pause'], "Couldn't pause the recording");
     }
 
     // Escape, Cancel and Enter leave the recording going: Cancel, added first, has the
     // keyboard's focus, and neither button is the default.
     _askToDiscard() {
         const dialog = new ModalDialog.ModalDialog();
-        dialog.contentLayout.add_child(new Dialog.MessageDialogContent({
-            title: 'Discard the recording?',
-            description: 'It stops and goes to the Trash, without a transcript.',
-        }));
+        dialog.contentLayout.add_child(
+            new Dialog.MessageDialogContent({
+                title: 'Discard the recording?',
+                description: 'It stops and goes to the Trash, without a transcript.',
+            })
+        );
         dialog.addButton({label: 'Cancel', action: () => dialog.close(), key: Clutter.KEY_Escape});
-        dialog.addButton({
-            label: 'Discard',
-            action: () => {
-                dialog.close();
-                this._run(['record', 'discard'], "Couldn't discard the recording");
-            },
-        }).set_style(DESTRUCTIVE_STYLE);
+        dialog
+            .addButton({
+                label: 'Discard',
+                action: () => {
+                    dialog.close();
+                    this._run(['record', 'discard'], "Couldn't discard the recording");
+                },
+            })
+            .set_style(DESTRUCTIVE_STYLE);
         // It destroys itself once closed.
         dialog.connect('destroy', () => {
             this._dialog = null;
@@ -258,8 +284,12 @@ export default class MinutasExtension extends Extension {
 
     _findCommand() {
         // The Shell's PATH often lacks ~/.local/bin, where install.sh puts the command.
-        return GLib.find_program_in_path('minutas') ??
-            GLib.find_program_in_path(GLib.build_filenamev([GLib.get_home_dir(), '.local', 'bin', 'minutas']));
+        return (
+            GLib.find_program_in_path('minutas') ??
+            GLib.find_program_in_path(
+                GLib.build_filenamev([GLib.get_home_dir(), '.local', 'bin', 'minutas'])
+            )
+        );
     }
 
     // Checked each time the menu opens, so installing takes effect without logging out.
@@ -272,12 +302,11 @@ export default class MinutasExtension extends Extension {
         const recording = this._status.recording !== null;
         this._installItem.visible = !this._installed;
         this._recordItem.visible = this._installed && !recording;
-        for (const item of this._recordingItems)
-            item.visible = this._installed && recording;
+        for (const item of this._recordingItems) item.visible = this._installed && recording;
         // The Trash would take what a continued recording held before its stop: Finish ends it.
-        this._discardItem.visible = this._installed && recording && !this._status.recording.continued;
-        for (const item of this._commandItems)
-            item.visible = this._installed;
+        this._discardItem.visible =
+            this._installed && recording && !this._status.recording.continued;
+        for (const item of this._commandItems) item.visible = this._installed;
     }
 
     _openInstallPage() {
@@ -287,14 +316,19 @@ export default class MinutasExtension extends Extension {
     _run(args, failureTitle, onSuccess) {
         const executable = this._findCommand();
         if (!executable) {
-            this._notify("Minutas isn't installed", 'No minutas command on the PATH or in ~/.local/bin; click for how to install it', null)
-                .connect('activated', () => this._openInstallPage());
+            this._notify(
+                "Minutas isn't installed",
+                'No minutas command on the PATH or in ~/.local/bin; click for how to install it',
+                null
+            ).connect('activated', () => this._openInstallPage());
             return;
         }
         let proc;
         try {
-            proc = Gio.Subprocess.new([executable, ...args],
-                Gio.SubprocessFlags.STDOUT_SILENCE | Gio.SubprocessFlags.STDERR_PIPE);
+            proc = Gio.Subprocess.new(
+                [executable, ...args],
+                Gio.SubprocessFlags.STDOUT_SILENCE | Gio.SubprocessFlags.STDERR_PIPE
+            );
         } catch (e) {
             this._notify(failureTitle, e.message, null);
             return;
@@ -308,10 +342,13 @@ export default class MinutasExtension extends Extension {
                     this._notify(failureTitle, e.message, null);
                 return;
             }
-            if (proc.get_successful())
-                onSuccess?.();
+            if (proc.get_successful()) onSuccess?.(lastLine(stderr));
             else
-                this._notify(failureTitle, lastLine(stderr) || `minutas ${args.join(' ')} exited with an error`, null);
+                this._notify(
+                    failureTitle,
+                    lastLine(stderr) || `minutas ${args.join(' ')} exited with an error`,
+                    null
+                );
         });
     }
 
@@ -324,9 +361,13 @@ export default class MinutasExtension extends Extension {
             });
             Main.messageTray.add(this._source);
         }
-        const notification = new MessageTray.Notification({source: this._source, title, body, urgency});
-        if (recordingId)
-            notification.connect('activated', () => this._openHistory(recordingId));
+        const notification = new MessageTray.Notification({
+            source: this._source,
+            title,
+            body,
+            urgency,
+        });
+        if (recordingId) notification.connect('activated', () => this._openHistory(recordingId));
         this._source.addNotification(notification);
         return notification;
     }
