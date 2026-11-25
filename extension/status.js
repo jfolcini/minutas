@@ -2,9 +2,10 @@
 
 /** @typedef {null | 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'} RunStatus */
 /** @typedef {{id: string, started_at: string}} Recording */
+/** @typedef {{phase: string, percent: number}} Progress */
 /**
  * @typedef {Recording & {name: string, duration_seconds: number, incomplete: boolean,
- *     transcribe: RunStatus, failed: string[]}} Recent
+ *     transcribe: RunStatus, progress?: Progress | null, failed: string[]}} Recent
  */
 /** @typedef {{recording: Recording | null, recent: Recent[]}} Status */
 /** @typedef {{recordingId: string, title: string, body: string}} Notice */
@@ -36,12 +37,19 @@ const isTimestamp = value =>
 const isRecording = value => value !== null && typeof value === 'object' &&
     isString(value.id) && isTimestamp(value.started_at);
 
+// Absent from a status.json written before it was.
+/** @param {any} value */
+const isProgress = value => value === undefined || value === null ||
+    (typeof value === 'object' && isString(value.phase) &&
+        Number.isInteger(value.percent) && value.percent >= 0 && value.percent <= 100);
+
 /** @param {any} value */
 const isRecent = value => isRecording(value) &&
     isString(value.name) &&
     Number.isFinite(value.duration_seconds) &&
     typeof value.incomplete === 'boolean' &&
     RUN_STATUSES.includes(value.transcribe) &&
+    isProgress(value.progress) &&
     Array.isArray(value.failed) && value.failed.every(isString);
 
 /**
@@ -121,7 +129,9 @@ export function elapsedSeconds(startedAt, nowMs) {
 /** @param {Recent} recording */
 export function recentLabel(recording) {
     const parts = [recording.name, localStart(recording.started_at), formatClock(recording.duration_seconds)];
-    if (recording.transcribe === 'queued' || recording.transcribe === 'running')
+    if (recording.transcribe === 'running' && recording.progress)
+        parts.push(`${recording.progress.phase}… ${recording.progress.percent}%`);
+    else if (recording.transcribe === 'queued' || recording.transcribe === 'running')
         parts.push('transcribing…');
     return parts.join(' · ');
 }

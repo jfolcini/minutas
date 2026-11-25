@@ -1,5 +1,6 @@
 import builtins
 import contextlib
+import functools
 import gc
 import io
 import itertools
@@ -549,11 +550,27 @@ class FakePipeline:
         self.model = FakeEmbedding()
         self._embedding: Callable[..., object] = self.model
 
-    def __call__(self, file: dict[str, object]) -> types.SimpleNamespace:
+    def __call__(
+        self, file: dict[str, object], *, hook: Callable[..., None] | None = None
+    ) -> types.SimpleNamespace:
         waveform = file["waveform"]
         assert isinstance(waveform, CallAudio)
-        # As pyannote does: it asks what the model needs, then for every chunk's embeddings.
+        # As pyannote does: it tells the hook, if it was given one, of every step, with the
+        # file, and how far the long ones have got.
+        told = functools.partial(hook or (lambda *_step, **_told: None), file=file)
+        told("segmentation", None, completed=0, total=3)
+        told("segmentation", None, completed=3, total=3)
+        told("segmentation", "segmentations")
+        told("speaker_counting", "count")
+        told("embeddings", None, total=2, completed=0)
+        # It asks what the model needs, then for every chunk's embeddings.
         needs = getattr(self._embedding, "min_num_samples", None)
+        embeddings = []
+        for done, (chunk, masks) in enumerate([("chunk 1", SILENT), ("chunk 2", VOICED)], 1):
+            embeddings.append(self._embedding(chunk, masks=masks))
+            told("embeddings", embeddings[-1], total=2, completed=done)
+        told("embeddings", embeddings)
+        told("discrete_diarization", "diarization")
         self.stack.diarizations.append(
             {
                 "samples": len(waveform.samples) // 4,
@@ -562,10 +579,7 @@ class FakePipeline:
                 "embedding_batch_size": self.embedding_batch_size,
                 "window": (self._segmentation.duration, self._segmentation.step),
                 "min_num_samples": needs,
-                "embeddings": [
-                    self._embedding("chunk 1", masks=SILENT),
-                    self._embedding("chunk 2", masks=VOICED),
-                ],
+                "embeddings": embeddings,
                 "embedded": self.model.embedded,
                 "in a process of its own": self.stack.apart,
             }
@@ -597,6 +611,7 @@ class FakeSpeechStack:
         self.threads_in_vad: set[int] = set()
         self.silero_imported = False
         self.vad_rates: set[int] = set()
+        self.vad_calls = 0
         self.vad_settings: list[dict[str, object]] = []
         self.telemetry_when_pyannote_is_imported: str | None = None
         self.pipelines: list[Path] = []
@@ -681,6 +696,7 @@ class FakeSpeechStack:
         self.inference_in_vad.add(self.inference)
         self.threads_in_vad.add(self.torch_threads)
         self.vad_rates.add(rate)
+        self.vad_calls += 1
         return types.SimpleNamespace(item=lambda: window[0])
 
     def get_speech_timestamps_from_probs(
@@ -951,6 +967,57 @@ def test_speaker_detection_killed_at_the_memory_limit_says_so(
     assert capsys.readouterr().err == "Speaker detection ran out of its memory limit\n"
     assert not (recording / "transcript.json").exists()
     assert stack.restored == []
+
+
+class Stdout:
+    """Stands in for stdout: keeps each line once flushed, with how much work the speech stack
+    had done by then, in VAD windows and Parakeet turns."""
+
+    def __init__(self, stack: FakeSpeechStack) -> None:
+        self.stack = stack
+        self.unflushed = ""
+        self.lines: list[tuple[str, int, int, tuple[int, int]]] = []
+
+    def write(self, text: str) -> int:
+        self.unflushed += text
+        return len(text)
+
+    def flush(self) -> None:
+        work = (self.stack.vad_calls, len(self.stack.transcriptions))
+        for line in self.unflushed.splitlines():
+            said = json.loads(line)
+            self.lines.append((said["phase"], said["done"], said["total"], work))
+        self.unflushed = ""
+
+
+def test_each_phase_says_how_far_it_has_got_a_flushed_line_at_a_time(
+    home: Path, stack: FakeSpeechStack, recording: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    install_models(home)
+    stdout = Stdout(stack)
+    monkeypatch.setattr(sys, "stdout", stdout)
+
+    assert main([str(recording)]) == 0
+
+    windows = 68 * SECOND // WINDOW
+    assert stdout.lines == [
+        *(
+            ("finding speech on the microphone", done, windows, (done, 0))
+            for done in range(1, windows + 1)
+        ),
+        *(
+            ("finding speech on the call", done, windows, (windows + done, 0))
+            for done in range(1, windows + 1)
+        ),
+        # From the start; then as pyannote's embeddings, most of its work, get done.
+        ("identifying speakers", 0, 1, (2 * windows, 0)),
+        ("identifying speakers", 0, 2, (2 * windows, 0)),
+        ("identifying speakers", 1, 2, (2 * windows, 0)),
+        ("identifying speakers", 2, 2, (2 * windows, 0)),
+        # From before Parakeet loads, then after each turn.
+        *(("transcribing", done, 6, (2 * windows, done)) for done in range(7)),
+    ]
+    assert stdout.unflushed == ""
 
 
 def test_diarize_reaches_its_own_process_by_name() -> None:

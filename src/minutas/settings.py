@@ -94,6 +94,15 @@ def set_summary_skill(path: str | None) -> None:
     save({"summary_skill": path})
 
 
+def gitlab_link() -> str | None:
+    """The project or issue link Publish to GitLab starts from; None until one is set."""
+    return cast("str | None", load().get("gitlab_link"))
+
+
+def set_gitlab_link(link: str | None) -> None:
+    save({"gitlab_link": link})
+
+
 def github_link() -> str | None:
     """The issue or repository link Publish to GitHub starts from; None for none."""
     return cast("str | None", load().get("github_link"))

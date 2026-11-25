@@ -1134,6 +1134,132 @@ def test_settings_agaric_without_an_option_says_what_it_takes(
     )
 
 
+class FakeGlabLogin:
+    """Stands in for the gitlab module's glab login: no glab."""
+
+    def __init__(self) -> None:
+        self.problem = ""
+        self.logged_in = True
+        self.refused: str | None = None
+        self.handed: list[tuple[str, str]] = []
+        self.asked: list[str] = []
+
+    def log_in(self, host: str, token: str) -> None:
+        self.handed.append((host, token))
+        if self.refused is not None:
+            raise gitlab.GitLabError(self.refused)
+
+    def login_status(self, host: str) -> str:
+        self.asked.append(host)
+        if not self.logged_in:
+            reason = f"glab isn't logged in to {host}"
+            raise gitlab.GitLabError(reason)
+        return f"glab is logged in to {host}."
+
+
+@pytest.fixture
+def glab_login(monkeypatch: pytest.MonkeyPatch) -> FakeGlabLogin:
+    fake = FakeGlabLogin()
+    monkeypatch.setattr(gitlab, "glab_problem", lambda: fake.problem)
+    monkeypatch.setattr(gitlab, "log_in", fake.log_in)
+    monkeypatch.setattr(gitlab, "login_status", fake.login_status)
+    return fake
+
+
+GITLAB_TOKEN = "glpat-" + "a" * 20
+
+
+@pytest.mark.parametrize(
+    ("link", "host"), [(None, "gitlab.com"), (ISSUE_LINK, "gitlab.example.com")]
+)
+def test_settings_gitlab_says_whether_glab_is_logged_in_to_the_default_links_server(
+    glab_login: FakeGlabLogin,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    link: str | None,
+    host: str,
+) -> None:
+    settings.set_gitlab_link(link)
+    # Without --token-from-stdin, a token on stdin is left alone.
+    monkeypatch.setattr(sys, "stdin", io.StringIO(GITLAB_TOKEN))
+
+    assert main(["settings", "gitlab"]) == 0
+
+    assert capsys.readouterr() == ("", f"glab is logged in to {host}.\n")
+    assert (glab_login.asked, glab_login.handed) == ([host], [])
+
+
+def test_settings_gitlab_fails_while_glab_is_not_logged_in(
+    glab_login: FakeGlabLogin, capsys: pytest.CaptureFixture[str]
+) -> None:
+    glab_login.logged_in = False
+
+    assert main(["settings", "gitlab"]) == 1
+
+    assert capsys.readouterr().err == "glab isn't logged in to gitlab.com\n"
+
+
+def test_settings_gitlab_hands_glab_the_token_then_says_whether_it_is_logged_in(
+    glab_login: FakeGlabLogin,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    settings.set_gitlab_link(ISSUE_LINK)
+    monkeypatch.setattr(sys, "stdin", io.StringIO(f" {GITLAB_TOKEN} \n"))
+
+    assert main(["settings", "gitlab", "--token-from-stdin"]) == 0
+
+    assert glab_login.handed == [("gitlab.example.com", GITLAB_TOKEN)]
+    assert glab_login.asked == ["gitlab.example.com"]
+    assert capsys.readouterr().err == "glab is logged in to gitlab.example.com.\n"
+
+
+def test_settings_gitlab_refuses_a_blank_token(
+    glab_login: FakeGlabLogin,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(sys, "stdin", io.StringIO(" \n"))
+
+    assert main(["settings", "gitlab", "--token-from-stdin"]) == 1
+
+    assert capsys.readouterr().err == (
+        "No token in that: paste a GitLab personal access token with the api scope.\n"
+    )
+    assert (glab_login.handed, glab_login.asked) == ([], [])
+
+
+def test_settings_gitlab_says_why_glab_did_not_keep_the_token(
+    glab_login: FakeGlabLogin,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    refused = "glab couldn't keep the token for gitlab.com: the keyring is locked"
+    glab_login.refused = refused
+    monkeypatch.setattr(sys, "stdin", io.StringIO(GITLAB_TOKEN))
+
+    assert main(["settings", "gitlab", "--token-from-stdin"]) == 1
+
+    assert capsys.readouterr().err == f"{refused}\n"
+    assert glab_login.asked == []
+
+
+@pytest.mark.parametrize("options", [[], ["--token-from-stdin"]])
+def test_settings_gitlab_says_what_is_wrong_with_the_glab_installed(
+    glab_login: FakeGlabLogin,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    options: list[str],
+) -> None:
+    glab_login.problem = "glab not found: install glab 1.91.0 or newer"
+    monkeypatch.setattr(sys, "stdin", io.StringIO(GITLAB_TOKEN))
+
+    assert main(["settings", "gitlab", *options]) == 1
+
+    assert capsys.readouterr().err == "glab not found: install glab 1.91.0 or newer\n"
+    assert (glab_login.handed, glab_login.asked) == ([], [])
+
+
 class Releases:
     """A Minutas repository with release tags, and the clone install.sh ran from."""
 

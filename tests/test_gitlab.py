@@ -731,3 +731,125 @@ def test_without_glab_it_says_how_to_install_it(
         f"glab not found: {INSTALL}, then log in with `glab auth login`"
     )
     assert system.commands == []
+
+
+def test_glab_logs_in_to_gitlab_com_without_a_default_link() -> None:
+    assert gitlab.login_host() == "gitlab.com"
+
+
+def test_glab_logs_in_to_the_default_links_server() -> None:
+    settings.set_gitlab_link(ISSUE_LINK)
+
+    assert gitlab.login_host() == HOST
+
+
+class FakeGlabAuth:
+    """Stands in for subprocess.run under glab auth: answers as told, and keeps each command
+    with what it was handed on stdin."""
+
+    def __init__(self) -> None:
+        self.answer = Answer()
+        self.calls: list[tuple[list[str], object]] = []
+
+    def __call__(self, args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        assert (kwargs["capture_output"], kwargs["text"]) == (True, True)
+        self.calls.append((args, kwargs.get("input", kwargs.get("stdin"))))
+        answer = self.answer
+        return subprocess.CompletedProcess(args, answer.returncode, answer.stdout, answer.stderr)
+
+
+@pytest.fixture
+def glab_auth(monkeypatch: pytest.MonkeyPatch) -> FakeGlabAuth:
+    fake = FakeGlabAuth()
+    monkeypatch.setattr(subprocess, "run", fake)
+    return fake
+
+
+PAT = "glpat-" + "a" * 20
+
+
+def test_log_in_hands_glab_the_token_on_stdin_for_the_keyring(glab_auth: FakeGlabAuth) -> None:
+    gitlab.log_in(HOST, PAT)
+
+    assert glab_auth.calls == [
+        (["glab", "auth", "login", f"--hostname={HOST}", "--stdin", "--use-keyring"], PAT)
+    ]
+
+
+@pytest.mark.parametrize(
+    ("stderr", "reason"),
+    [
+        (
+            "\nThe name org.freedesktop.secrets was not provided by any .service files\n",
+            "The name org.freedesktop.secrets was not provided by any .service files",
+        ),
+        ("", "glab exited with status 1"),
+    ],
+)
+def test_a_token_glab_cannot_keep_says_why(
+    glab_auth: FakeGlabAuth, stderr: str, reason: str
+) -> None:
+    glab_auth.answer = Answer(1, "", stderr)
+
+    with pytest.raises(gitlab.GitLabError) as raised:
+        gitlab.log_in(HOST, PAT)
+
+    assert str(raised.value) == f"glab couldn't keep the token for {HOST}: {reason}"
+
+
+def test_login_status_says_glab_is_logged_in(glab_auth: FakeGlabAuth) -> None:
+    glab_auth.answer = Answer(
+        0, "", f"{HOST}\n  ✓ Logged in to {HOST} as ana (keyring)\n  ✓ Token found: ****\n"
+    )
+
+    assert gitlab.login_status(HOST) == f"glab is logged in to {HOST}."
+    assert glab_auth.calls == [
+        (["glab", "auth", "status", f"--hostname={HOST}"], subprocess.DEVNULL)
+    ]
+
+
+# What glab auth status says on stderr, exiting 1.
+NEVER_LOGGED_IN = (
+    f"x {HOST} has not been authenticated with glab. Run `glab auth login --hostname {HOST}` "
+    "to authenticate.\n"
+)
+LOGIN_REFUSED = (
+    f"{HOST}\n  x {HOST}: API call failed: GET https://{HOST}/api/v4/user: 401 "
+    "{message: 401 Unauthorized}\n  ✓ Token found: ****\n\n"
+    "x could not authenticate to one or more of the configured GitLab instances.\n"
+)
+OUT_OF_REACH = (
+    f'{HOST}\n  x {HOST}: API call failed: Get "https://{HOST}/api/v4/user": dial tcp: lookup '
+    f"{HOST}: no such host\n\n"
+    "x could not authenticate to one or more of the configured GitLab instances.\n"
+)
+NOT_LOGGED_IN = (
+    f"glab isn't logged in to {HOST}: paste a personal access token for it, with the api scope"
+)
+
+
+@pytest.mark.parametrize(
+    ("stderr", "reason"),
+    [
+        (NEVER_LOGGED_IN, NOT_LOGGED_IN),
+        # A token GitLab refuses, or none, as a fresh glab has for gitlab.com.
+        (LOGIN_REFUSED, NOT_LOGGED_IN),
+        (
+            OUT_OF_REACH,
+            (
+                f'glab couldn\'t sign in to {HOST}: Get "https://{HOST}/api/v4/user": dial tcp: '
+                f"lookup {HOST}: no such host"
+            ),
+        ),
+    ],
+    ids=["never logged in", "refused", "out of reach"],
+)
+def test_login_status_says_why_glab_is_not_logged_in(
+    glab_auth: FakeGlabAuth, stderr: str, reason: str
+) -> None:
+    glab_auth.answer = Answer(1, "", stderr)
+
+    with pytest.raises(gitlab.GitLabError) as raised:
+        gitlab.login_status(HOST)
+
+    assert str(raised.value) == reason

@@ -6,15 +6,17 @@ after has to start a new worker.
 """
 
 import fcntl
+import json
 import os
 import signal
 import subprocess
 import sys
 import time
+from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
 from types import FrameType
-from typing import IO, TypedDict
+from typing import IO, TypedDict, cast
 
 from minutas import store, transcriber
 
@@ -231,6 +233,44 @@ def cancel(recording_id: str, index: int) -> None:
     store.write_status()
 
 
+def read_progress(line: str) -> store.Progress | None:
+    """The phase and whole percent done a line of the transcriber's stdout says; None for any
+    other line, such as one a library printed."""
+    try:
+        said = json.loads(line)
+    except ValueError:
+        return None
+    if not isinstance(said, dict):
+        return None
+    phase, done, total = said.get("phase"), said.get("done"), said.get("total")
+    # Not bool, which is an int too.
+    counted = type(done) is int and type(total) is int and 0 <= done <= total and total > 0
+    if phase not in transcriber.PHASES or not counted:
+        return None
+    return store.Progress(phase=phase, percent=done * 100 // total)
+
+
+def set_progress(recording_id: str, index: int, progress: store.Progress) -> None:
+    with store.lock():
+        runs = store.load_runs(recording_id)
+        # Cancel may have ended the run while the line was on its way.
+        if runs[index]["status"] == "running":
+            runs[index]["progress"] = progress
+            store.save_runs(recording_id, runs)
+    store.write_status()
+
+
+def follow(recording_id: str, index: int, printed: Iterable[str]) -> None:
+    """Records on the run how far the transcriber says it has got, as it says it: only a new
+    phase or a new whole percent, so a long meeting rewrites the run no more than a short one."""
+    shown = None
+    for line in printed:
+        progress = read_progress(line)
+        if progress is not None and progress != shown:
+            set_progress(recording_id, index, progress)
+            shown = progress
+
+
 def transcribe(recording_id: str, index: int) -> Outcome:
     python = speech_python()
     if not python.is_file():
@@ -246,26 +286,31 @@ def transcribe(recording_id: str, index: int) -> Outcome:
         (folder / WORDS).write_text("".join(f"{word}\n" for word in words), encoding="utf-8")
         command += ["--words", str(folder / WORDS)]
     log = store.run_log(recording_id, index)
-    with log.open("w") as stderr:
-        result = subprocess.run(  # noqa: S603 - this module's own argument list
+    with (
+        log.open("w") as stderr,
+        subprocess.Popen(  # noqa: S603 - this module's own argument list
             command,
             stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
+            # Its progress; stderr is the log, whose last line is the reason it failed.
+            stdout=subprocess.PIPE,
             stderr=stderr,
-            check=False,
-        )
-    if result.returncode == 0:
+            # Whatever a library prints there is read without failing the run.
+            encoding="utf-8",
+            errors="replace",
+        ) as process,
+    ):
+        follow(recording_id, index, cast("IO[str]", process.stdout))
+        returncode = process.wait()
+    if returncode == 0:
         store.write_transcript(recording_id)
         return Outcome(status="succeeded", error=None, details=log.name, output=store.TRANSCRIPT)
-    # A killed transcriber gave no reason, its last line is only progress; the OOM kill at
-    # MemoryMax is a SIGKILL.
-    if result.returncode == -signal.SIGKILL:
+    # A killed transcriber gave no reason, its last line is only what it was logging; the OOM
+    # kill at MemoryMax is a SIGKILL.
+    if returncode == -signal.SIGKILL:
         return failed(OUT_OF_MEMORY, log.name)
-    if result.returncode < 0:
-        return failed(
-            f"The transcriber was killed by {signal.Signals(-result.returncode).name}", log.name
-        )
-    reason = f"The transcriber exited with status {result.returncode}"
+    if returncode < 0:
+        return failed(f"The transcriber was killed by {signal.Signals(-returncode).name}", log.name)
+    reason = f"The transcriber exited with status {returncode}"
     # Line by line: a long log never sits in memory whole.
     with log.open(errors="replace") as lines:
         for line in lines:

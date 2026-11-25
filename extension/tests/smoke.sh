@@ -122,7 +122,8 @@ expect_opened() {
 expect_log() { check "ran minutas $1" grep -qxF -- "$1" "$WORK/minutas.log"; }
 click() { ev "$B.menu._getMenuItems().flatMap(i => i._getMenuItems ? i._getMenuItems() : [i]).find(i => i.label.text.startsWith('$1')).activate(null)" >/dev/null; }
 write_status() { mkdir -p "$DATA" && printf '%s' "$1" >"$DATA/.status.tmp" && mv "$DATA/.status.tmp" "$DATA/status.json"; }
-recent() { echo "{\"id\":\"$1\",\"name\":\"$2\",\"started_at\":\"$3\",\"duration_seconds\":$4,\"incomplete\":$5,\"transcribe\":$6,\"failed\":$7}"; }
+# A recent recording; an eighth argument is its progress.
+recent() { echo "{\"id\":\"$1\",\"name\":\"$2\",\"started_at\":\"$3\",\"duration_seconds\":$4,\"incomplete\":$5,\"transcribe\":$6,\"failed\":$7${8:+,\"progress\":$8}}"; }
 screenshot() {
   ev "$B.menu.open()" >/dev/null
   sleep 1
@@ -167,6 +168,16 @@ expect "$PANEL" '{"recordingStyle":false,"timerVisible":false}'
 expect_log "record stop"
 read -r id at <"$WORK/active"
 meeting=$(recent "$id" Meeting "$at" 7 false '"succeeded"' '["summarize"]')
+
+echo "== a running transcription says how far it has got, on the same item"
+speakers() { recent "$id" Meeting "$at" 7 false '"running"' '[]' "{\"phase\":\"identifying speakers\",\"percent\":$1}"; }
+ITEM="$B.menu._getMenuItems().find(i => i._getMenuItems)._getMenuItems()[0]"
+write_status "{\"version\":1,\"recording\":null,\"recent\":[$(speakers 40)]}"
+expect "$MENU" ' · 0:07 · identifying speakers… 40%"'
+ev "$ITEM._smokeMark = true" >/dev/null
+write_status "{\"version\":1,\"recording\":null,\"recent\":[$(speakers 41)]}"
+expect "$MENU" ' · 0:07 · identifying speakers… 41%"'
+expect "$ITEM._smokeMark === true" "'true'"
 
 echo "== transcript ready, and clicking it opens the history"
 write_status "{\"version\":1,\"recording\":null,\"recent\":[$(recent "$id" Meeting "$at" 7 false '"succeeded"' '[]')]}"

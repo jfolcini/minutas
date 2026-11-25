@@ -88,6 +88,8 @@ class ActionView:
     prompt: str | None = None
     # The link of the newest run, which the dialog that asks for one starts from.
     link: str | None = None
+    # How much of what the running run is doing is done, from 0 to 1; None when none is running.
+    progress: float | None = None
 
 
 @dataclass(frozen=True)
@@ -243,6 +245,31 @@ def subtitle(recording: store.Recording, transcribing: str | None) -> str:
     return " · ".join(part for part in said if part is not None)
 
 
+def link_publisher(
+    runs: Sequence[store.Run], action: str, *, running: bool, tool_problem: str, disabled: str
+) -> tuple[ActionView, bool]:
+    """Publish to GitLab or GitHub, whose every press asks for a link, starting from the newest
+    run's; and whether that run failed.
+
+    tool_problem: why its tool is missing or too old, empty when it is there. disabled: why the
+    button can't be pressed, empty when it can.
+    """
+    last = last_result(runs, action, "Not published", "Publish", "Publish again")
+    label = f"{last.label}…"
+    if running:
+        shown = ActionView(result="Running", label=label, disabled="Publishing", output=last.output)
+        return shown, last.failed
+    newest = latest(runs, action)
+    shown = replace(
+        last,
+        label=label,
+        result=" · ".join(filter(None, [last.result, tool_problem])),
+        link=None if newest is None else newest[1].get("link"),
+        disabled=disabled,
+    )
+    return shown, last.failed
+
+
 def row(  # noqa: PLR0913 - each is a separate input to the row; all after tracks go by name
     recording: store.Recording,
     runs: Sequence[store.Run],
@@ -277,6 +304,15 @@ def row(  # noqa: PLR0913 - each is a separate input to the row; all after track
     transcribing = None if transcription is None else IN_PROGRESS.get(transcription[1]["status"])
     if transcription is not None and transcribing is not None:
         transcribe = replace(transcribe, label="Cancel", disabled="", cancels=transcription[0])
+    if transcription is not None and transcription[1]["status"] == "running":
+        progress = transcription[1].get("progress")
+        if progress is not None:
+            # The collapsed row says it too, in place of "Transcribing".
+            transcribing = f"{progress['phase'].capitalize()} · {progress['percent']}%"
+            transcribe = replace(transcribe, result=transcribing)
+        transcribe = replace(
+            transcribe, progress=0.0 if progress is None else progress["percent"] / 100
+        )
 
     # Started from its menu of presets; its only button is Retry, after a run that did not end well.
     last_summary = last_result(runs, SUMMARIZE, "Not summarized", "", "")
@@ -313,47 +349,21 @@ def row(  # noqa: PLR0913 - each is a separate input to the row; all after track
     else:
         publish = replace(last_publish, disabled=still_recording)
 
-    # Every press asks for a link, starting from the newest run's.
-    last_gitlab = last_result(runs, PUBLISH_GITLAB, "Not published", "Publish", "Publish again")
-    last_gitlab = replace(last_gitlab, label=f"{last_gitlab.label}…")
-    if PUBLISH_GITLAB in running:
-        publish_gitlab = ActionView(
-            result="Running",
-            label=last_gitlab.label,
-            disabled="Publishing",
-            output=last_gitlab.output,
-        )
-    else:
-        gitlab_run = latest(runs, PUBLISH_GITLAB)
-        publish_gitlab = replace(
-            last_gitlab,
-            result=" · ".join(filter(None, [last_gitlab.result, glab_problem])),
-            link=None if gitlab_run is None else gitlab_run[1].get("link"),
-            disabled=still_recording
-            or glab_problem
-            or ("" if last_summary.output is not None else NO_SUMMARY),
-        )
-
-    # As Publish to GitLab, with gh.
-    last_github = last_result(runs, PUBLISH_GITHUB, "Not published", "Publish", "Publish again")
-    last_github = replace(last_github, label=f"{last_github.label}…")
-    if PUBLISH_GITHUB in running:
-        publish_github = ActionView(
-            result="Running",
-            label=last_github.label,
-            disabled="Publishing",
-            output=last_github.output,
-        )
-    else:
-        github_run = latest(runs, PUBLISH_GITHUB)
-        publish_github = replace(
-            last_github,
-            result=" · ".join(filter(None, [last_github.result, gh_problem])),
-            link=None if github_run is None else github_run[1].get("link"),
-            disabled=still_recording
-            or gh_problem
-            or ("" if last_summary.output is not None else NO_SUMMARY),
-        )
+    no_summary = "" if last_summary.output is not None else NO_SUMMARY
+    publish_gitlab, gitlab_failed = link_publisher(
+        runs,
+        PUBLISH_GITLAB,
+        running=PUBLISH_GITLAB in running,
+        tool_problem=glab_problem,
+        disabled=still_recording or glab_problem or no_summary,
+    )
+    publish_github, github_failed = link_publisher(
+        runs,
+        PUBLISH_GITHUB,
+        running=PUBLISH_GITHUB in running,
+        tool_problem=gh_problem,
+        disabled=still_recording or gh_problem or no_summary,
+    )
 
     kept_until = ""
     if age_limit_days is not None and tracks and store.may_lose_audio(recording, runs):
@@ -368,8 +378,8 @@ def row(  # noqa: PLR0913 - each is a separate input to the row; all after track
         warning=transcribe.failed
         or last_summary.failed
         or last_publish.failed
-        or last_gitlab.failed
-        or last_github.failed,
+        or gitlab_failed
+        or github_failed,
         tracks=tuple(
             TrackView(
                 file=name,

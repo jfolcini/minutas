@@ -5,6 +5,8 @@ uploaded to the project first, and the summary links them. A failed run keeps th
 uploaded, so Retry to the same project doesn't upload it again. Audio over the server's upload
 limit is left out, with a note: only an admin can read the limit, so the smallest audio a server
 refused is remembered, and a later audio as big is left out without uploading.
+
+The Settings hand glab a token here, and ask whether it is logged in: glab holds the login.
 """
 
 import json
@@ -24,6 +26,8 @@ from minutas import agaric, settings, store
 
 ACTION = "publish_gitlab"
 GLAB = "glab"
+# The server glab logs in to without a default link, as glab itself does.
+DEFAULT_HOST = "gitlab.com"
 # glab api --form, the multipart body that POST /projects/:id/uploads takes, came in 1.91.0.
 MINIMUM = (1, 91, 0)
 # Not the snap: confined to the home folder's visible files, it can't read the recordings.
@@ -118,6 +122,53 @@ def glab_problem() -> str:
     if version is None or tuple(map(int, version.groups())) < MINIMUM:
         return f"The glab at {path} is {OLDER}"
     return ""
+
+
+def login_host() -> str:
+    """The server whose glab login the Settings show and set: the default link's."""
+    target = parse_link(settings.gitlab_link() or "")
+    return DEFAULT_HOST if target is None else target.host
+
+
+def log_in(host: str, token: str) -> None:
+    """Hands glab the token for the host, which glab keeps in the keyring."""
+    # On stdin, never in the arguments, which any process can read.
+    result = subprocess.run(  # noqa: S603 - this module's own argument list
+        [GLAB, "auth", "login", f"--hostname={host}", "--stdin", "--use-keyring"],
+        input=token,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        said = agaric.first_line(result.stderr) or f"glab exited with status {result.returncode}"
+        reason = f"glab couldn't keep the token for {host}: {said}"
+        raise GitLabError(reason)
+
+
+def login_status(host: str) -> str:
+    """Says glab is logged in to the host; raises GitLabError with why when it isn't."""
+    # glab signs in to the server to check: a token GitLab refuses is no login.
+    result = subprocess.run(  # noqa: S603 - this module's own argument list
+        [GLAB, "auth", "status", f"--hostname={host}"],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode == 0:
+        return f"glab is logged in to {host}."
+    refused = re.search(r"API call failed: (.+)", result.stderr)
+    # A 401 is no token for the host, as a fresh glab has for gitlab.com, or a stale one: either
+    # way a new token is the fix.
+    if refused is not None and ": 401 " not in refused[1]:
+        reason = f"glab couldn't sign in to {host}: {refused[1].strip()}"
+    else:
+        reason = (
+            f"glab isn't logged in to {host}: paste a personal access token for it, with the api "
+            "scope"
+        )
+    raise GitLabError(reason)
 
 
 def failure(target: Target, stderr: str, returncode: int) -> str:
