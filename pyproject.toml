@@ -194,11 +194,12 @@ layers = [
     "minutas.cli",
     # The window draws what window_view works out, and reaches the rest of the program only
     # through the worker, the store, the settings, the summarizer's presets, context presets and
-    # models and the GitLab and GitHub publishers' reading of a link and of glab's or gh's
-    # version; it runs the publishers and the summarizer as commands.
+    # models, the GitLab and GitHub publishers' reading of a link and of glab's or gh's version,
+    # and the player; it runs the publishers and the summarizer as commands.
     "minutas.window",
-    # GitLab's mixes the tracks; both name a new issue as Publish to Agaric does for a page.
-    "(minutas.gitlab) | (minutas.github)",
+    # GitLab's mixes the tracks; both name a new issue as Publish to Agaric does for a page; the
+    # player plays and saves the tracks mixed as Publish to Agaric mixes them.
+    "(minutas.gitlab) | (minutas.github) | (minutas.player)",
     # The recorder unit's program, and the joiner the worker runs: the recorder names the first
     # one's signals, and neither it nor the worker imports the program it runs.
     "(minutas.capture) | (minutas.join)",

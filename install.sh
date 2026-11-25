@@ -8,11 +8,11 @@ set -euo pipefail
 # The clone itself, not the link minutas update runs it through: the App step compares the two.
 repo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 
-# The window, its player and the calendar, then the recorder (GStreamer through PyGObject,
-# pulsesrc through pipewire-pulse, opusenc) and the mix that is published (gst-launch-1.0, gio);
-# curl downloads uv and libsecret-tools keeps the Hugging Face token.
+# The window and the calendar, then the recorder and the player (GStreamer through PyGObject,
+# pulsesrc through pipewire-pulse, opusenc, scaletempo) and the mix that is published
+# (gst-launch-1.0, gio); curl downloads uv and libsecret-tools keeps the Hugging Face token.
 system_packages=(
-  python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 libgtk-4-media-gstreamer gir1.2-ecal-2.0 gir1.2-edataserver-1.2
+  python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 gir1.2-ecal-2.0 gir1.2-edataserver-1.2
   gir1.2-gstreamer-1.0 gstreamer1.0-plugins-good gstreamer1.0-plugins-base gstreamer1.0-tools
   libglib2.0-bin pipewire-pulse
   curl libsecret-tools

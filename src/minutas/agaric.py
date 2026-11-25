@@ -14,7 +14,7 @@ import shutil
 import signal
 import subprocess
 import tempfile
-from collections.abc import Generator, Mapping
+from collections.abc import Generator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import date, datetime
 from pathlib import Path
@@ -33,7 +33,10 @@ TRANSCRIPT = "transcript.md"
 DEFAULT_NAME = "Meeting"
 PAGE_LINK = "agaric://page/"
 # The tracks' own format; Opus at 32 kbps keeps about three hours under Agaric's 50 MB cap.
-MIX_CAPS = "audio/x-raw,rate=16000,channels=1"
+ENCODED = [
+    *("audioconvert", "!", "audioresample", "!", "audio/x-raw,rate=16000,channels=1"),
+    *("!", "opusenc", "bitrate=32000", "!", "oggmux"),
+]
 
 # How Agaric's Settings → Agent access makes an agent's token.
 TOKEN = re.compile(r"\bagt_[0-9a-f]{32}\b")
@@ -175,20 +178,23 @@ def id_in(answer: object, key: str) -> str:
     return found
 
 
+def mixed(tracks: Sequence[str], into: Sequence[str]) -> list[str]:
+    """GStreamer's words for the tracks mixed into what follows: the published mix, a saved copy
+    of it, or the Recordings window's player."""
+    description: list[str] = ["audiomixer", "name=mix", "!", *into]
+    for track in tracks:
+        description += ["filesrc", f"location={track}", "!", "decodebin"]
+        description += ["!", "audioconvert", "!", "audioresample", "!", "mix."]
+    return description
+
+
 def mix(folder: Path, work: Path, log: Path) -> Path:
     """Mixes the tracks that hold audio into one Ogg Opus file in work, a folder in folder."""
-    mixed = work / f"{folder.name}.opus"
-    command = [
-        *(GST_LAUNCH, "-q", "audiomixer", "name=mix"),
-        *("!", "audioconvert", "!", "audioresample", "!", MIX_CAPS),
-        *("!", "opusenc", "bitrate=32000", "!", "oggmux", "!", "filesink"),
-        # Relative locations: gst-launch re-splits its arguments on spaces.
-        f"location={mixed.name}",
-    ]
-    for name in store.TRACKS:
-        if store.has_audio(folder / name):
-            command += ["filesrc", f"location=../{name}", "!", "decodebin"]
-            command += ["!", "audioconvert", "!", "audioresample", "!", "mix."]
+    mixed_file = work / f"{folder.name}.opus"
+    # Relative locations: gst-launch re-splits its arguments on spaces.
+    tracks = [f"../{name}" for name in store.TRACKS if store.has_audio(folder / name)]
+    into = [*ENCODED, "!", "filesink", f"location={mixed_file.name}"]
+    command = [GST_LAUNCH, "-q", *mixed(tracks, into)]
     with log.open("a") as out:
         out.write(f"$ {shlex.join(command)}\n")
         try:
@@ -203,7 +209,7 @@ def mix(folder: Path, work: Path, log: Path) -> Path:
         reason = first_line(result.stderr) or f"{GST_LAUNCH} exited with status {result.returncode}"
         error = f"Could not mix the tracks: {reason}"
         raise AgaricError(error)
-    return mixed
+    return mixed_file
 
 
 @contextmanager
