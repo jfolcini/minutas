@@ -522,11 +522,38 @@ def test_extension_without_gnome_shell_stops_the_script(sandbox: Sandbox) -> Non
 # --- Summarizer --------------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("summarizer", ["devin", "claude"])
-def test_either_summarizer_on_the_path_is_ok(sandbox: Sandbox, summarizer: str) -> None:
-    sandbox.fake(summarizer)
+@pytest.mark.parametrize(
+    ("summarizer", "body"),
+    [
+        ("devin", ""),
+        ("claude", 'echo "2.1.166 (Claude Code)"'),
+        ("claude", 'echo "2.2.0 (Claude Code)"'),
+        ("claude", 'echo "3.0.0 (Claude Code)"'),
+    ],
+)
+def test_devin_or_a_new_enough_claude_on_the_path_is_ok(
+    sandbox: Sandbox, summarizer: str, body: str
+) -> None:
+    sandbox.fake(summarizer, body)
 
     assert sandbox.run("step_summarizer").stdout == "Summarizer: ok\n"
+
+
+@pytest.mark.parametrize("version", ["2.1.165", "2.0.999", "1.9.200"])
+@pytest.mark.parametrize(("devin", "missing"), [(False, "Summarizer"), (True, "")])
+def test_an_older_claude_says_to_update_it_and_is_missing_only_without_devin(
+    sandbox: Sandbox, version: str, *, devin: bool, missing: str
+) -> None:
+    sandbox.fake("claude", f'echo "{version} (Claude Code)"')
+    if devin:
+        sandbox.fake("devin")
+
+    result = sandbox.run('step_summarizer; echo "missing: ${missing_tools[*]}"')
+
+    assert result.stdout == (
+        f"Summarizer: the PATH has claude {version}; Summarize with Claude Code stays off until it "
+        f"is updated to 2.1.166 or newer: `claude update`\nmissing: {missing}\n"
+    )
 
 
 def test_no_summarizer_says_how_to_install_either(sandbox: Sandbox) -> None:

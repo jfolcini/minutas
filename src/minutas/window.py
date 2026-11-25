@@ -119,11 +119,9 @@ def now() -> datetime:
 def load_views(running: Mapping[str, Collection[str]]) -> list[RowView]:
     """Every recording's row, newest first; running holds the recordings of each action whose
     command the window is running."""
-    # Looked for at each refresh: one installed while the window is open is found.
-    tool = summarizer.chosen()
-    found = shutil.which(tool.command) is not None
+    # Looked for at each refresh: one installed or updated while the window is open is found.
     missing_tools = {
-        SUMMARIZE: "" if found else tool.missing,
+        SUMMARIZE: summarizer.problem(),
         PUBLISH_GITLAB: gitlab.glab_problem(),
         PUBLISH_GITHUB: github.gh_problem(),
     }

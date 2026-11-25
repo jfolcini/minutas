@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import signal
 import subprocess
 from dataclasses import dataclass, field
@@ -82,16 +83,24 @@ def devin(monkeypatch: pytest.MonkeyPatch) -> FakeDevin:
     return fake
 
 
+CLAUDE_ON_PATH = "/opt/bin/claude"
+
+
 class FakeClaude:
-    """Stands in for subprocess.run under the summarizer: `claude -p` answers as told."""
+    """Stands in for subprocess.run under the summarizer: `claude -p` answers as told, and
+    `claude --version` with the version told."""
 
     def __init__(self) -> None:
         self.calls: list[Call] = []
         self.answer = Answer()
         self.missing = False
         self.hangs = False
+        # What `claude --version` prints; asking it is not among the calls.
+        self.version = "2.1.166 (Claude Code)"
 
     def __call__(self, args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if args == [CLAUDE_ON_PATH, "--version"]:
+            return subprocess.CompletedProcess(args, 0, f"{self.version}\n", "")
         cwd = Path(cast("str", kwargs["cwd"]))
         self.calls.append(
             Call(
@@ -104,8 +113,6 @@ class FakeClaude:
                 cast("str", kwargs["input"]),
             )
         )
-        if self.missing:
-            raise FileNotFoundError(args[0])
         if self.hangs:
             raise subprocess.TimeoutExpired(args, cast("float", kwargs["timeout"]))
         return subprocess.CompletedProcess(
@@ -115,10 +122,11 @@ class FakeClaude:
 
 @pytest.fixture
 def claude(monkeypatch: pytest.MonkeyPatch) -> FakeClaude:
-    """Claude Code chosen in Settings, and standing in for it."""
+    """Claude Code chosen in Settings, and standing in for it: on the PATH unless missing."""
     settings.set_summarizer("claude")
     fake = FakeClaude()
     monkeypatch.setattr(subprocess, "run", fake)
+    monkeypatch.setattr(shutil, "which", lambda _: None if fake.missing else CLAUDE_ON_PATH)
     return fake
 
 
@@ -694,6 +702,69 @@ def test_a_missing_claude_says_how_to_get_it(claude: FakeClaude) -> None:
         "claude not found: install Claude Code with "
         "`curl -fsSL https://claude.ai/install.sh | bash`, then log in with `claude auth login`"
     )
+
+
+CLAUDE_OLDER = (
+    "The claude at /opt/bin/claude is version {version}; Summarize needs 2.1.166 or newer: "
+    "update it with `claude update`"
+)
+
+
+def test_a_claude_older_than_its_deny_rule_fails_the_run_and_is_never_asked(
+    claude: FakeClaude,
+) -> None:
+    recording_id = recording()
+    claude.version = "2.1.165 (Claude Code)"
+
+    assert summarizer.summarize(recording_id, SUMMARIZED, PROMPT) is False
+
+    assert runs(recording_id)[0]["error"] == CLAUDE_OLDER.format(version="2.1.165")
+    assert claude.calls == []
+
+
+@pytest.mark.parametrize(
+    "version", ["2.1.166 (Claude Code)", "2.1.332 (Claude Code)", "2.2.0", "3.0.0 (Claude Code)"]
+)
+def test_a_claude_as_new_as_its_deny_rule_or_newer_can_summarize(
+    claude: FakeClaude, version: str
+) -> None:
+    claude.version = version
+
+    assert summarizer.problem() == ""
+
+
+@pytest.mark.parametrize(
+    ("version", "found"),
+    [
+        ("2.1.165 (Claude Code)", "2.1.165"),
+        ("2.0.999 (Claude Code)", "2.0.999"),
+        ("1.9.999", "1.9.999"),
+        ("Claude Code", "unknown"),
+    ],
+)
+def test_a_claude_older_than_its_deny_rule_says_its_version_and_how_to_update(
+    claude: FakeClaude, version: str, found: str
+) -> None:
+    claude.version = version
+
+    assert summarizer.problem() == CLAUDE_OLDER.format(version=found)
+
+
+def test_a_missing_claude_is_the_problem_while_it_is_chosen(claude: FakeClaude) -> None:
+    claude.missing = True
+
+    assert summarizer.problem() == summarizer.CLAUDE_MISSING
+
+
+def test_devin_is_the_problem_only_while_it_is_missing_from_the_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("PATH", str(tmp_path))
+    assert summarizer.problem() == summarizer.DEVIN_MISSING
+
+    (tmp_path / "devin").write_text("#!/bin/sh\n")
+    (tmp_path / "devin").chmod(0o755)
+    assert summarizer.problem() == ""
 
 
 def test_a_claude_that_never_answers_is_stopped_and_fails_the_run(claude: FakeClaude) -> None:

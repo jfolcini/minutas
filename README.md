@@ -71,7 +71,7 @@ Then it checks for the optional tools, installs none of them, and says what each
 | Agaric's `agaric-mcp` bridge | Publish to Agaric | Agaric 0.26 or newer has been started once |
 | `glab` | Publish to GitLab | 1.91 or newer is on the PATH. Use GitLab's own `.deb` from [its releases](https://gitlab.com/gitlab-org/cli/-/releases): the snap can't read the recordings, which live in a hidden folder |
 | `gh` | Publish to GitHub | 2.45 or newer is on the PATH: `sudo apt install gh` |
-| The Devin CLI or Claude Code | Summarize | Either is on the PATH; install.sh prints the install and login commands for both |
+| The Devin CLI or Claude Code | Summarize | Either is on the PATH, Claude Code at 2.1.166 or newer (`claude update` updates an older one); install.sh prints the install and login commands for both |
 
 ## First steps
 
