@@ -60,7 +60,7 @@ Coverage is measured with branches, and `pytest` fails under the floor set in `p
 
 ### Echo cancellation on speakers
 
-The suite has no PipeWire, microphone or speakers, so whether the echo-cancelled mic keeps the call out of the mic track is checked by hand, after a change to the recorder's echo canceller. It needs only what install.sh installs. First make the speakers the output, unmuted and at the volume of a call, in GNOME's Settings › Sound or with `wpctl status`, `wpctl set-default <sink id>` and `wpctl set-mute <sink id> 0`: the canceller takes out what the default output plays, so headphones left as the output prove nothing. Then, with Echo cancellation on in Minutas's Settings:
+The suite has no PipeWire, microphone or speakers, so whether the echo-cancelled mic keeps the call out of the mic track is checked by hand, after a change to the recorder's echo canceller. It needs only what install.sh installs. First make the speakers the output, unmuted and at the volume of a call, in GNOME's Settings › Sound or with `wpctl status`, `wpctl set-default <sink id>` and `wpctl set-mute <sink id> 0`: the canceller takes out what the default output plays, so headphones left as the output prove nothing. Then make sure Echo cancellation is on in Minutas's Settings, as it is unless turned off:
 
 ```bash
 # The far side: any speech, here the oldest recording's call track, picked before this one starts.
@@ -84,7 +84,9 @@ import array, math, sys, wave
 for name in sys.argv[1:]:
     with wave.open(name) as audio:
         samples = array.array("h", audio.readframes(audio.getnframes()))
-    rms = math.sqrt(sum(sample * sample for sample in samples) / len(samples))
+    # Around the mean: a mic's DC offset, which the canceller removes, would pass with nothing cancelled.
+    mean = sum(samples) / len(samples)
+    rms = math.sqrt(sum((sample - mean) ** 2 for sample in samples) / len(samples))
     print(f"{name}: {20 * math.log10(max(rms, 1) / 32768):.1f} dBFS")
 LEVELS
 ```

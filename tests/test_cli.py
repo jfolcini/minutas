@@ -190,9 +190,11 @@ NO_ECHO_CANCELLATION = (
 )
 
 
-def test_record_start_records_the_plain_mic_and_notes_nothing_until_echo_cancellation_is_on(
+def test_record_start_with_echo_cancellation_off_records_the_plain_mic_and_notes_nothing(
     fake_recorder: FakeRecorder, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    settings.set_echo_cancel(on=False)
+
     assert main(["record", "start"]) == 0
 
     printed = json.loads(capsys.readouterr().out)
@@ -200,11 +202,9 @@ def test_record_start_records_the_plain_mic_and_notes_nothing_until_echo_cancell
     assert "echo_cancelled" not in store.load_recording(printed["id"])
 
 
-def test_record_start_with_echo_cancellation_on_records_the_cancelled_mic_and_notes_it(
+def test_record_start_records_the_cancelled_mic_by_default_and_notes_it(
     fake_recorder: FakeRecorder, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    settings.set_echo_cancel(on=True)
-
     assert main(["record", "start"]) == 0
 
     printed, said = capsys.readouterr()
