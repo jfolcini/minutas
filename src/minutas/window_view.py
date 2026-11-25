@@ -41,6 +41,9 @@ NO_AUDIO = "The audio was deleted"
 NO_TRANSCRIPT = "Transcribe first"
 NO_SUMMARY = "Summarize first"
 AGARIC_SILENT = "Asking Agaric stopped without saying why"
+# What install.sh says, run by an update too, when GNOME Shell has a new extension to load.
+LOG_OUT = "Log out and back in to load the top-bar extension."
+UPDATE_SILENT = "minutas update stopped without saying why"
 
 
 @dataclass(frozen=True)
@@ -120,6 +123,16 @@ class AgaricView:
     choices: tuple[tuple[str, str], ...]
     # The place among choices of the space set; None when it is not among them.
     chosen: int | None
+
+
+@dataclass(frozen=True)
+class UpdateView:
+    """What the window says once `minutas update` has ended."""
+
+    heading: str
+    body: str
+    # What it printed is worth reading: Details shows it.
+    failed: bool = False
 
 
 def limits_warning(over: int, size: str) -> str:
@@ -399,3 +412,19 @@ def agaric(listed: str, stderr: str, space_id: str | None) -> AgaricView:
         choices=choices,
         chosen=next((place for place, (space, _) in enumerate(choices) if space == space_id), None),
     )
+
+
+def update(said: str, *, exited_ok: bool) -> UpdateView:
+    """What the window says of an update, from all that `minutas update` printed: first which
+    release it moved to, or that it was already on the latest, then what install.sh did."""
+    lines = [line.strip() for line in said.splitlines() if line.strip()]
+    if not exited_ok:
+        return UpdateView("Update failed", lines[-1] if lines else UPDATE_SILENT, failed=True)
+    first = lines[0] if lines else ""
+    if first.startswith("Updating to "):
+        release = first.removeprefix("Updating to ").removesuffix(".")
+        heading = "Updated"
+        body = f"Updated to {release}. Close this window and open it again to run the new version."
+    else:
+        heading, body = "Up to date", first
+    return UpdateView(heading, f"{body} {LOG_OUT}" if LOG_OUT in said else body)

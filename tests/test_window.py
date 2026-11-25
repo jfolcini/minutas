@@ -8,6 +8,7 @@ import subprocess
 import sys
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
+from importlib.metadata import version
 from pathlib import Path
 from types import TracebackType
 from typing import cast
@@ -21,7 +22,7 @@ gi.require_version("Adw", "1")
 gi.require_version("Gtk", "4.0")
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Graphene, Gtk  # noqa: E402
 
-from minutas import github, gitlab, settings, store, summarizer, window, worker  # noqa: E402
+from minutas import github, gitlab, settings, store, summarizer, window, window_view, worker  # noqa: E402
 
 pytestmark = pytest.mark.usefixtures("no_handler_raised")
 
@@ -49,6 +50,20 @@ recording_id = next(argument for argument in arguments if (recordings / argument
 log = recordings / recording_id / "runs.json"
 if plan["run"] is not None:
     log.write_text(json.dumps([*json.loads(log.read_text()), plan["run"]]))
+sys.stderr.write(plan["stderr"])
+sys.exit(plan["exit"])
+"""
+
+# What `minutas update` does, as far as the window can tell: it prints what its plan has it print,
+# on stdout then on stderr, and exits as the plan has it exit.
+FAKE_UPDATE = """
+import json, sys
+from pathlib import Path
+plan_file, *arguments = sys.argv[1:]
+plan = json.loads(Path(plan_file).read_text())
+Path(plan_file).with_name("called.json").write_text(json.dumps(arguments))
+sys.stdout.write(plan["stdout"])
+sys.stdout.flush()
 sys.stderr.write(plan["stderr"])
 sys.exit(plan["exit"])
 """
@@ -420,6 +435,30 @@ class FakePublish:
 @pytest.fixture
 def publish(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> FakePublish:
     fake = FakePublish(tmp_path)
+    monkeypatch.setattr(window, "MINUTAS", [sys.executable, str(fake.script), str(fake.plan)])
+    return fake
+
+
+class FakeUpdate:
+    """Stands in for the `minutas update` the window runs."""
+
+    def __init__(self, folder: Path) -> None:
+        self.script = folder / "fake_update.py"
+        self.script.write_text(FAKE_UPDATE)
+        self.plan = folder / "update_plan.json"
+        self.will("Already on the latest release, v0.4.0.\n")
+
+    def will(self, stdout: str, *, stderr: str = "", exit_status: int = 0) -> None:
+        self.plan.write_text(json.dumps({"stdout": stdout, "stderr": stderr, "exit": exit_status}))
+
+    def called(self) -> list[str]:
+        calls = self.plan.with_name("called.json")
+        return cast("list[str]", json.loads(calls.read_text())) if calls.exists() else []
+
+
+@pytest.fixture
+def minutas_update(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> FakeUpdate:
+    fake = FakeUpdate(tmp_path)
     monkeypatch.setattr(window, "MINUTAS", [sys.executable, str(fake.script), str(fake.plan)])
     return fake
 
@@ -2016,9 +2055,8 @@ def open_settings(shown: window.HistoryWindow) -> window.SettingsDialog:
     return dialog
 
 
-def attribute(menu: Gio.MenuModel, name: str) -> str:
-    """The first item's attribute."""
-    value = menu.get_item_attribute_value(0, name, GLib.VariantType("s"))
+def attribute(menu: Gio.MenuModel, index: int, name: str) -> str:
+    value = menu.get_item_attribute_value(index, name, GLib.VariantType("s"))
     assert value is not None
     return value.get_string()
 
@@ -2040,11 +2078,14 @@ def test_the_main_menu_opens_the_settings_once(
     [main_menu] = [widget for widget in descendants(shown) if isinstance(widget, Gtk.MenuButton)]
     menu = main_menu.get_menu_model()
     assert menu is not None
-    assert menu.get_n_items() == 1
-    assert (attribute(menu, "label"), attribute(menu, "action")) == (
-        "Settings",
-        f"win.{window.SETTINGS}",
-    )
+    assert [
+        (attribute(menu, index, "label"), attribute(menu, index, "action"))
+        for index in range(menu.get_n_items())
+    ] == [
+        ("Settings", f"win.{window.SETTINGS}"),
+        ("Update Minutas", "win.update"),
+        ("About Minutas", "win.about"),
+    ]
 
     dialog = open_settings(shown)
     shown.open_settings()
@@ -2055,6 +2096,107 @@ def test_the_main_menu_opens_the_settings_once(
     assert dialog.summarizer.get_selected_item() is not None
     assert offered(dialog.summarizer) == ["Devin CLI"]
     dialog.close()
+
+
+def test_about_shows_the_version_the_license_and_where_to_report_an_issue(
+    history: Callable[[], window.HistoryWindow],
+) -> None:
+    shown = history()
+
+    assert shown.activate_action("win.about", None) is True
+
+    dialog = open_dialog(shown)
+    assert isinstance(dialog, Adw.AboutDialog)
+    assert (dialog.get_application_name(), dialog.get_application_icon()) == (
+        "Minutas",
+        "audio-input-microphone",
+    )
+    assert dialog.get_version() == version("minutas")
+    assert dialog.get_comments() == (
+        "Records work meetings on GNOME, transcribes them and publishes them to Agaric and GitLab."
+    )
+    assert dialog.get_license_type() == Gtk.License.GPL_3_0
+    assert (dialog.get_website(), dialog.get_issue_url()) == (
+        "https://github.com/jfolcini/minutas",
+        "https://github.com/jfolcini/minutas/issues",
+    )
+    dialog.close()
+
+
+def update(shown: window.HistoryWindow) -> Adw.AlertDialog:
+    """Presses Update Minutas: it says so until the update ends, and then what came of it."""
+    assert shown.activate_action("win.update", None) is True
+    # Pressed once: a second update can't start while one runs.
+    assert shown.updating.get_revealed() is True
+    assert shown.update_action.get_enabled() is False
+    wait_until(lambda: shown.get_visible_dialog() is not None)
+    assert shown.updating.get_revealed() is False
+    assert shown.update_action.get_enabled() is True
+    dialog = open_dialog(shown)
+    assert isinstance(dialog, Adw.AlertDialog)
+    return dialog
+
+
+def test_an_update_says_to_open_the_window_again_and_when_to_log_out(
+    history: Callable[[], window.HistoryWindow], minutas_update: FakeUpdate
+) -> None:
+    minutas_update.will(
+        f"Updating to v0.4.0.\nuv: ok\nApp: installed\n\nLeft to do:\n- {window_view.LOG_OUT}\n"
+    )
+    shown = history()
+
+    dialog = update(shown)
+
+    assert minutas_update.called() == ["update"]
+    assert dialog.get_heading() == "Updated"
+    assert dialog.get_body() == (
+        "Updated to v0.4.0. Close this window and open it again to run the new version. "
+        "Log out and back in to load the top-bar extension."
+    )
+    assert list(buttons(dialog)) == ["Close"]
+    press(dialog, "Close")
+    assert shown.get_visible_dialog() is None
+
+
+def test_an_update_on_the_latest_release_says_only_that_whatever_the_last_one_printed(
+    history: Callable[[], window.HistoryWindow], minutas_update: FakeUpdate
+) -> None:
+    shown = history()
+    # A longer log from an earlier update, which said to log out.
+    (store.data_dir() / "update.log").write_text(
+        f"Updating to v0.3.0.\nuv: ok\nApp: installed\n\nLeft to do:\n- {window_view.LOG_OUT}\n"
+    )
+
+    dialog = update(shown)
+
+    assert minutas_update.called() == ["update"]
+    assert (dialog.get_heading(), dialog.get_body()) == (
+        "Up to date",
+        "Already on the latest release, v0.4.0.",
+    )
+    press(dialog, "Close")
+
+
+def test_a_failed_update_says_the_fix_and_shows_all_it_printed(
+    history: Callable[[], window.HistoryWindow], minutas_update: FakeUpdate
+) -> None:
+    printed = "Updating to v0.4.0.\nSystem packages: ok\n"
+    # What install.sh says without a terminal to ask for the token in.
+    fix = "Hugging Face token: failed: none in the GNOME keyring; run install.sh in a terminal"
+    minutas_update.will(printed, stderr=f"{fix}\n", exit_status=1)
+    shown = history()
+
+    dialog = update(shown)
+
+    assert (dialog.get_heading(), dialog.get_body()) == ("Update failed", fix)
+    assert list(buttons(dialog)) == ["Close", "Details"]
+    press(dialog, "Details")
+
+    details = open_dialog(shown)
+    assert details.get_title() == "Details"
+    [text] = [widget for widget in descendants(details) if isinstance(widget, Gtk.TextView)]
+    assert text.get_buffer().props.text == f"{printed}{fix}\n"
+    details.close()
 
 
 @pytest.mark.usefixtures("agaric_settings")
