@@ -22,6 +22,7 @@ START = datetime(2026, 11, 18, 13, 5, 42, tzinfo=UTC)
 FIRST = "2026-11-18T13-05-42"
 TRANSCRIBER = str(Path(minutas.__file__).with_name("transcriber.py"))
 KILL = ["systemctl", "--user", "kill", "--signal=SIGUSR1", "minutas-transcribe.service"]
+JOINER = [sys.executable, "-m", "minutas.join"]
 
 
 def start_command(data_home: Path, config_home: Path) -> list[str]:
@@ -90,7 +91,7 @@ class FakeTranscriber:
 class FakeSystem:
     """Stands in for subprocess.run and subprocess.Popen: systemd-run answers from start_codes,
     one per call, then keeps giving the last; systemctl answers kill_code; the transcriber is
-    the transcribe callable."""
+    the transcribe callable, and the joiner the join one, given its stderr file."""
 
     def __init__(self) -> None:
         self.calls: list[tuple[list[str], dict[str, object]]] = []
@@ -99,9 +100,14 @@ class FakeSystem:
         self.kill_code = 0
         self.killed_inside_the_store_lock: list[bool] = []
         self.transcribe: Transcriber = write_transcript
+        self.join: Callable[[TextIO], int] = lambda _stderr: 0
 
     def __call__(self, args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         self.calls.append((args, kwargs))
+        if args == JOINER:
+            return subprocess.CompletedProcess(
+                args, self.join(cast("TextIO", kwargs["stderr"])), "", ""
+            )
         if args[0] == "systemctl":
             self.killed_inside_the_store_lock.append(store_lock_held())
             return subprocess.CompletedProcess(args, self.kill_code, "", "")
@@ -1189,3 +1195,121 @@ def test_any_line_reads_as_progress_or_nothing(said: str) -> None:
     progress = worker.read_progress(said)
 
     assert progress is None or progress["phase"] in transcriber.PHASES
+
+
+def continued_recording() -> str:
+    """A stopped recording whose tracks each have a part recorded after Continue to join."""
+    recording_id = recording()
+    for name in store.PARTS:
+        (store.recording_dir(recording_id) / name).write_bytes(b"OggS")
+    put_runs(recording_id, [queued_run(START + timedelta(seconds=60))])
+    return recording_id
+
+
+@pytest.mark.usefixtures("speech", "sigterm")
+def test_work_joins_what_was_recorded_after_continue_before_it_transcribes(
+    system: FakeSystem,
+) -> None:
+    recording_id = continued_recording()
+    folder = store.recording_dir(recording_id)
+    heard: list[list[str]] = []
+
+    def joiner(stderr: TextIO) -> int:
+        stderr.write("joining\n")
+        stderr.flush()
+        for name in store.PARTS:
+            (folder / name).unlink()
+        return 0
+
+    def transcriber(args: list[str], stderr: TextIO) -> int:
+        heard.append(sorted(path.name for path in folder.glob("*.opus")))
+        stderr.write("loading the model\n")
+        return write_transcript(args, stderr)
+
+    system.join, system.transcribe = joiner, transcriber
+
+    worker.work()
+
+    assert system.commands()[0] == JOINER
+    assert system.transcribed() == [recording_id]
+    kwargs = system.calls[0][1]
+    assert (kwargs.get("cwd"), kwargs["stdin"]) == (folder, subprocess.DEVNULL)
+    # The transcriber heard the joined tracks.
+    assert heard == [["call.opus", "mic.opus"]]
+    assert (folder / "run-0.log").read_text() == "joining\nloading the model\n"
+    assert store.load_runs(recording_id) == [
+        {**QUEUED, "status": "succeeded", "details": "run-0.log", "output": "transcript.md"}
+    ]
+
+
+@pytest.mark.parametrize(
+    ("said", "reason"),
+    [
+        (
+            "Could not demultiplex stream.\n\nCould not join call.opus. Both are kept.\n",
+            "Could not join call.opus. Both are kept.",
+        ),
+        ("", "The joiner exited with status 1"),
+    ],
+)
+@pytest.mark.usefixtures("speech", "sigterm")
+def test_work_fails_the_run_when_the_join_fails_and_transcribes_nothing(
+    system: FakeSystem, said: str, reason: str
+) -> None:
+    recording_id = continued_recording()
+
+    def joiner(stderr: TextIO) -> int:
+        stderr.write(said)
+        stderr.flush()
+        return 1
+
+    system.join = joiner
+
+    worker.work()
+
+    assert system.commands() == [JOINER]
+    assert store.load_runs(recording_id) == [
+        {**QUEUED, "status": "failed", "error": reason, "details": "run-0.log"}
+    ]
+    assert transcribe_status(recording_id) == ("failed", ["transcribe"])
+    assert store.audio_kept(recording_id) == [*store.TRACKS, *store.PARTS]
+
+
+@pytest.mark.usefixtures("speech", "sigterm")
+def test_work_runs_no_joiner_for_parts_that_hold_no_audio(system: FakeSystem) -> None:
+    recording_id = recording()
+    for name in store.PARTS:
+        (store.recording_dir(recording_id) / name).touch()
+    put_runs(recording_id, [queued_run(START + timedelta(seconds=60))])
+
+    worker.work()
+
+    assert [command[1:3] for command in system.commands()] == [["-P", TRANSCRIBER]]
+
+
+@pytest.mark.usefixtures("speech", "sigterm")
+def test_work_leaves_alone_what_continue_records_after_it_took_the_run(
+    system: FakeSystem, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recording_id = recording()
+    put_runs(recording_id, [queued_run(START + timedelta(seconds=60))])
+    folder = store.recording_dir(recording_id)
+    words = worker.word_list
+
+    def continued_meanwhile(continued_id: str) -> list[str]:
+        # Continue lands while the worker sets the run up: it cancels the run, then its recorder
+        # writes the parts again.
+        worker.cancel(continued_id, 0)
+        store.mark_continued(continued_id, START + timedelta(minutes=5))
+        for name in store.PARTS:
+            (folder / name).write_bytes(b"OggS")
+        return words(continued_id)
+
+    monkeypatch.setattr(worker, "word_list", continued_meanwhile)
+
+    worker.work()
+
+    # Only the cancel's own kill: no joiner deletes the parts being written, no transcriber runs.
+    assert system.commands() == [worker.STOP_TRANSCRIBER]
+    assert store.audio_kept(recording_id) == [*store.TRACKS, *store.PARTS]
+    assert store.load_runs(recording_id)[0]["status"] == "cancelled"

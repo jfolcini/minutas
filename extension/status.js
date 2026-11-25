@@ -2,11 +2,11 @@
 
 /** @typedef {null | 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'} RunStatus */
 /** @typedef {{id: string, started_at: string}} Recording */
-/** @typedef {Recording & {paused_at?: string, paused_seconds?: number}} Active */
+/** @typedef {Recording & {paused_at?: string, paused_seconds?: number, continued?: boolean}} Active */
 /** @typedef {{phase: string, percent: number}} Progress */
 /**
  * @typedef {Recording & {name: string, duration_seconds: number, incomplete: boolean,
- *     transcribe: RunStatus, progress?: Progress | null, failed: string[]}} Recent
+ *     transcribe: RunStatus, progress?: Progress | null, failed: string[], continuable?: boolean}} Recent
  */
 /** @typedef {{recording: Active | null, recent: Recent[]}} Status */
 /** @typedef {{recordingId: string, title: string, body: string}} Notice */
@@ -39,12 +39,18 @@ const isTimestamp = value =>
 const isRecording = value => value !== null && typeof value === 'object' &&
     isString(value.id) && isTimestamp(value.started_at);
 
-// paused_at is there only while it is paused, paused_seconds only once it has been.
+// Left out, a flag is not set: so it is in a status.json written before the flag was.
+/** @param {any} value */
+const isFlag = value => value === undefined || typeof value === 'boolean';
+
+// paused_at is there only while it is paused, paused_seconds only once it has been, continued
+// only once it has been stopped and continued.
 /** @param {any} value */
 const isActive = value => isRecording(value) &&
     (value.paused_at === undefined || isTimestamp(value.paused_at)) &&
     (value.paused_seconds === undefined ||
-        (Number.isInteger(value.paused_seconds) && value.paused_seconds >= 0));
+        (Number.isInteger(value.paused_seconds) && value.paused_seconds >= 0)) &&
+    isFlag(value.continued);
 
 // Absent from a status.json written before it was.
 /** @param {any} value */
@@ -59,7 +65,8 @@ const isRecent = value => isRecording(value) &&
     typeof value.incomplete === 'boolean' &&
     RUN_STATUSES.includes(value.transcribe) &&
     isProgress(value.progress) &&
-    Array.isArray(value.failed) && value.failed.every(isString);
+    Array.isArray(value.failed) && value.failed.every(isString) &&
+    isFlag(value.continuable);
 
 /**
  * Returns null for anything that is not a whole, valid snapshot, so the caller keeps the last good one.
@@ -175,6 +182,25 @@ export function transcriptionControl(recording) {
     default:
         return null;
     }
+}
+
+/**
+ * What the menu offers under a recent recording: what its transcription allows, then to record
+ * into it again while the program says it can be continued.
+ * @param {Recent} recording
+ * @returns {Control[]}
+ */
+export function recentControls(recording) {
+    const transcription = transcriptionControl(recording);
+    const controls = transcription ? [transcription] : [];
+    if (recording.continuable) {
+        controls.push({
+            label: 'Continue recording',
+            args: ['record', 'continue', recording.id],
+            failureTitle: "Couldn't continue the recording",
+        });
+    }
+    return controls;
 }
 
 /** @param {Recent} recording */

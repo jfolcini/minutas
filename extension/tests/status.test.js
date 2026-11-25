@@ -9,6 +9,7 @@ import {
     lastLine,
     notificationsFor,
     parseStatus,
+    recentControls,
     recentLabel,
     transcriptionControl,
 } from '../status.js';
@@ -104,6 +105,22 @@ test('parseStatus rejects a pause that is not a time, or not whole seconds', () 
         {paused_seconds: '30'},
     ].map(pause => parseStatus(JSON.stringify({version: 1, recording: {...ACTIVE, ...pause}, recent: []})));
     assertEqual(rejected, [null, null, null, null, null]);
+});
+
+test('parseStatus reads a recording that can be continued, and one that was', () => {
+    const continued = {...ACTIVE, paused_seconds: 40, continued: true};
+    const text = JSON.stringify({version: 1, recording: continued, recent: [entry({continuable: true})]});
+    assertEqual(parseStatus(text), status(continued, [entry({continuable: true})]));
+});
+
+test('parseStatus rejects a continued or a continuable that is not true or false', () => {
+    const rejected = [
+        {version: 1, recording: {...ACTIVE, continued: 'yes'}, recent: []},
+        {version: 1, recording: {...ACTIVE, continued: null}, recent: []},
+        {version: 1, recording: null, recent: [{...entry(), continuable: 1}]},
+        {version: 1, recording: null, recent: [{...entry(), continuable: null}]},
+    ].map(written => parseStatus(JSON.stringify(written)));
+    assertEqual(rejected, [null, null, null, null]);
 });
 
 test('parseStatus rejects a half-written file', () => {
@@ -264,6 +281,34 @@ test('transcriptionControl offers nothing once transcribed, or before any transc
     assertEqual(
         [transcriptionControl(entry()), transcriptionControl(entry({transcribe: null}))],
         [null, null]
+    );
+});
+
+const CONTINUE = {
+    label: 'Continue recording',
+    args: ['record', 'continue', '2026-11-18T12-00-03'],
+    failureTitle: "Couldn't continue the recording",
+};
+
+test('recentControls offers Continue recording after what the transcription offers', () => {
+    const controls = [
+        entry({transcribe: 'queued', continuable: true}),
+        entry({transcribe: 'failed', continuable: true}),
+        entry({transcribe: null, continuable: true}),
+    ].map(recentControls);
+    assertEqual(controls.map(offered => offered.map(control => control.label)), [
+        ['Cancel transcription', 'Continue recording'],
+        ['Transcribe again', 'Continue recording'],
+        ['Continue recording'],
+    ]);
+    assertEqual(controls[2], [CONTINUE]);
+});
+
+test('recentControls offers no Continue recording for a recording that cannot be continued', () => {
+    const older = entry({transcribe: 'cancelled'});
+    assertEqual(
+        [recentControls(entry({transcribe: 'running', continuable: false})), recentControls(older), recentControls(entry())],
+        [[transcriptionControl(entry({transcribe: 'running'}))], [transcriptionControl(older)], []]
     );
 });
 
