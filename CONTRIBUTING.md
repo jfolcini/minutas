@@ -35,7 +35,7 @@ The test suite runs the Recordings window for real, on Ubuntu's own PyGObject, G
 | Type-check | `just typecheck` | `uv run ty check` |
 | Module boundaries and declared dependencies | `just imports` | `uv run lint-imports && uv run deptry src` |
 | Mutation testing (report only) | `just mutate` | `uv run mutmut run` |
-| Render the README's screenshots into `docs/screenshots` | `just screenshots` | `xvfb-run -a -s "-screen 0 2560x4200x24" dbus-run-session -- uv run python scripts/screenshots.py docs/screenshots` |
+| Render the README's screenshots into `docs/screenshots` | `just screenshots` | `xvfb-run -a -s "-screen 0 2560x4200x24 -nolisten tcp" dbus-run-session -- uv run python scripts/screenshots.py docs/screenshots` |
 | Every hook over the whole tree (CI's lint job) | `just lint` | `uv run prek run --all-files` |
 | Everything CI checks | `just verify` | |
 | Push and confirm the remote has the commit | `just push` | |

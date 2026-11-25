@@ -45,7 +45,7 @@ from minutas import settings, store, window  # noqa: E402
 
 ART = timezone(timedelta(hours=-3))
 NOW = datetime(2026, 11, 25, 12, 0, tzinfo=ART)
-# Four bytes a second a track, as the recorder writes them, in files that take no disk.
+# 4000 bytes a second a track (32 kbps), as the recorder writes them, in files that take no disk.
 BYTES_PER_SECOND = 4000
 # What `minutas settings agaric` and `minutas settings gitlab` say, without Agaric or glab.
 FAKE_SETTINGS = (
