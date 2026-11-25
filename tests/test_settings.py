@@ -233,3 +233,27 @@ def test_set_github_link_keeps_it_with_the_other_settings_and_none_clears_it() -
 
     assert settings.github_link() is None
     assert settings.summary_model() == "swe-2-high"
+
+
+def test_the_menu_lists_five_recent_recordings_until_changed() -> None:
+    assert settings.recent_in_menu() == 5
+
+
+@pytest.mark.parametrize("count", [1, 12, 20])
+def test_set_recent_in_menu_keeps_it_with_the_other_settings(count: int) -> None:
+    settings.set_agaric_space_id("01HZWORK")
+
+    settings.set_recent_in_menu(count)
+
+    assert settings.recent_in_menu() == count
+    assert settings.agaric_space_id() == "01HZWORK"
+
+
+# Only a hand edit writes these; with none listed, the menu would announce nothing.
+@pytest.mark.parametrize("value", [0, -1, 21, None, "5", 2.5, True, [5]])
+def test_a_hand_edited_count_of_recent_recordings_out_of_range_is_the_default(
+    value: object,
+) -> None:
+    settings.save({"recent_in_menu": value})
+
+    assert settings.recent_in_menu() == 5

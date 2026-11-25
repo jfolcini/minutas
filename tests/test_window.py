@@ -3201,6 +3201,39 @@ def test_saving_on_close_warns_what_goes_and_closes_once_accepted(
     assert window.AUDIO_LIMITS_SAVED in texts(shown)
 
 
+def status_ids() -> list[object]:
+    status = json.loads((store.data_dir() / "status.json").read_text())
+    return [entry["id"] for entry in status["recent"]]
+
+
+@pytest.mark.usefixtures("agaric_settings")
+def test_the_top_bar_lists_as_many_recordings_as_set_and_follows_at_once(
+    history: Callable[[], window.HistoryWindow],
+) -> None:
+    settings.set_recent_in_menu(12)
+    for hour in range(3):
+        recording(started=START + timedelta(hours=hour))
+    store.write_status()
+    shown = history()
+    dialog = open_settings(shown)
+    count = dialog.recent
+    adjustment = count.get_adjustment()
+
+    assert (dialog.top_bar.get_title(), count.get_title(), count.get_value()) == (
+        "Top-bar menu",
+        "Recent recordings",
+        12.0,
+    )
+    assert (adjustment.get_lower(), adjustment.get_upper()) == (1.0, 20.0)
+    assert len(status_ids()) == 3
+
+    count.set_value(2)
+
+    assert settings.recent_in_menu() == 2
+    assert status_ids() == ["2026-11-18T15-05-42", "2026-11-18T14-05-42"]
+    dialog.close()
+
+
 def test_the_window_follows_what_other_processes_do(
     history: Callable[[], window.HistoryWindow],
 ) -> None:
@@ -3232,6 +3265,169 @@ def test_the_window_follows_what_other_processes_do(
     assert listed(shown) == [f"Meeting | {SUBTITLE}"]
 
 
+def found(shown: window.HistoryWindow) -> list[str]:
+    """The titles of the rows the search leaves in the list, top to bottom."""
+    return [
+        row.get_title()
+        for row in cast("list[window.RecordingRow]", list(shown.list))
+        if row.get_child_visible()
+    ]
+
+
+def search(shown: window.HistoryWindow, typed: str) -> None:
+    """Types into the search, as a person would, once it has taken what was typed."""
+    taken: list[str] = []
+    handler = shown.search.connect("search-changed", lambda entry: taken.append(entry.get_text()))
+    shown.search.set_text(typed)
+    wait_until(lambda: typed in taken)
+    shown.search.disconnect(handler)
+
+
+def search_toggle(shown: window.HistoryWindow) -> Gtk.ToggleButton:
+    [toggle] = [
+        widget
+        for widget in descendants(shown)
+        if isinstance(widget, Gtk.ToggleButton) and widget.get_tooltip_text() == "Search"
+    ]
+    return toggle
+
+
+def ctrl_f(shown: window.HistoryWindow) -> None:
+    """Does what the window's Ctrl+F does."""
+    [action] = [
+        shortcut.get_action()
+        for controller in cast("list[Gtk.EventController]", list(shown.observe_controllers()))
+        if isinstance(controller, Gtk.ShortcutController)
+        for shortcut in cast("list[Gtk.Shortcut]", list(controller))
+        if (trigger := shortcut.get_trigger()) is not None and trigger.to_string() == "<Control>f"
+    ]
+    assert action is not None
+    assert action.activate(Gtk.ShortcutActionFlags.EXCLUSIVE, shown, None)
+    settle()
+
+
+def test_search_lists_the_recordings_with_every_word_in_their_name_date_or_transcript(
+    history: Callable[[], window.HistoryWindow],
+) -> None:
+    transcribed()
+    store.set_speaker_name(FIRST, "Speaker 1", "José Pérez")
+    recording(started=START + timedelta(hours=1))
+    store.set_typed_name("2026-11-18T14-05-42", "Retro")
+    recording(started=START + timedelta(days=1))
+    shown = history()
+    toggle = search_toggle(shown)
+    assert toggle.get_icon_name() == "system-search-symbolic"
+
+    toggle.emit("clicked")
+    settle()
+
+    assert shown.search_bar.get_search_mode() is True
+    for typed, titles in [
+        ("arrancamos", ["Weekly sync"]),
+        ("JOSE perez", ["Weekly sync"]),
+        ("retro 11-18", ["Retro"]),
+        ("2026-11-19", ["Meeting"]),
+        ("meeting", ["Meeting"]),
+        ("2026", ["Meeting", "Retro", "Weekly sync"]),
+    ]:
+        search(shown, typed)
+        assert found(shown) == titles
+        assert shown.pages.get_visible_child() is shown.scrolled
+
+
+def test_a_search_nothing_matches_says_so_in_place_of_the_list(
+    history: Callable[[], window.HistoryWindow],
+) -> None:
+    recording()
+    shown = history()
+    ctrl_f(shown)
+
+    search(shown, "standup")
+
+    assert found(shown) == []
+    assert shown.pages.get_visible_child() is shown.no_match
+    assert (shown.no_match.get_title(), shown.no_match.get_icon_name()) == (
+        "No recordings match",
+        "system-search-symbolic",
+    )
+
+    search(shown, "")
+
+    assert found(shown) == ["Meeting"]
+    assert shown.pages.get_visible_child() is shown.scrolled
+
+
+def test_ctrl_f_opens_the_search_and_escape_closes_it_showing_every_recording(
+    history: Callable[[], window.HistoryWindow],
+) -> None:
+    recording()
+    shown = history()
+
+    ctrl_f(shown)
+
+    assert shown.search_bar.get_search_mode() is True
+    assert search_toggle(shown).get_active() is True
+    search(shown, "standup")
+    assert found(shown) == []
+
+    shown.search.emit("stop-search")
+    wait_until(lambda: found(shown) == ["Meeting"])
+
+    assert shown.search_bar.get_search_mode() is False
+    assert search_toggle(shown).get_active() is False
+    assert shown.pages.get_visible_child() is shown.scrolled
+
+    ctrl_f(shown)
+    ctrl_f(shown)
+
+    assert shown.search_bar.get_search_mode() is False
+
+
+def test_the_search_follows_what_changes_and_reads_a_transcript_only_once_it_did(
+    history: Callable[[], window.HistoryWindow], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    transcribed()
+    recording(started=START + timedelta(hours=1))
+    reads: list[str] = []
+    read_transcript = window.read_transcript
+
+    def spy(recording_id: str) -> str:
+        reads.append(recording_id)
+        return read_transcript(recording_id)
+
+    monkeypatch.setattr(window, "read_transcript", spy)
+    shown = history()
+    store.write_status()
+    wait_until(lambda: reads == [] and shown.rows[FIRST].get_child_visible())
+
+    ctrl_f(shown)
+    search(shown, "ana")
+    search(shown, "ana d")
+
+    assert found(shown) == []
+    assert sorted(reads) == [FIRST, "2026-11-18T14-05-42"]
+
+    store.set_speaker_name(FIRST, "Speaker 1", "Ana Díaz")
+    store.write_status()
+    wait_until(lambda: found(shown) == ["Weekly sync"])
+
+    assert sorted(reads) == [FIRST, FIRST, "2026-11-18T14-05-42"]
+
+    # A new recording the search leaves out stays out of the list.
+    recording(started=START + timedelta(hours=2))
+    store.write_status()
+    wait_until(lambda: len(shown.rows) == 3)
+
+    assert found(shown) == ["Weekly sync"]
+
+    # A recording that goes takes what the search kept of it along.
+    shutil.rmtree(store.recording_dir("2026-11-18T14-05-42"))
+    store.write_status()
+    wait_until(lambda: len(shown.rows) == 2)
+
+    assert shown.searched.keys() == {FIRST, "2026-11-18T15-05-42"}
+
+
 def test_reveal_expands_the_recording_and_ignores_one_that_is_gone(
     history: Callable[[], window.HistoryWindow],
 ) -> None:
@@ -3243,6 +3439,27 @@ def test_reveal_expands_the_recording_and_ignores_one_that_is_gone(
     shown.reveal("2026-11-18T15-05-42")
 
     assert [row.get_expanded() for row in shown.rows.values()] == [False, True]
+
+
+def test_reveal_closes_a_search_that_hides_the_recording_and_keeps_one_that_shows_it(
+    history: Callable[[], window.HistoryWindow],
+) -> None:
+    recording()
+    recording(started=START + timedelta(hours=1))
+    store.set_typed_name(FIRST, "Retro")
+    shown = history()
+    ctrl_f(shown)
+    search(shown, "retro")
+
+    shown.reveal(FIRST)
+
+    assert (shown.search_bar.get_search_mode(), found(shown)) == (True, ["Retro"])
+
+    shown.reveal("2026-11-18T14-05-42")
+
+    assert (shown.search_bar.get_search_mode(), shown.search.get_text()) == (False, "")
+    assert found(shown) == ["Meeting", "Retro"]
+    assert shown.rows["2026-11-18T14-05-42"].get_expanded() is True
 
 
 def test_reveal_scrolls_to_a_recording_far_down_the_list(

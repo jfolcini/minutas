@@ -135,6 +135,12 @@ def load_views(running: Mapping[str, Collection[str]]) -> list[RowView]:
         ]
 
 
+def read_transcript(recording_id: str) -> str:
+    """Its transcript; empty until it has one."""
+    path = store.recording_dir(recording_id) / store.TRANSCRIPT
+    return path.read_text(encoding="utf-8") if path.is_file() else ""
+
+
 def text_row(title: str) -> Adw.ActionRow:
     # A name or an error is shown as it was written: its "&" and "<" are not markup.
     return Adw.ActionRow(title=title, use_markup=False, subtitle_selectable=True)
@@ -273,8 +279,18 @@ class SettingsDialog(Adw.PreferencesDialog):
         self.audio.add(self.save_limits)
         self.connect("close-attempt", window.settings_closing)
 
+        self.top_bar = self.top_bar_group(window)
+
         page = Adw.PreferencesPage()
-        for group in (transcription, summary, self.agaric, self.gitlab, self.github, self.audio):
+        for group in (
+            transcription,
+            summary,
+            self.agaric,
+            self.gitlab,
+            self.github,
+            self.audio,
+            self.top_bar,
+        ):
             page.add(group)
         self.add(page)
 
@@ -287,6 +303,16 @@ class SettingsDialog(Adw.PreferencesDialog):
         unsaved = self.chosen_limits() != settings.audio_limits()
         self.save_limits.set_sensitive(unsaved)
         self.set_can_close(not unsaved)
+
+    def top_bar_group(self, window: "HistoryWindow") -> Adw.PreferencesGroup:
+        """How many recent recordings the top-bar menu lists."""
+        self.recent = Adw.SpinRow.new_with_range(1, settings.MOST_RECENT_IN_MENU, 1)
+        self.recent.set_title("Recent recordings")
+        self.recent.set_value(settings.recent_in_menu())
+        self.recent.connect("notify::value", window.recent_chosen)
+        group = Adw.PreferencesGroup(title="Top-bar menu")
+        group.add(self.recent)
+        return group
 
     def gitlab_group(self, window: "HistoryWindow") -> Adw.PreferencesGroup:
         """The default link Publish to GitLab starts from, and the token glab keeps for it."""
@@ -609,6 +635,11 @@ class HistoryWindow(Adw.ApplicationWindow):
         self.rows: dict[str, RecordingRow] = {}
         # Built when a row is first expanded: most never are.
         self.details: dict[str, Details] = {}
+        # What a search looks in, by recording: made at the first search that needs it, and
+        # kept until the row changes, so a keystroke reads no transcript.
+        self.searched: dict[str, str] = {}
+        # The recordings the search leaves in the list.
+        self.matching: set[str] = set()
         # The commands this window is running, by recording.
         self.running: dict[str, dict[str, Gio.Subprocess]] = {
             PUBLISH: {},
@@ -629,12 +660,10 @@ class HistoryWindow(Adw.ApplicationWindow):
             action = Gio.SimpleAction(name=name, parameter_type=GLib.VariantType(parameter))
             action.connect("activate", activated)
             self.add_action(action)
-        open_settings = Gio.SimpleAction(name=SETTINGS)
-        open_settings.connect("activate", self.open_settings)
-        self.add_action(open_settings)
-        about = Gio.SimpleAction(name=ABOUT)
-        about.connect("activate", self.show_about)
-        self.add_action(about)
+        for name, activated in ((SETTINGS, self.open_settings), (ABOUT, self.show_about)):
+            action = Gio.SimpleAction(name=name)
+            action.connect("activate", activated)
+            self.add_action(action)
         self.update_action = Gio.SimpleAction(name=UPDATE)
         self.update_action.connect("activate", self.update)
         self.add_action(self.update_action)
@@ -647,6 +676,7 @@ class HistoryWindow(Adw.ApplicationWindow):
             margin_start=12,
             margin_end=12,
         )
+        self.list.set_filter_func(self.in_search)
         self.viewport = Gtk.Viewport(child=Adw.Clamp(child=self.list))
         self.scrolled = Gtk.ScrolledWindow(
             child=self.viewport, hscrollbar_policy=Gtk.PolicyType.NEVER
@@ -657,15 +687,28 @@ class HistoryWindow(Adw.ApplicationWindow):
             title="No recordings yet",
             description="Record a meeting from the top bar.",
         )
+        self.no_match = Adw.StatusPage(
+            icon_name="system-search-symbolic",
+            title="No recordings match",
+            description="Try other words.",
+        )
         self.pages = Gtk.Stack()
         self.pages.add_child(self.empty)
         self.pages.add_child(self.scrolled)
+        self.pages.add_child(self.no_match)
+        self.search = Gtk.SearchEntry(placeholder_text="Search recordings", hexpand=True)
+        self.search_bar = self.search_bar_for(self.search)
         self.toasts = Adw.ToastOverlay(child=self.pages)
         menu = Gio.Menu()
         menu.append("Settings", f"win.{SETTINGS}")
         menu.append("Update Minutas", f"win.{UPDATE}")
         menu.append("About Minutas", f"win.{ABOUT}")
         header = Adw.HeaderBar()
+        header.pack_start(
+            Gtk.ToggleButton(
+                icon_name="system-search-symbolic", tooltip_text="Search", action_name="win.search"
+            )
+        )
         header.pack_end(
             Gtk.MenuButton(
                 icon_name="open-menu-symbolic",
@@ -676,6 +719,7 @@ class HistoryWindow(Adw.ApplicationWindow):
         )
         page = Adw.ToolbarView(content=self.toasts)
         page.add_top_bar(header)
+        page.add_top_bar(self.search_bar)
         self.updating = Adw.Banner(title=UPDATING)
         page.add_top_bar(self.updating)
         self.set_content(page)
@@ -693,6 +737,22 @@ class HistoryWindow(Adw.ApplicationWindow):
             action.connect("activate", activated)
             self.add_action(action)
         self.delete_audio_over_limits()
+
+    def search_bar_for(self, search: Gtk.SearchEntry) -> Gtk.SearchBar:
+        """The bar that holds the search, opened by win.search and Ctrl+F."""
+        search.connect("search-changed", self.search_changed)
+        bar = Gtk.SearchBar(child=Adw.Clamp(child=search, maximum_size=400))
+        bar.connect_entry(search)
+        self.add_action(Gio.PropertyAction.new("search", bar, "search-mode-enabled"))
+        shortcuts = Gtk.ShortcutController()
+        shortcuts.add_shortcut(
+            Gtk.Shortcut(
+                trigger=Gtk.ShortcutTrigger.parse_string("<Control>f"),
+                action=Gtk.NamedAction.new("win.search"),
+            )
+        )
+        self.add_controller(shortcuts)
+        return bar
 
     def status_changed(
         self,
@@ -716,6 +776,7 @@ class HistoryWindow(Adw.ApplicationWindow):
         for recording_id in self.rows.keys() - {view.recording_id for view in views}:
             self.list.remove(self.rows.pop(recording_id))
             self.details.pop(recording_id, None)
+            self.searched.pop(recording_id, None)
         for position, view in enumerate(views):
             row = self.rows.get(view.recording_id)
             if row is None:
@@ -724,13 +785,44 @@ class HistoryWindow(Adw.ApplicationWindow):
                 self.list.insert(row, position)
             elif row.view != view:
                 row.display(view)
+                self.searched.pop(view.recording_id, None)
                 if view.recording_id in self.details:
                     self.details[view.recording_id].display(view)
-        self.pages.set_visible_child(self.scrolled if self.rows else self.empty)
+        self.show_matching()
+
+    def search_changed(self, _entry: Gtk.SearchEntry) -> None:
+        self.show_matching()
+
+    def show_matching(self) -> None:
+        """Lists the recordings with every word the search holds, or says none has them."""
+        typed = self.search.get_text()
+        self.matching = {
+            recording_id
+            for recording_id, row in self.rows.items()
+            # Nothing typed reads no transcript.
+            if not typed.split() or window_view.matches(typed, self.search_text(row.view))
+        }
+        self.list.invalidate_filter()
+        if not self.rows:
+            self.pages.set_visible_child(self.empty)
+        else:
+            self.pages.set_visible_child(self.scrolled if self.matching else self.no_match)
+
+    def search_text(self, view: RowView) -> str:
+        if view.recording_id not in self.searched:
+            transcript = read_transcript(view.recording_id)
+            self.searched[view.recording_id] = window_view.searched(view, transcript)
+        return self.searched[view.recording_id]
+
+    def in_search(self, row: Gtk.ListBoxRow) -> bool:
+        return cast("RecordingRow", row).view.recording_id in self.matching
 
     def reveal(self, recording_id: str) -> None:
         row = self.rows.get(recording_id)
         if row is not None:
+            if recording_id not in self.matching:
+                # Asked for from the top bar while a search hides it; closing the search clears it.
+                self.search_bar.set_search_mode(False)
             row.set_expanded(True)
             self.viewport.scroll_to(row, None)
 
@@ -1075,6 +1167,11 @@ class HistoryWindow(Adw.ApplicationWindow):
             self.say(AUDIO_LIMITS_SAVED)
         else:
             dialog.add_toast(Adw.Toast(title=AUDIO_LIMITS_SAVED))
+
+    def recent_chosen(self, row: Adw.SpinRow, _property: object) -> None:
+        settings.set_recent_in_menu(int(row.get_value()))
+        # The menu follows now, not at the next change to a recording.
+        store.write_status()
 
     def ask_agaric(
         self,

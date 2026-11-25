@@ -16,8 +16,11 @@ from minutas.window_view import (
     agaric,
     clean_name,
     duration,
+    folded,
     limits_warning,
+    matches,
     row,
+    searched,
     trash_refusal,
     unrecorded_failure,
     update,
@@ -1249,6 +1252,66 @@ GOES = (
 )
 def test_the_limits_warning_says_how_much_audio_goes_now(over: int, said: str) -> None:
     assert limits_warning(over, "1.2 GB") == said
+
+
+@pytest.mark.parametrize(
+    ("typed", "found"),
+    [
+        ("", True),
+        ("  ", True),
+        ("jose", True),
+        ("JOSÉ", True),
+        ("perez weekly", True),
+        ("Pérez  José", True),
+        ("sync", True),
+        ("2026-11-18", True),
+        ("arrancamos", True),
+        ("ana", False),
+        ("jose ana", False),
+        ("josé-pérez", False),
+    ],
+)
+def test_search_finds_every_word_typed_whatever_its_case_and_accents(
+    typed: str, *, found: bool
+) -> None:
+    view = row(recording(name="Weekly sync"), [], store.TRACKS, running=(), missing_tools={})
+    text = searched(view, "[00:00:04] **José Pérez:** Arrancamos.\n")
+
+    assert matches(typed, text) is found
+
+
+def test_search_looks_in_the_name_the_subtitle_and_the_transcript() -> None:
+    view = row(recording(name="Weekly Sync"), [], store.TRACKS, running=(), missing_tools={})
+
+    assert searched(view, "**Ana Díaz:** Sí.\n") == (
+        "weekly sync\n2026-11-18 13:05 · 30 min\n**ana diaz:** si.\n"
+    )
+
+
+SPANISH = "abcdefghijklmnopqrstuvwxyzáéíóúüñ"
+ACCENTLESS = str.maketrans("ÁÉÍÓÚÜÑ", "AEIOUUN")
+
+
+@given(st.text(alphabet=f"{SPANISH}{SPANISH.upper()} .\n"), st.data())
+def test_any_word_of_a_text_finds_it_in_capitals_and_without_accents(
+    text: str, data: st.DataObject
+) -> None:
+    words = text.split()
+    chosen = data.draw(st.lists(st.sampled_from(words)) if words else st.just([]))
+
+    assert matches(" ".join(word.upper().translate(ACCENTLESS) for word in chosen), folded(text))
+
+
+@given(st.text(), st.text(), st.text())
+def test_typing_more_words_only_narrows_the_search(first: str, second: str, text: str) -> None:
+    both = matches(f"{first} {second}", folded(text))
+
+    assert both == (matches(first, folded(text)) and matches(second, folded(text)))
+
+
+@given(st.text(alphabet=f"{SPANISH.replace('z', '')} \n"), st.text(alphabet=SPANISH))
+def test_a_word_with_a_letter_the_text_lacks_finds_nothing(text: str, word: str) -> None:
+    assert matches(f"{word}Z", folded(text)) is False
 
 
 INSTALLED = "uv: ok\nApp: installed /home/ana/.local/share/minutas/app and the minutas command\n"
