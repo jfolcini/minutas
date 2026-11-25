@@ -1,4 +1,4 @@
-// The extension's pure logic: no gi:// imports, so plain `gjs -m` can test it.
+// The extension's pure logic: no gi:// imports, so vitest tests it under Node.
 
 /** @typedef {null | 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'} RunStatus */
 /** @typedef {{id: string, started_at: string}} Recording */
@@ -36,8 +36,11 @@ const isTimestamp = value =>
     isString(value) && /^\d{4}-\d\d-\d\dT\d\d:\d\d/.test(value) && !Number.isNaN(Date.parse(value));
 
 /** @param {any} value */
-const isRecording = value => value !== null && typeof value === 'object' &&
-    isString(value.id) && isTimestamp(value.started_at);
+const isRecording = value =>
+    value !== null &&
+    typeof value === 'object' &&
+    isString(value.id) &&
+    isTimestamp(value.started_at);
 
 // Left out, a flag is not set: so it is in a status.json written before the flag was.
 /** @param {any} value */
@@ -46,7 +49,8 @@ const isFlag = value => value === undefined || typeof value === 'boolean';
 // paused_at is there only while it is paused, paused_seconds only once it has been, continued
 // only once it has been stopped and continued.
 /** @param {any} value */
-const isActive = value => isRecording(value) &&
+const isActive = value =>
+    isRecording(value) &&
     (value.paused_at === undefined || isTimestamp(value.paused_at)) &&
     (value.paused_seconds === undefined ||
         (Number.isInteger(value.paused_seconds) && value.paused_seconds >= 0)) &&
@@ -54,18 +58,25 @@ const isActive = value => isRecording(value) &&
 
 // Absent from a status.json written before it was.
 /** @param {any} value */
-const isProgress = value => value === undefined || value === null ||
-    (typeof value === 'object' && isString(value.phase) &&
-        Number.isInteger(value.percent) && value.percent >= 0 && value.percent <= 100);
+const isProgress = value =>
+    value === undefined ||
+    value === null ||
+    (typeof value === 'object' &&
+        isString(value.phase) &&
+        Number.isInteger(value.percent) &&
+        value.percent >= 0 &&
+        value.percent <= 100);
 
 /** @param {any} value */
-const isRecent = value => isRecording(value) &&
+const isRecent = value =>
+    isRecording(value) &&
     isString(value.name) &&
     Number.isFinite(value.duration_seconds) &&
     typeof value.incomplete === 'boolean' &&
     RUN_STATUSES.includes(value.transcribe) &&
     isProgress(value.progress) &&
-    Array.isArray(value.failed) && value.failed.every(isString) &&
+    Array.isArray(value.failed) &&
+    value.failed.every(isString) &&
     isFlag(value.continuable);
 
 /**
@@ -80,9 +91,12 @@ export function parseStatus(text) {
     } catch {
         return null;
     }
-    if (data?.version !== 1 ||
+    if (
+        data?.version !== 1 ||
         !(data.recording === null || isActive(data.recording)) ||
-        !Array.isArray(data.recent) || !data.recent.every(isRecent))
+        !Array.isArray(data.recent) ||
+        !data.recent.every(isRecent)
+    )
         return null;
     return {recording: data.recording, recent: data.recent};
 }
@@ -106,13 +120,15 @@ export function notificationsFor(previous, current) {
     for (const recording of current.recent) {
         const before = previous.recent.find(r => r.id === recording.id);
         const wasActive = previous.recording?.id === recording.id;
-        if (!before && !wasActive)
-            continue;
+        if (!before && !wasActive) continue;
         /** @type {(title: string, body?: string) => void} */
         const announce = (title, body = describe(recording)) =>
             notifications.push({recordingId: recording.id, title, body});
         if (wasActive && recording.incomplete)
-            announce('Recording stopped unexpectedly', `${describe(recording)}: what was captured is kept`);
+            announce(
+                'Recording stopped unexpectedly',
+                `${describe(recording)}: what was captured is kept`
+            );
         if (recording.transcribe === 'succeeded' && before?.transcribe !== 'succeeded')
             announce('Transcript ready');
         for (const action of recording.failed) {
@@ -147,7 +163,11 @@ export function elapsedSeconds(recording, nowMs) {
 
 /** @param {Recent} recording */
 export function recentLabel(recording) {
-    const parts = [recording.name, localStart(recording.started_at), formatClock(recording.duration_seconds)];
+    const parts = [
+        recording.name,
+        localStart(recording.started_at),
+        formatClock(recording.duration_seconds),
+    ];
     if (recording.transcribe === 'running' && recording.progress)
         parts.push(`${recording.progress.phase}… ${recording.progress.percent}%`);
     else if (recording.transcribe === 'queued' || recording.transcribe === 'running')
@@ -165,22 +185,22 @@ export function recentLabel(recording) {
  */
 export function transcriptionControl(recording) {
     switch (recording.transcribe) {
-    case 'queued':
-    case 'running':
-        return {
-            label: 'Cancel transcription',
-            args: ['transcribe', '--cancel', recording.id],
-            failureTitle: "Couldn't cancel the transcription",
-        };
-    case 'failed':
-    case 'cancelled':
-        return {
-            label: 'Transcribe again',
-            args: ['transcribe', recording.id],
-            failureTitle: "Couldn't start transcribing",
-        };
-    default:
-        return null;
+        case 'queued':
+        case 'running':
+            return {
+                label: 'Cancel transcription',
+                args: ['transcribe', '--cancel', recording.id],
+                failureTitle: "Couldn't cancel the transcription",
+            };
+        case 'failed':
+        case 'cancelled':
+            return {
+                label: 'Transcribe again',
+                args: ['transcribe', recording.id],
+                failureTitle: "Couldn't start transcribing",
+            };
+        default:
+            return null;
     }
 }
 

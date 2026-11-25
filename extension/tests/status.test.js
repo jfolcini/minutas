@@ -1,5 +1,4 @@
-// Run with `gjs -m extension/tests/status.test.js`; exits 1 on any failure.
-import System from 'system';
+import {expect, test} from 'vitest';
 
 import {
     EMPTY_STATUS,
@@ -16,22 +15,6 @@ import {
 
 /** @typedef {import('../status.js').Active} Active */
 /** @typedef {import('../status.js').Recent} Recent */
-
-/** @type {{name: string, fn: () => void}[]} */
-const tests = [];
-/** @type {(name: string, fn: () => void) => void} */
-const test = (name, fn) => tests.push({name, fn});
-
-/**
- * @param {unknown} actual
- * @param {unknown} expected
- */
-function assertEqual(actual, expected) {
-    const a = JSON.stringify(actual);
-    const e = JSON.stringify(expected);
-    if (a !== e)
-        throw new Error(`expected ${e}\n       got ${a}`);
-}
 
 /** @type {(fields?: Partial<Recent>) => Recent} */
 const entry = (fields = {}) => ({
@@ -54,20 +37,20 @@ const status = (recording, recent) => ({recording, recent});
 
 test('parseStatus reads the contract example', () => {
     const text = JSON.stringify({version: 1, recording: ACTIVE, recent: [entry()]});
-    assertEqual(parseStatus(text), status(ACTIVE, [entry()]));
+    expect(parseStatus(text)).toStrictEqual(status(ACTIVE, [entry()]));
 });
 
-test('parseStatus reads a running transcription\'s progress', () => {
+test("parseStatus reads a running transcription's progress", () => {
     const running = entry({transcribe: 'running', progress: SPEAKERS});
     const text = JSON.stringify({version: 1, recording: null, recent: [running]});
-    assertEqual(parseStatus(text), status(null, [running]));
+    expect(parseStatus(text)).toStrictEqual(status(null, [running]));
 });
 
 test('parseStatus reads a status.json written before progress was in it', () => {
     const older = entry();
     delete older.progress;
     const text = JSON.stringify({version: 1, recording: null, recent: [older]});
-    assertEqual(parseStatus(text), status(null, [older]));
+    expect(parseStatus(text)).toStrictEqual(status(null, [older]));
 });
 
 test('parseStatus rejects a progress that is not a phase and a whole percent', () => {
@@ -84,16 +67,17 @@ test('parseStatus rejects a progress that is not a phase and a whole percent', (
         const text = JSON.stringify({version: 1, recording: null, recent: [entry({progress})]});
         return parseStatus(text);
     });
-    assertEqual(rejected, [null, null, null, null, null, null, null]);
+    expect(rejected).toStrictEqual([null, null, null, null, null, null, null]);
 });
 
 test('parseStatus reads a recording that is paused, and one that was', () => {
     const paused = {...ACTIVE, paused_at: '2026-11-18T13:06:42+01:00'};
     const resumed = {...ACTIVE, paused_seconds: 30};
-    assertEqual(
-        [paused, resumed].map(recording => parseStatus(JSON.stringify({version: 1, recording, recent: []}))),
-        [status(paused, []), status(resumed, [])]
-    );
+    expect(
+        [paused, resumed].map(recording =>
+            parseStatus(JSON.stringify({version: 1, recording, recent: []}))
+        )
+    ).toStrictEqual([status(paused, []), status(resumed, [])]);
 });
 
 test('parseStatus rejects a pause that is not a time, or not whole seconds', () => {
@@ -103,14 +87,20 @@ test('parseStatus rejects a pause that is not a time, or not whole seconds', () 
         {paused_seconds: -1},
         {paused_seconds: 1.5},
         {paused_seconds: '30'},
-    ].map(pause => parseStatus(JSON.stringify({version: 1, recording: {...ACTIVE, ...pause}, recent: []})));
-    assertEqual(rejected, [null, null, null, null, null]);
+    ].map(pause =>
+        parseStatus(JSON.stringify({version: 1, recording: {...ACTIVE, ...pause}, recent: []}))
+    );
+    expect(rejected).toStrictEqual([null, null, null, null, null]);
 });
 
 test('parseStatus reads a recording that can be continued, and one that was', () => {
     const continued = {...ACTIVE, paused_seconds: 40, continued: true};
-    const text = JSON.stringify({version: 1, recording: continued, recent: [entry({continuable: true})]});
-    assertEqual(parseStatus(text), status(continued, [entry({continuable: true})]));
+    const text = JSON.stringify({
+        version: 1,
+        recording: continued,
+        recent: [entry({continuable: true})],
+    });
+    expect(parseStatus(text)).toStrictEqual(status(continued, [entry({continuable: true})]));
 });
 
 test('parseStatus rejects a continued or a continuable that is not true or false', () => {
@@ -120,77 +110,98 @@ test('parseStatus rejects a continued or a continuable that is not true or false
         {version: 1, recording: null, recent: [{...entry(), continuable: 1}]},
         {version: 1, recording: null, recent: [{...entry(), continuable: null}]},
     ].map(written => parseStatus(JSON.stringify(written)));
-    assertEqual(rejected, [null, null, null, null]);
+    expect(rejected).toStrictEqual([null, null, null, null]);
 });
 
 test('parseStatus rejects a half-written file', () => {
-    assertEqual(parseStatus('{"version": 1, "recording": {"id": "2026'), null);
+    expect(parseStatus('{"version": 1, "recording": {"id": "2026')).toBeNull();
 });
 
 test('parseStatus rejects another version', () => {
-    assertEqual(parseStatus(JSON.stringify({version: 2, recording: null, recent: []})), null);
+    expect(parseStatus(JSON.stringify({version: 2, recording: null, recent: []}))).toBeNull();
 });
 
 test('parseStatus rejects a recent entry whose failed is not a list', () => {
-    // @ts-expect-error: the invalid entry this test is about
-    const text = JSON.stringify({version: 1, recording: null, recent: [entry({failed: 'summarize'})]});
-    assertEqual(parseStatus(text), null);
+    const text = JSON.stringify({
+        version: 1,
+        recording: null,
+        // @ts-expect-error: the invalid entry this test is about
+        recent: [entry({failed: 'summarize'})],
+    });
+    expect(parseStatus(text)).toBeNull();
 });
 
 test('parseStatus rejects an unknown transcribe status', () => {
-    // @ts-expect-error: the invalid entry this test is about
-    const text = JSON.stringify({version: 1, recording: null, recent: [entry({transcribe: 'done'})]});
-    assertEqual(parseStatus(text), null);
+    const text = JSON.stringify({
+        version: 1,
+        recording: null,
+        // @ts-expect-error: the invalid entry this test is about
+        recent: [entry({transcribe: 'done'})],
+    });
+    expect(parseStatus(text)).toBeNull();
 });
 
 test('parseStatus rejects a recording whose start time does not parse', () => {
     const recording = {id: ACTIVE.id, started_at: 'yesterday'};
-    assertEqual(parseStatus(JSON.stringify({version: 1, recording, recent: []})), null);
+    expect(parseStatus(JSON.stringify({version: 1, recording, recent: []}))).toBeNull();
 });
 
 test('a transcript that finished running is announced', () => {
     const previous = status(null, [entry({transcribe: 'running'})]);
-    assertEqual(notificationsFor(previous, status(null, [entry()])), [
+    expect(notificationsFor(previous, status(null, [entry()]))).toStrictEqual([
         {recordingId: entry().id, title: 'Transcript ready', body: 'Meeting, 2026-11-18 12:00'},
     ]);
 });
 
 test('a transcript ready by the first snapshot after stop is announced', () => {
     const stopped = entry({id: ACTIVE.id, started_at: ACTIVE.started_at});
-    assertEqual(notificationsFor(status(ACTIVE, []), status(null, [stopped])), [
+    expect(notificationsFor(status(ACTIVE, []), status(null, [stopped]))).toStrictEqual([
         {recordingId: ACTIVE.id, title: 'Transcript ready', body: 'Meeting, 2026-11-18 13:05'},
     ]);
 });
 
 test('recordings the previous snapshot did not know are not announced', () => {
     const old = entry({failed: ['publish_gitlab']});
-    assertEqual(notificationsFor(EMPTY_STATUS, status(null, [old])), []);
+    expect(notificationsFor(EMPTY_STATUS, status(null, [old]))).toStrictEqual([]);
 });
 
 test('a newly failed action is announced by its display name', () => {
     const previous = status(null, [entry({failed: ['summarize']})]);
     const current = status(null, [entry({failed: ['summarize', 'publish_agaric']})]);
-    assertEqual(notificationsFor(previous, current), [
-        {recordingId: entry().id, title: 'Publish to Agaric failed', body: 'Meeting, 2026-11-18 12:00'},
+    expect(notificationsFor(previous, current)).toStrictEqual([
+        {
+            recordingId: entry().id,
+            title: 'Publish to Agaric failed',
+            body: 'Meeting, 2026-11-18 12:00',
+        },
     ]);
 });
 
 test('a failed Publish to GitHub is announced by its display name', () => {
     const previous = status(null, [entry()]);
     const current = status(null, [entry({failed: ['publish_github']})]);
-    assertEqual(notificationsFor(previous, current), [
-        {recordingId: entry().id, title: 'Publish to GitHub failed', body: 'Meeting, 2026-11-18 12:00'},
+    expect(notificationsFor(previous, current)).toStrictEqual([
+        {
+            recordingId: entry().id,
+            title: 'Publish to GitHub failed',
+            body: 'Meeting, 2026-11-18 12:00',
+        },
     ]);
 });
 
 test('an unchanged snapshot announces nothing again', () => {
     const same = status(null, [entry({failed: ['summarize']})]);
-    assertEqual(notificationsFor(same, same), []);
+    expect(notificationsFor(same, same)).toStrictEqual([]);
 });
 
 test('a recorder that died is announced', () => {
-    const died = entry({id: ACTIVE.id, started_at: ACTIVE.started_at, incomplete: true, transcribe: 'queued'});
-    assertEqual(notificationsFor(status(ACTIVE, []), status(null, [died])), [
+    const died = entry({
+        id: ACTIVE.id,
+        started_at: ACTIVE.started_at,
+        incomplete: true,
+        transcribe: 'queued',
+    });
+    expect(notificationsFor(status(ACTIVE, []), status(null, [died]))).toStrictEqual([
         {
             recordingId: ACTIVE.id,
             title: 'Recording stopped unexpectedly',
@@ -201,56 +212,67 @@ test('a recorder that died is announced', () => {
 
 test('a normal stop announces nothing', () => {
     const stopped = entry({id: ACTIVE.id, started_at: ACTIVE.started_at, transcribe: 'queued'});
-    assertEqual(notificationsFor(status(ACTIVE, []), status(null, [stopped])), []);
+    expect(notificationsFor(status(ACTIVE, []), status(null, [stopped]))).toStrictEqual([]);
 });
 
 test('formatClock shows minutes and seconds, and hours once there are any', () => {
-    assertEqual([formatClock(5), formatClock(754), formatClock(3723)], ['0:05', '12:34', '1:02:03']);
+    expect([formatClock(5), formatClock(754), formatClock(3723)]).toStrictEqual([
+        '0:05',
+        '12:34',
+        '1:02:03',
+    ]);
 });
 
 test('elapsedSeconds counts from a start time with a UTC offset', () => {
-    assertEqual(elapsedSeconds(ACTIVE, Date.parse('2026-11-18T12:06:47Z')), 65);
+    expect(elapsedSeconds(ACTIVE, Date.parse('2026-11-18T12:06:47Z'))).toStrictEqual(65);
 });
 
 test('elapsedSeconds never goes below zero when the clock is behind', () => {
-    assertEqual(elapsedSeconds(ACTIVE, Date.parse('2026-11-18T12:00:00Z')), 0);
+    expect(elapsedSeconds(ACTIVE, Date.parse('2026-11-18T12:00:00Z'))).toStrictEqual(0);
 });
 
 test('elapsedSeconds leaves out the time a recording was paused', () => {
-    assertEqual(elapsedSeconds({...ACTIVE, paused_seconds: 30}, Date.parse('2026-11-18T12:06:47Z')), 35);
+    expect(
+        elapsedSeconds({...ACTIVE, paused_seconds: 30}, Date.parse('2026-11-18T12:06:47Z'))
+    ).toStrictEqual(35);
 });
 
 test('elapsedSeconds stands still while a recording is paused', () => {
     const paused = {...ACTIVE, paused_seconds: 30, paused_at: '2026-11-18T13:06:42+01:00'};
-    assertEqual(
-        [elapsedSeconds(paused, Date.parse('2026-11-18T12:06:47Z')), elapsedSeconds(paused, Date.parse('2026-11-18T13:00:00Z'))],
-        [30, 30]
-    );
+    expect([
+        elapsedSeconds(paused, Date.parse('2026-11-18T12:06:47Z')),
+        elapsedSeconds(paused, Date.parse('2026-11-18T13:00:00Z')),
+    ]).toStrictEqual([30, 30]);
 });
 
 test('recentLabel shows the name, local start and duration', () => {
-    assertEqual(recentLabel(entry()), 'Meeting · 2026-11-18 12:00 · 30:34');
+    expect(recentLabel(entry())).toStrictEqual('Meeting · 2026-11-18 12:00 · 30:34');
 });
 
 test('recentLabel hints while the transcript is queued or running', () => {
-    assertEqual(
-        [recentLabel(entry({transcribe: 'queued'})), recentLabel(entry({transcribe: 'running'}))],
-        ['Meeting · 2026-11-18 12:00 · 30:34 · transcribing…', 'Meeting · 2026-11-18 12:00 · 30:34 · transcribing…']
-    );
+    expect([
+        recentLabel(entry({transcribe: 'queued'})),
+        recentLabel(entry({transcribe: 'running'})),
+    ]).toStrictEqual([
+        'Meeting · 2026-11-18 12:00 · 30:34 · transcribing…',
+        'Meeting · 2026-11-18 12:00 · 30:34 · transcribing…',
+    ]);
 });
 
 test('recentLabel says how far a running transcription has got', () => {
-    assertEqual(
-        recentLabel(entry({transcribe: 'running', progress: SPEAKERS})),
+    expect(recentLabel(entry({transcribe: 'running', progress: SPEAKERS}))).toStrictEqual(
         'Meeting · 2026-11-18 12:00 · 30:34 · identifying speakers… 40%'
     );
 });
 
 test('recentLabel says a transcription failed or was cancelled', () => {
-    assertEqual(
-        [recentLabel(entry({transcribe: 'failed', failed: ['transcribe']})), recentLabel(entry({transcribe: 'cancelled'}))],
-        ['Meeting · 2026-11-18 12:00 · 30:34 · transcription failed', 'Meeting · 2026-11-18 12:00 · 30:34 · transcription cancelled']
-    );
+    expect([
+        recentLabel(entry({transcribe: 'failed', failed: ['transcribe']})),
+        recentLabel(entry({transcribe: 'cancelled'})),
+    ]).toStrictEqual([
+        'Meeting · 2026-11-18 12:00 · 30:34 · transcription failed',
+        'Meeting · 2026-11-18 12:00 · 30:34 · transcription cancelled',
+    ]);
 });
 
 test('transcriptionControl cancels a transcription that is queued or running', () => {
@@ -259,10 +281,10 @@ test('transcriptionControl cancels a transcription that is queued or running', (
         args: ['transcribe', '--cancel', '2026-11-18T12-00-03'],
         failureTitle: "Couldn't cancel the transcription",
     };
-    assertEqual(
-        [transcriptionControl(entry({transcribe: 'queued'})), transcriptionControl(entry({transcribe: 'running'}))],
-        [cancel, cancel]
-    );
+    expect([
+        transcriptionControl(entry({transcribe: 'queued'})),
+        transcriptionControl(entry({transcribe: 'running'})),
+    ]).toStrictEqual([cancel, cancel]);
 });
 
 test('transcriptionControl transcribes again after a transcription failed or was cancelled', () => {
@@ -271,17 +293,17 @@ test('transcriptionControl transcribes again after a transcription failed or was
         args: ['transcribe', '2026-11-18T12-00-03'],
         failureTitle: "Couldn't start transcribing",
     };
-    assertEqual(
-        [transcriptionControl(entry({transcribe: 'failed'})), transcriptionControl(entry({transcribe: 'cancelled'}))],
-        [again, again]
-    );
+    expect([
+        transcriptionControl(entry({transcribe: 'failed'})),
+        transcriptionControl(entry({transcribe: 'cancelled'})),
+    ]).toStrictEqual([again, again]);
 });
 
 test('transcriptionControl offers nothing once transcribed, or before any transcription', () => {
-    assertEqual(
-        [transcriptionControl(entry()), transcriptionControl(entry({transcribe: null}))],
-        [null, null]
-    );
+    expect([
+        transcriptionControl(entry()),
+        transcriptionControl(entry({transcribe: null})),
+    ]).toStrictEqual([null, null]);
 });
 
 const CONTINUE = {
@@ -296,43 +318,38 @@ test('recentControls offers Continue recording after what the transcription offe
         entry({transcribe: 'failed', continuable: true}),
         entry({transcribe: null, continuable: true}),
     ].map(recentControls);
-    assertEqual(controls.map(offered => offered.map(control => control.label)), [
+    expect(controls.map(offered => offered.map(control => control.label))).toStrictEqual([
         ['Cancel transcription', 'Continue recording'],
         ['Transcribe again', 'Continue recording'],
         ['Continue recording'],
     ]);
-    assertEqual(controls[2], [CONTINUE]);
+    expect(controls[2]).toStrictEqual([CONTINUE]);
 });
 
 test('recentControls offers no Continue recording for a recording that cannot be continued', () => {
     const older = entry({transcribe: 'cancelled'});
-    assertEqual(
-        [recentControls(entry({transcribe: 'running', continuable: false})), recentControls(older), recentControls(entry())],
-        [[transcriptionControl(entry({transcribe: 'running'}))], [transcriptionControl(older)], []]
-    );
+    expect([
+        recentControls(entry({transcribe: 'running', continuable: false})),
+        recentControls(older),
+        recentControls(entry()),
+    ]).toStrictEqual([
+        [transcriptionControl(entry({transcribe: 'running'}))],
+        [transcriptionControl(older)],
+        [],
+    ]);
 });
 
 test('hasWarning marks a failed run or an incomplete recording', () => {
-    assertEqual(
-        [hasWarning(entry({failed: ['transcribe']})), hasWarning(entry({incomplete: true})), hasWarning(entry())],
-        [true, true, false]
-    );
+    expect([
+        hasWarning(entry({failed: ['transcribe']})),
+        hasWarning(entry({incomplete: true})),
+        hasWarning(entry()),
+    ]).toStrictEqual([true, true, false]);
 });
 
 test('lastLine takes the last non-empty line of stderr', () => {
-    assertEqual([lastLine('warning: x\nerror: already recording\n\n'), lastLine('')], ['error: already recording', '']);
+    expect([lastLine('warning: x\nerror: already recording\n\n'), lastLine('')]).toStrictEqual([
+        'error: already recording',
+        '',
+    ]);
 });
-
-let failures = 0;
-for (const {name, fn} of tests) {
-    try {
-        fn();
-        print(`ok - ${name}`);
-    } catch (e) {
-        failures++;
-        print(`FAIL - ${name}\n       ${e}`);
-    }
-}
-print(`${tests.length - failures} passed, ${failures} failed`);
-if (failures > 0)
-    System.exit(1);
