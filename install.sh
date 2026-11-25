@@ -289,13 +289,13 @@ step_gh() {
   report gh "$found; Publish to GitHub stays off until gh 2.45 or newer is installed: \`sudo apt install gh\`, or see https://cli.github.com"
 }
 
-step_devin() {
-  if command -v devin >/dev/null; then
-    report "Devin CLI" ok
+step_summarizer() {
+  if command -v devin >/dev/null || command -v claude >/dev/null; then
+    report Summarizer ok
     return
   fi
-  missing_tools+=("Devin CLI")
-  report "Devin CLI" "not installed; Summarize needs it. Install it with \`curl -fsSL https://cli.devin.ai/install.sh | bash\`, then log in with \`devin auth login\`"
+  missing_tools+=(Summarizer)
+  report Summarizer "not installed; Summarize needs the Devin CLI or Claude Code. Install the Devin CLI with \`curl -fsSL https://cli.devin.ai/install.sh | bash\`, then log in with \`devin auth login\`; or Claude Code with \`curl -fsSL https://claude.ai/install.sh | bash\`, then log in with \`claude auth login\`"
 }
 
 # What is left for the person to do, if anything.
@@ -333,7 +333,7 @@ main() {
   step_agaric_mcp
   step_glab
   step_gh
-  step_devin
+  step_summarizer
   summary
 }
 

@@ -339,7 +339,9 @@ def build_parser() -> argparse.ArgumentParser:
     history_command.add_argument("--recording", metavar="ID", help="open this recording")
     history_command.set_defaults(handler=history)
 
-    summarize_command = commands.add_parser("summarize", help="summarize a recording with Devin")
+    summarize_command = commands.add_parser(
+        "summarize", help="summarize a recording with the summarizer chosen in Settings"
+    )
     summarize_command.add_argument("recording_id")
     summarize_command.add_argument(
         "--prompt", required=True, help="what the summary should cover, as a preset says it"

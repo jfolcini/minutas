@@ -82,6 +82,46 @@ def devin(monkeypatch: pytest.MonkeyPatch) -> FakeDevin:
     return fake
 
 
+class FakeClaude:
+    """Stands in for subprocess.run under the summarizer: `claude -p` answers as told."""
+
+    def __init__(self) -> None:
+        self.calls: list[Call] = []
+        self.answer = Answer()
+        self.missing = False
+        self.hangs = False
+
+    def __call__(self, args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        cwd = Path(cast("str", kwargs["cwd"]))
+        self.calls.append(
+            Call(
+                args,
+                cwd,
+                kwargs.get("stdin"),
+                cast("dict[str, str]", kwargs["env"]),
+                kwargs.get("timeout"),
+                sorted(path.name for path in cwd.rglob("*")),
+                cast("str", kwargs["input"]),
+            )
+        )
+        if self.missing:
+            raise FileNotFoundError(args[0])
+        if self.hangs:
+            raise subprocess.TimeoutExpired(args, cast("float", kwargs["timeout"]))
+        return subprocess.CompletedProcess(
+            args, self.answer.returncode, self.answer.stdout, self.answer.stderr
+        )
+
+
+@pytest.fixture
+def claude(monkeypatch: pytest.MonkeyPatch) -> FakeClaude:
+    """Claude Code chosen in Settings, and standing in for it."""
+    settings.set_summarizer("claude")
+    fake = FakeClaude()
+    monkeypatch.setattr(subprocess, "run", fake)
+    return fake
+
+
 def recording() -> str:
     recording_id = store.create_recording(START)["id"]
     store.mark_stopped(recording_id, START + timedelta(minutes=30), incomplete=False)
@@ -439,6 +479,198 @@ def test_summarize_fails_a_run_a_crash_left_running(devin: FakeDevin) -> None:
     ]
     assert runs(recording_id)[2]["status"] == "succeeded"
     assert len(devin.calls) == 1
+
+
+CLAUDE_COMMAND = [
+    "claude",
+    "-p",
+    "--tools",
+    "",
+    "--strict-mcp-config",
+    "--setting-sources",
+    "",
+    "--disallowedTools",
+    "*",
+    "--permission-mode",
+    "dontAsk",
+    "--disable-slash-commands",
+    "--no-session-persistence",
+]
+
+
+def test_claude_runs_with_no_tool_and_none_of_the_persons_settings_in_an_empty_folder(
+    claude: FakeClaude, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recording_id = recording()
+    # Devin's model is not Claude's.
+    settings.set_summary_model("swe-2-high")
+    # What the desktop sets can't let a mention, a CLAUDE.md, a memory folder or a connector in.
+    monkeypatch.setenv("CLAUDE_CODE_DISABLE_ATTACHMENTS", "0")
+    monkeypatch.delenv("CLAUDE_CODE_DISABLE_CLAUDE_MDS", raising=False)
+    monkeypatch.setenv("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "0")
+    monkeypatch.setenv("ENABLE_CLAUDEAI_MCP_SERVERS", "true")
+
+    assert summarizer.summarize(recording_id, SUMMARIZED, PROMPT) is True
+
+    [call] = claude.calls
+    # No built-in tool, no MCP server, no settings file of the person's, every tool denied should
+    # one be offered all the same, nothing approved unasked, no command or skill, no session kept.
+    assert call.args == CLAUDE_COMMAND
+    # The prompt, the transcript in it, goes in on its input: the folder it runs in holds nothing,
+    # of the recording's or of anywhere else, and is gone afterwards.
+    assert call.prompt.startswith(f"{PROMPT}\n\nWrite it as this skill says:\n\n")
+    assert call.prompt.endswith(f"The meeting's transcript:\n\n{TRANSCRIPT}")
+    assert call.stdin is None
+    assert call.listed == []
+    assert not call.cwd.is_relative_to(store.data_dir())
+    assert not call.cwd.exists()
+    assert call.timeout == 15 * 60
+    # A file the transcript mentions stays unread; no CLAUDE.md, memory or claude.ai connector is
+    # loaded; its home, where it keeps its login, and the rest of the person's environment stay.
+    assert {**os.environ, **call.env} == call.env
+    assert {name: value for name, value in call.env.items() if os.environ.get(name) != value} == {
+        "CLAUDE_CODE_DISABLE_ATTACHMENTS": "1",
+        "CLAUDE_CODE_DISABLE_CLAUDE_MDS": "1",
+        "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
+        "ENABLE_CLAUDEAI_MCP_SERVERS": "false",
+    }
+    assert summary(recording_id) == "## Decisions\n\n- Ship on Friday.\n"
+    assert name_of(recording_id) == ("Release plan", "summary")
+
+
+@pytest.mark.parametrize(
+    ("model", "effort", "asked"),
+    [
+        ("opus", None, ["--model", "opus"]),
+        (None, "xhigh", ["--effort", "xhigh"]),
+        ("haiku", "low", ["--model", "haiku", "--effort", "low"]),
+    ],
+)
+def test_claude_is_asked_for_the_model_and_the_effort_chosen_each_as_an_argument_of_its_own(
+    claude: FakeClaude, model: str | None, effort: str | None, asked: list[str]
+) -> None:
+    recording_id = recording()
+    settings.set_claude_model(model)
+    settings.set_claude_effort(effort)
+
+    assert summarizer.summarize(recording_id, SUMMARIZED, PROMPT) is True
+
+    assert claude.calls[0].args == [*CLAUDE_COMMAND, *asked]
+
+
+def test_devin_is_not_asked_for_claudes_model_or_effort(devin: FakeDevin) -> None:
+    recording_id = recording()
+    settings.set_claude_model("opus")
+    settings.set_claude_effort("high")
+
+    assert summarizer.summarize(recording_id, SUMMARIZED, PROMPT) is True
+
+    assert devin.calls[0].args[-2:] == ["--process-model", "in-process"]
+
+
+@pytest.mark.parametrize(
+    ("answer", "error"),
+    [
+        (
+            Answer(1, stdout="Not logged in · Please run /login\n"),
+            "claude exited with status 1: see Details",
+        ),
+        (
+            Answer(0, stdout="Title: Release plan\n\n"),
+            "Claude answered with an empty summary: see Details",
+        ),
+    ],
+)
+def test_a_claude_failure_fails_the_run_and_keeps_the_summary_before_it(
+    claude: FakeClaude, answer: Answer, error: str
+) -> None:
+    recording_id = recording()
+    (store.recording_dir(recording_id) / "summary.md").write_text("The summary before.\n")
+    claude.answer = answer
+
+    assert summarizer.summarize(recording_id, SUMMARIZED, PROMPT) is False
+
+    run = runs(recording_id)[0]
+    assert (run["status"], run["error"], run["details"]) == ("failed", error, "run-0.log")
+    assert summary(recording_id) == "The summary before.\n"
+    assert failed_in_status(recording_id) == ["summarize"]
+
+
+def test_a_missing_claude_says_how_to_get_it(claude: FakeClaude) -> None:
+    recording_id = recording()
+    claude.missing = True
+
+    assert summarizer.summarize(recording_id, SUMMARIZED, PROMPT) is False
+
+    assert runs(recording_id)[0]["error"] == (
+        "claude not found: install Claude Code with "
+        "`curl -fsSL https://claude.ai/install.sh | bash`, then log in with `claude auth login`"
+    )
+
+
+def test_a_claude_that_never_answers_is_stopped_and_fails_the_run(claude: FakeClaude) -> None:
+    recording_id = recording()
+    claude.hangs = True
+
+    assert summarizer.summarize(recording_id, SUMMARIZED, PROMPT) is False
+
+    assert runs(recording_id)[0]["error"] == (
+        "Claude gave no answer in 15 minutes: see Details, then Retry"
+    )
+    log = (store.recording_dir(recording_id) / "run-0.log").read_text()
+    assert log.endswith("no answer in 900 s: stopped\n")
+    assert not claude.calls[0].cwd.exists()
+
+
+def test_the_log_holds_claudes_command_and_everything_it_said_but_not_the_prompt(
+    claude: FakeClaude,
+) -> None:
+    recording_id = recording()
+    claude.answer = Answer(1, stdout="partial\n", stderr="Error: boom\n")
+
+    summarizer.summarize(recording_id, SUMMARIZED, PROMPT)
+
+    log = (store.recording_dir(recording_id) / "run-0.log").read_text()
+    assert log == (
+        "$ claude -p --tools '' --strict-mcp-config --setting-sources '' --disallowedTools '*' "
+        "--permission-mode dontAsk --disable-slash-commands --no-session-persistence\n"
+        "partial\nError: boom\nexit status 1\n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("saved", "command"),
+    [(None, "devin"), ("devin", "devin"), ("claude", "claude"), ("codex", "devin")],
+)
+def test_the_summarizer_is_the_one_settings_choose_and_devin_until_they_choose_one_it_knows(
+    saved: str | None, command: str
+) -> None:
+    if saved is not None:
+        settings.set_summarizer(saved)
+
+    assert summarizer.chosen().command == command
+
+
+def test_settings_offer_the_devin_cli_then_claude_code_with_claudes_models_and_efforts() -> None:
+    assert [(tool.command, tool.title) for tool in summarizer.TOOLS] == [
+        ("devin", "Devin CLI"),
+        ("claude", "Claude Code"),
+    ]
+    assert summarizer.CLAUDE_MODELS == (
+        ("Claude's default", None),
+        ("Fable", "fable"),
+        ("Opus", "opus"),
+        ("Sonnet", "sonnet"),
+        ("Haiku", "haiku"),
+    )
+    assert summarizer.CLAUDE_EFFORTS == (
+        ("Claude's default", None),
+        ("Low", "low"),
+        ("Medium", "medium"),
+        ("High", "high"),
+        ("Extra high", "xhigh"),
+        ("Max", "max"),
+    )
 
 
 def test_presets_are_the_built_in_ones_then_the_saved_ones() -> None:
