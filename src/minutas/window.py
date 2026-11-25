@@ -13,7 +13,7 @@ import contextlib
 import shutil
 import sys
 import tempfile
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from datetime import UTC, datetime
 from functools import partial
 from importlib.metadata import metadata
@@ -25,7 +25,8 @@ from keyring.errors import KeyringError
 
 gi.require_version("Adw", "1")
 gi.require_version("Gtk", "4.0")
-from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402 - after the versions are chosen
+gi.require_version("Pango", "1.0")
+from gi.repository import Adw, Gio, GLib, Gtk, Pango  # noqa: E402 - after the versions are chosen
 
 from minutas import (  # noqa: E402
     github,
@@ -495,11 +496,27 @@ def settings_of(widget: Gtk.Widget) -> SettingsDialog:
     return cast("SettingsDialog", widget.get_ancestor(SettingsDialog))
 
 
+def wrap_title_between_words(row: Adw.ActionRow) -> None:
+    """libadwaita lets a row's title break inside a word; a player beside it split "Microphone"."""
+
+    def labels(widget: Gtk.Widget) -> Iterator[Gtk.Label]:
+        child = widget.get_first_child()
+        while child is not None:
+            if isinstance(child, Gtk.Label):
+                yield child
+            yield from labels(child)
+            child = child.get_next_sibling()
+
+    title = next(label for label in labels(row) if label.has_css_class("title"))
+    title.set_wrap_mode(Pango.WrapMode.WORD)
+
+
 class TrackControls:
     """A track's row, or the mix's: Play, which becomes the player, and Save a copy."""
 
     def __init__(self, title: str, key: str, recording_id: str, window: "HistoryWindow") -> None:
         self.row = text_row(title)
+        wrap_title_between_words(self.row)
         self.play = button("Play", window.play, recording_id, key)
         self.pause = Gtk.Button(valign=Gtk.Align.CENTER, css_classes=["flat"])
         self.pause.connect("clicked", window.toggle_pause, recording_id, key)

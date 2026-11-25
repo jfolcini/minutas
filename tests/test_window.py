@@ -1259,6 +1259,34 @@ def test_play_puts_a_player_for_the_track_in_its_row(
     assert lines(row) == expanded_to
 
 
+def test_a_track_title_wraps_only_between_words(
+    history: Callable[[], window.HistoryWindow],
+) -> None:
+    recording()
+    shown = history()
+    expand(shown)
+    tracks = shown.details[FIRST].tracks
+
+    def title(key: str) -> Gtk.Label:
+        row = tracks[key].row
+        return next(
+            label
+            for label in descendants(row)
+            if isinstance(label, Gtk.Label) and label.get_text() == row.get_title()
+        )
+
+    def widths(key: str) -> tuple[int, int]:
+        minimum, natural, *_ = title(key).measure(Gtk.Orientation.HORIZONTAL, -1)
+        return minimum, natural
+
+    # However narrow a player beside it leaves the title, "Microphone" keeps its whole width,
+    # and "Microphone and call" may break only between its words.
+    word = widths("mic.opus")[1]
+    assert widths("mic.opus") == (word, word)
+    assert widths(window_view.MIXED)[0] == word
+    assert widths(window_view.MIXED)[1] > word
+
+
 def test_the_player_pauses_seeks_and_changes_speed_where_it_is(
     history: Callable[[], window.HistoryWindow], desktop_calls: Desktop
 ) -> None:
