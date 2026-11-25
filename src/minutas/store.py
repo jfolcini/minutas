@@ -59,6 +59,9 @@ class Recording(TypedDict):
     discarded: NotRequired[bool]
     # It was stopped and then recorded into again: Discard would take what it held before.
     continued: NotRequired[bool]
+    # There when echo cancellation was on as it started: whether its mic track is PipeWire's
+    # echo-cancelled mic, or the plain one because that did not start.
+    echo_cancelled: NotRequired[bool]
 
 
 class Segment(TypedDict):
@@ -253,6 +256,13 @@ def mark_discarded(recording_id: str, *, discarded: bool = True) -> None:
     with lock():
         recording = load_recording(recording_id)
         recording["discarded"] = discarded
+        write_json(recording_dir(recording_id) / "recording.json", recording)
+
+
+def mark_echo_cancelled(recording_id: str, *, echo_cancelled: bool) -> None:
+    with lock():
+        recording = load_recording(recording_id)
+        recording["echo_cancelled"] = echo_cancelled
         write_json(recording_dir(recording_id) / "recording.json", recording)
 
 

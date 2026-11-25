@@ -216,8 +216,9 @@ export default class MinutasExtension extends Extension {
     _startRecording() {
         this._run(['record', 'start'], "Couldn't start recording",
             // CRITICAL shows through Do Not Disturb, which is often on in exactly the
-            // meetings this reminder is for; it stays up until dismissed.
-            () => this._notify("Tell participants you're recording", null, null,
+            // meetings this reminder is for; it stays up until dismissed. A warning, such as echo
+            // cancellation not starting, comes with it while there is still time to act on it.
+            warning => this._notify("Tell participants you're recording", warning || null, null,
                 MessageTray.Urgency.CRITICAL));
     }
 
@@ -309,7 +310,7 @@ export default class MinutasExtension extends Extension {
                 return;
             }
             if (proc.get_successful())
-                onSuccess?.();
+                onSuccess?.(lastLine(stderr));
             else
                 this._notify(failureTitle, lastLine(stderr) || `minutas ${args.join(' ')} exited with an error`, null);
         });

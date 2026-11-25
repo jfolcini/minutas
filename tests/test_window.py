@@ -3925,6 +3925,30 @@ def test_saving_on_close_warns_what_goes_and_closes_once_accepted(
     assert window.AUDIO_LIMITS_SAVED in texts(shown)
 
 
+@pytest.mark.usefixtures("agaric_settings")
+@pytest.mark.parametrize("saved", [True, False])
+def test_echo_cancellation_is_a_switch_ahead_of_the_other_settings_saved_as_it_is_flipped(
+    history: Callable[[], window.HistoryWindow], *, saved: bool
+) -> None:
+    settings.set_echo_cancel(on=saved)
+    shown = history()
+    dialog = open_settings(shown)
+
+    groups = [group for group in descendants(dialog) if isinstance(group, Adw.PreferencesGroup)]
+    assert [group.get_title() for group in groups[:2]] == ["Recording", "Transcription"]
+    [switch] = [row for row in descendants(groups[0]) if isinstance(row, Adw.SwitchRow)]
+    assert (switch.get_title(), switch.get_subtitle(), switch.get_active()) == (
+        "Echo cancellation",
+        window.ECHO_CANCEL_NOTE,
+        saved,
+    )
+
+    switch.set_active(not saved)
+
+    assert settings.echo_cancel() is not saved
+    dialog.close()
+
+
 def status_ids() -> list[object]:
     status = json.loads((store.data_dir() / "status.json").read_text())
     return [entry["id"] for entry in status["recent"]]

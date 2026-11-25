@@ -108,6 +108,10 @@ VOCABULARY_NOTE = (
     "to words your meetings use: a long list of common words can make them heard where they "
     "weren't said."
 )
+ECHO_CANCEL_NOTE = (
+    "For calls on speakers: records the microphone with the computer's sound taken out. "
+    "Applies from the next recording."
+)
 NEW_VOCABULARY_NOTE = "Its file then opens in the text editor: one word or phrase a line."
 VOCABULARY_TRASH_WARNING = (
     "Its file goes to the Trash, where it can be restored. Transcripts already written stay as "
@@ -324,6 +328,7 @@ class SettingsDialog(Adw.PreferencesDialog):
 
         page = Adw.PreferencesPage()
         for group in (
+            self.recording_group(window),
             self.transcription_group(window),
             summary,
             self.context_group(window),
@@ -354,6 +359,16 @@ class SettingsDialog(Adw.PreferencesDialog):
         self.recent.connect("notify::value", window.recent_chosen)
         group = Adw.PreferencesGroup(title="Top-bar menu")
         group.add(self.recent)
+        return group
+
+    def recording_group(self, window: "HistoryWindow") -> Adw.PreferencesGroup:
+        """Whether a recording takes the echo-cancelled mic."""
+        echo_cancel = Adw.SwitchRow(
+            title="Echo cancellation", subtitle=ECHO_CANCEL_NOTE, active=settings.echo_cancel()
+        )
+        echo_cancel.connect("notify::active", window.echo_cancel_switched)
+        group = Adw.PreferencesGroup(title="Recording")
+        group.add(echo_cancel)
         return group
 
     def transcription_group(self, window: "HistoryWindow") -> Adw.PreferencesGroup:
@@ -1491,6 +1506,9 @@ class HistoryWindow(Adw.ApplicationWindow):
             self.say(AUDIO_LIMITS_SAVED)
         else:
             dialog.add_toast(Adw.Toast(title=AUDIO_LIMITS_SAVED))
+
+    def echo_cancel_switched(self, row: Adw.SwitchRow, _property: object) -> None:
+        settings.set_echo_cancel(on=row.get_active())
 
     def recent_chosen(self, row: Adw.SpinRow, _property: object) -> None:
         settings.set_recent_in_menu(int(row.get_value()))
