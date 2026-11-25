@@ -30,6 +30,7 @@ CANCEL_SIGNAL = signal.SIGUSR1
 STOP_TRANSCRIBER = ["systemctl", "--user", "kill", f"--signal={CANCEL_SIGNAL.name}", UNIT]
 SPEECH_MISSING = "Speech environment not found; run install.sh"
 OUT_OF_MEMORY = "Transcription ran out of its memory limit"
+VOCABULARY_UNREADABLE = "Can't read the vocabulary {path}: fix it in Settings, or switch it off"
 # A runaway transcription is killed at its own limit instead of swapping the desktop to death,
 # and its run fails with OUT_OF_MEMORY. No MemoryHigh: below MemoryMax it throttles the process
 # so it never reaches the kill and the queue stalls behind it.
@@ -87,6 +88,13 @@ def vocabulary_names() -> list[str]:
     return settings.preset_names(vocabulary_dir(), ".txt")
 
 
+def vocabulary_words(file: Path) -> list[str]:
+    try:
+        return file.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        raise WorkerError(VOCABULARY_UNREADABLE.format(path=file)) from None
+
+
 def word_list(recording_id: str) -> list[str]:
     """The phrases the transcriber boosts, each once: the meeting's attendees, then the words of
     the glossary and of every other vocabulary used, in alphabetical order, but those deleted."""
@@ -94,7 +102,7 @@ def word_list(recording_id: str) -> list[str]:
     used = settings.vocabularies()
     names = [name for name in [settings.GLOSSARY, *vocabulary_names()] if name in used]
     files = [file for file in map(vocabulary_file, names) if file.is_file()]
-    listed = [line for file in files for line in file.read_text(encoding="utf-8").splitlines()]
+    listed = [line for file in files for line in vocabulary_words(file)]
     phrases = (phrase.strip() for phrase in [*attendees, *listed])
     return list(dict.fromkeys(phrase for phrase in phrases if phrase))
 
@@ -300,7 +308,10 @@ def transcribe(recording_id: str, index: int) -> Outcome:
     # environment's own with builds for Ubuntu's Python. -P keeps the file's own folder off the
     # path, where minutas.calendar would take the standard library's place.
     command = [str(python), "-P", transcriber.__file__, str(folder)]
-    words = word_list(recording_id)
+    try:
+        words = word_list(recording_id)
+    except WorkerError as error:
+        return failed(str(error))
     if words:
         (folder / WORDS).write_text("".join(f"{word}\n" for word in words), encoding="utf-8")
         command += ["--words", str(folder / WORDS)]

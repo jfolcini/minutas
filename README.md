@@ -92,7 +92,7 @@ A recording's ⋮ menu renames it or moves it to the Trash; its audio files can 
 Open them from the window's main menu or the top-bar menu. Every change is saved as you make it, except the audio limits, which wait for Save because they delete audio.
 
 <p>
-  <img src="docs/screenshots/settings.png" width="49%" alt="The Settings dialog: Transcription, Summary, Agaric, GitLab, GitHub, Audio limits and Top-bar menu">
+  <img src="docs/screenshots/settings.png" width="49%" alt="The Settings dialog: Transcription, Summary, Summary context, Agaric, GitLab, GitHub, Audio limits and Top-bar menu">
 </p>
 
 - **Transcription:** the vocabulary, one word or phrase a line, opened in your text editor. Most people need only this one; New… makes another, say for one client, and each one switched on is used from the next transcription.

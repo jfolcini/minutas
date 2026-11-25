@@ -538,6 +538,27 @@ def test_work_passes_the_words_of_every_vocabulary_used_each_once_in_a_stable_or
 
 
 @pytest.mark.usefixtures("speech", "sigterm")
+def test_work_fails_each_run_at_once_naming_a_vocabulary_it_cant_read_and_goes_on(
+    system: FakeSystem,
+) -> None:
+    first, second = recording(), recording(START + timedelta(hours=1))
+    put_runs(first, [queued_run(START)])
+    put_runs(second, [queued_run(START + timedelta(hours=1))])
+    write_vocabulary("Atlas", "")
+    worker.vocabulary_file("Atlas").write_bytes("Díaz\n".encode("latin-1"))
+    settings.set_vocabularies([settings.GLOSSARY, "Atlas"])
+
+    worker.work()
+
+    file = worker.vocabulary_file("Atlas")
+    said = f"Can't read the vocabulary {file}: fix it in Settings, or switch it off"
+    assert system.commands() == []
+    for recording_id in (first, second):
+        runs = store.load_runs(recording_id)
+        assert [(run["status"], run["error"]) for run in runs] == [("failed", said)]
+
+
+@pytest.mark.usefixtures("speech", "sigterm")
 def test_work_passes_no_word_list_with_every_vocabulary_switched_off(system: FakeSystem) -> None:
     recording_id = recording()
     put_runs(recording_id, [queued_run(START)])
