@@ -286,6 +286,7 @@ step_gh() {
     fi
     found="the PATH has gh ${BASH_REMATCH[0]}"
   fi
+  missing_tools+=(gh)
   report gh "$found; Publish to GitHub stays off until gh 2.45 or newer is installed: \`sudo apt install gh\`, or see https://cli.github.com"
 }
 
