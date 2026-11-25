@@ -82,6 +82,8 @@ class ActionView:
     prompt: str | None = None
     # The link of the newest run, which the dialog that asks for one starts from.
     link: str | None = None
+    # How much of what the running run is doing is done, from 0 to 1; None when none is running.
+    progress: float | None = None
 
 
 @dataclass(frozen=True)
@@ -239,6 +241,15 @@ def row(  # noqa: PLR0913 - each is a separate input to the row; all after track
     transcribing = None if transcription is None else IN_PROGRESS.get(transcription[1]["status"])
     if transcription is not None and transcribing is not None:
         transcribe = replace(transcribe, label="Cancel", disabled="", cancels=transcription[0])
+    if transcription is not None and transcription[1]["status"] == "running":
+        progress = transcription[1].get("progress")
+        transcribe = replace(
+            transcribe,
+            result=transcribe.result
+            if progress is None
+            else f"{progress['phase'].capitalize()} · {progress['percent']}%",
+            progress=0.0 if progress is None else progress["percent"] / 100,
+        )
 
     # Started from its menu of presets; its only button is Retry, after a run that did not end well.
     last_summary = last_result(runs, SUMMARIZE, "Not summarized", "", "")
