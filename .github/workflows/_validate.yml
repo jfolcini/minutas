@@ -7,9 +7,9 @@ name: Validate
 #                    the floor Python and the newest one, plus a leg on the lowest
 #                    versions pyproject.toml allows; on a PR, every changed line covered.
 #                    The history window's tests run it for real, on Ubuntu's GTK.
-#   - extension    — the GNOME Shell extension: ESLint, the TypeScript check, the gjs
-#                    unit tests and a headless GNOME Shell 46 smoke test, each the
-#                    command its `just ext` recipe runs.
+#   - extension    — the GNOME Shell extension: oxfmt, oxlint, the TypeScript check,
+#                    the vitest unit tests and a headless GNOME Shell 46 smoke test,
+#                    each the command its `just ext` recipe runs.
 #   - validate-all — one stable check name for branch protection; fails unless
 #                    every job above succeeded.
 
@@ -43,10 +43,10 @@ jobs:
       - name: Install the toolchain
         run: uv sync || { sleep 30; uv sync; }
 
-      # eslint needs the extension's node_modules; the extension job runs it.
+      # The extension's hooks need its node_modules; the extension job runs them.
       - name: prek, pre-commit stage
         env:
-          SKIP: eslint
+          SKIP: oxfmt,oxlint,vitest
         run: uv run prek run --all-files --show-diff-on-failure
 
       # no-commit-to-branch guards a local push; pytest is the `test` job.
@@ -195,14 +195,17 @@ jobs:
       - name: Install the Node tools
         run: npm ci
 
-      - name: ESLint
-        run: npx eslint .
+      - name: oxfmt
+        run: npx oxfmt --check .
+
+      - name: oxlint
+        run: npx oxlint --deny-warnings
 
       - name: Type-check (TypeScript checkJs)
         run: npx tsc -p .
 
-      - name: Unit tests (gjs)
-        run: gjs -m tests/status.test.js
+      - name: Unit tests (vitest)
+        run: npx vitest run
 
       # Keeps the Shell's log and the menu screenshots for the upload below.
       - name: Smoke test (headless GNOME Shell)

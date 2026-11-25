@@ -1,6 +1,6 @@
 # The GNOME Shell extension's recipes, run from the root as `just ext <recipe>`.
-# `setup` installs ESLint and TypeScript from package-lock.json; gjs, gnome-shell and
-# gnome-extensions come from the system (apt install gnome-shell gjs).
+# `setup` installs oxfmt, oxlint, TypeScript and vitest from package-lock.json;
+# gjs, gnome-shell and gnome-extensions come from the system (apt install gnome-shell gjs).
 
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
@@ -14,9 +14,14 @@ default:
 setup:
     npm ci
 
-# ESLint over the extension.
+# Format the extension in place.
+fmt:
+    npx oxfmt .
+
+# Is the extension formatted, and does oxlint pass?
 lint:
-    npx eslint .
+    npx oxfmt --check .
+    npx oxlint --deny-warnings
 
 # Type-check the Shell-free modules (TypeScript checkJs, strict).
 typecheck:
@@ -24,7 +29,7 @@ typecheck:
 
 # The unit tests of the Shell-free logic.
 test:
-    gjs -m tests/status.test.js
+    npx vitest run
 
 # Load and drive the extension in a headless GNOME Shell; an OUT_DIR argument keeps its logs and screenshots.
 smoke *ARGS:
