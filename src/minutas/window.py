@@ -42,7 +42,8 @@ APP_ID = "io.github.jfolcini.Minutas"
 MINUTAS = [sys.executable, "-m", "minutas"]
 TRASH_WARNING = (
     "Its folder goes to the Trash, with the audio, the transcript, the summary and the history "
-    "of its runs, and can be restored from there. What was published stays in Agaric and GitLab."
+    "of its runs, and can be restored from there. What was published stays in Agaric, GitLab "
+    "and GitHub."
 )
 DELETE_WARNING = (
     "Both tracks are deleted for good. The transcript and everything published stay. "
