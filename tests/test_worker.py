@@ -6,12 +6,14 @@ import signal
 import subprocess
 import sys
 import tracemalloc
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator, Iterator
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
-from typing import TextIO, cast
+from typing import Self, TextIO, cast
 
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 
 import minutas
 from minutas import store, transcriber, worker
@@ -51,10 +53,44 @@ def write_transcript(args: list[str], _: TextIO) -> int:
     return 0
 
 
+# A transcriber's stand-in: given its arguments and stderr file, it returns its exit status, or
+# yields the lines it prints on stdout and then returns it.
+Transcriber = Callable[[list[str], TextIO], int | Generator[str, None, int]]
+
+
+def line(phase: str, done: int, total: int) -> str:
+    """A line in which the transcriber says how far it has got."""
+    return json.dumps({"phase": phase, "done": done, "total": total}) + "\n"
+
+
+class FakeTranscriber:
+    """Stands in for the transcriber's subprocess.Popen: it runs as its stdout is read."""
+
+    def __init__(self, run: Transcriber, args: list[str], stderr: TextIO) -> None:
+        self.returncode: int | None = None
+        self.stdout = self.printed(run, args, stderr)
+
+    def printed(self, run: Transcriber, args: list[str], stderr: TextIO) -> Iterator[str]:
+        said = run(args, stderr)
+        if isinstance(said, int):
+            self.returncode = said
+        else:
+            self.returncode = yield from said
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        pass
+
+    def wait(self) -> int | None:
+        return self.returncode
+
+
 class FakeSystem:
-    """Stands in for subprocess.run: systemd-run answers from start_codes, one per call, then
-    keeps giving the last; systemctl answers kill_code; the transcriber is the transcribe
-    callable, given its stderr file."""
+    """Stands in for subprocess.run and subprocess.Popen: systemd-run answers from start_codes,
+    one per call, then keeps giving the last; systemctl answers kill_code; the transcriber is
+    the transcribe callable."""
 
     def __init__(self) -> None:
         self.calls: list[tuple[list[str], dict[str, object]]] = []
@@ -62,19 +98,20 @@ class FakeSystem:
         self.start_stderr = ""
         self.kill_code = 0
         self.killed_inside_the_store_lock: list[bool] = []
-        self.transcribe: Callable[[list[str], TextIO], int] = write_transcript
+        self.transcribe: Transcriber = write_transcript
 
     def __call__(self, args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         self.calls.append((args, kwargs))
         if args[0] == "systemctl":
             self.killed_inside_the_store_lock.append(store_lock_held())
             return subprocess.CompletedProcess(args, self.kill_code, "", "")
-        if args[0] == "systemd-run":
-            code = self.start_codes.pop(0) if len(self.start_codes) > 1 else self.start_codes[0]
-            return subprocess.CompletedProcess(args, code, "", self.start_stderr)
-        return subprocess.CompletedProcess(
-            args, self.transcribe(args, cast("TextIO", kwargs["stderr"]))
-        )
+        assert args[0] == "systemd-run"
+        code = self.start_codes.pop(0) if len(self.start_codes) > 1 else self.start_codes[0]
+        return subprocess.CompletedProcess(args, code, "", self.start_stderr)
+
+    def popen(self, args: list[str], **kwargs: object) -> FakeTranscriber:
+        self.calls.append((args, kwargs))
+        return FakeTranscriber(self.transcribe, args, cast("TextIO", kwargs["stderr"]))
 
     def commands(self) -> list[list[str]]:
         return [args for args, _ in self.calls]
@@ -116,6 +153,7 @@ class FakeTime:
 def system(monkeypatch: pytest.MonkeyPatch) -> FakeSystem:
     fake = FakeSystem()
     monkeypatch.setattr(subprocess, "run", fake)
+    monkeypatch.setattr(subprocess, "Popen", fake.popen)
     return fake
 
 
@@ -336,7 +374,7 @@ def test_work_transcribes_and_records_success(system: FakeSystem, tmp_path: Path
     ]
     kwargs = system.calls[0][1]
     assert kwargs["stdin"] == subprocess.DEVNULL
-    assert kwargs["stdout"] == subprocess.DEVNULL
+    assert kwargs["stdout"] == subprocess.PIPE
     assert seen == [("running", [])]
     assert store.load_runs(recording_id) == [
         {**QUEUED, "status": "succeeded", "details": "run-0.log", "output": "transcript.md"}
@@ -585,17 +623,21 @@ def test_the_worker_keeps_nothing_per_run(monkeypatch: pytest.MonkeyPatch) -> No
     traced_at = {20: 0, 60: 0, 100: 0}
     calls = 0
 
-    def failing(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+    def failing(_: list[str], stderr: TextIO) -> int:
         nonlocal calls
         calls += 1
         if calls in traced_at:
             # Empties the interpreter's free lists, whose blocks tracemalloc counts as in use.
             gc.collect()
             traced_at[calls] = tracemalloc.get_traced_memory()[0]
-        cast("TextIO", kwargs["stderr"]).write("transcribing turn 1 of 40\n" * 2_000 + "No luck\n")
-        return subprocess.CompletedProcess(args, 1)
+        stderr.write("transcribing turn 1 of 40\n" * 2_000 + "No luck\n")
+        return 1
 
-    monkeypatch.setattr(subprocess, "run", failing)
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda args, **kwargs: FakeTranscriber(failing, args, kwargs["stderr"]),
+    )
     # Only for speed: the store's own tests cover its writes reaching the disk.
     monkeypatch.setattr(os, "fsync", lambda _fd: None)
 
@@ -852,3 +894,205 @@ def test_cancel_leaves_a_run_that_has_ended(system: FakeSystem, status: str) -> 
 
     assert store.load_runs(recording_id) == [ended]
     assert system.kills() == []
+
+
+def transcribe_progress(recording_id: str) -> object:
+    status = json.loads((store.data_dir() / "status.json").read_text())
+    return next(entry for entry in status["recent"] if entry["id"] == recording_id)["progress"]
+
+
+@pytest.mark.usefixtures("speech", "sigterm")
+def test_work_records_how_far_the_transcriber_has_got_as_it_says_it(
+    system: FakeSystem, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recording_id = recording()
+    put_runs(recording_id, [queued_run(START)])
+    saved: list[object] = []
+    save_runs = store.save_runs
+
+    def spy(saved_id: str, runs: list[store.Run]) -> None:
+        saved.append(runs[0].get("progress"))
+        save_runs(saved_id, runs)
+
+    monkeypatch.setattr(store, "save_runs", spy)
+    seen: list[object] = []
+    mic = "finding speech on the microphone"
+
+    def transcriber(args: list[str], stderr: TextIO) -> Generator[str, None, int]:
+        # What a library prints is no progress.
+        yield "Loading the model\n"
+        yield line(mic, 0, 200)
+        seen.append(transcribe_progress(recording_id))
+        # Still 0%: nothing is written again.
+        yield line(mic, 1, 200)
+        yield line(mic, 2, 200)
+        seen.append(transcribe_progress(recording_id))
+        yield line("transcribing", 3, 3)
+        seen.append(transcribe_progress(recording_id))
+        return write_transcript(args, stderr)
+
+    system.transcribe = transcriber
+
+    worker.work()
+
+    assert seen == [
+        {"phase": mic, "percent": 0},
+        {"phase": mic, "percent": 1},
+        {"phase": "transcribing", "percent": 100},
+    ]
+    # Claimed, each new phase or percent, and ended without it.
+    assert saved == [
+        None,
+        {"phase": mic, "percent": 0},
+        {"phase": mic, "percent": 1},
+        {"phase": "transcribing", "percent": 100},
+        None,
+    ]
+    assert store.load_runs(recording_id) == [
+        {
+            **QUEUED,
+            "queued_at": START.isoformat(),
+            "status": "succeeded",
+            "details": "run-0.log",
+            "output": "transcript.md",
+        }
+    ]
+    assert transcribe_progress(recording_id) is None
+
+
+@pytest.mark.usefixtures("speech", "sigterm")
+def test_progress_said_after_a_cancel_leaves_the_run_cancelled(system: FakeSystem) -> None:
+    recording_id = recording()
+    put_runs(recording_id, [queued_run(START)])
+
+    def cancelled_midway(_: list[str], stderr: TextIO) -> Generator[str, None, int]:
+        yield line("transcribing", 1, 4)
+        stderr.write("transcribing turn 1 of 4\n")
+        stderr.flush()
+        worker.cancel(recording_id, 0)
+        # Already on its way when the signal came.
+        yield line("transcribing", 2, 4)
+        return -signal.SIGUSR1
+
+    system.transcribe = cancelled_midway
+
+    worker.work()
+
+    assert store.load_runs(recording_id) == [
+        {**QUEUED, "queued_at": START.isoformat(), "status": "cancelled", "details": "run-0.log"}
+    ]
+    assert transcribe_progress(recording_id) is None
+
+
+@pytest.mark.usefixtures("speech", "sigterm")
+def test_sigterm_while_the_transcriber_says_how_far_it_has_got_fails_the_run(
+    system: FakeSystem,
+) -> None:
+    recording_id = recording()
+    put_runs(recording_id, [queued_run(START)])
+
+    def stopped_by_systemd(_: list[str], _stderr: TextIO) -> Generator[str, None, int]:
+        yield line("identifying speakers", 1, 4)
+        os.kill(os.getpid(), signal.SIGTERM)
+        yield line("identifying speakers", 2, 4)
+        return 0
+
+    system.transcribe = stopped_by_systemd
+
+    worker.work()
+
+    assert store.load_runs(recording_id) == [
+        {
+            **QUEUED,
+            "queued_at": START.isoformat(),
+            "status": "failed",
+            "error": "interrupted",
+            "details": "run-0.log",
+        }
+    ]
+    assert transcribe_progress(recording_id) is None
+
+
+# Stands in for the transcriber: a library's output that is no UTF-8, its progress, and an empty
+# transcript.
+PRINTING = """\
+import sys
+from pathlib import Path
+
+sys.stdout.buffer.write(b"\\xff\\xfe from a library\\n")
+sys.stdout.buffer.write(b'{"phase": "transcribing", "done": 1, "total": 2}\\n')
+sys.stdout.flush()
+Path(sys.argv[1], "transcript.json").write_text("[]")
+"""
+
+
+@pytest.mark.usefixtures("sigterm")
+def test_the_transcribers_progress_reaches_its_run_whatever_else_it_prints(
+    speech: FakeSpeechPython, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script = tmp_path / "transcriber.py"
+    script.write_text(PRINTING)
+    monkeypatch.setattr(transcriber, "__file__", str(script))
+    speech.path.unlink()
+    speech.path.symlink_to(sys.executable)
+    recording_id = recording()
+    put_runs(recording_id, [queued_run(START)])
+    saved: list[object] = []
+    save_runs = store.save_runs
+
+    def spy(saved_id: str, runs: list[store.Run]) -> None:
+        saved.append(runs[0].get("progress"))
+        save_runs(saved_id, runs)
+
+    monkeypatch.setattr(store, "save_runs", spy)
+
+    worker.work()
+
+    assert saved == [None, {"phase": "transcribing", "percent": 50}, None]
+    assert [run["status"] for run in store.load_runs(recording_id)] == ["succeeded"]
+
+
+@pytest.mark.parametrize(
+    "said",
+    [
+        "Loading the model\n",
+        "\n",
+        "[1, 2]\n",
+        '{"phase": "dreaming", "done": 1, "total": 2}\n',
+        '{"phase": "transcribing", "done": 3, "total": 2}\n',
+        '{"phase": "transcribing", "done": -1, "total": 2}\n',
+        '{"phase": "transcribing", "done": 0, "total": 0}\n',
+        '{"phase": "transcribing", "done": 1.5, "total": 2}\n',
+        '{"phase": "transcribing", "done": true, "total": 2}\n',
+        '{"phase": "transcribing", "done": 1}\n',
+        '{"phase": "transcribing", "done": 1, "total": ' + "9" * 5000 + "}\n",
+    ],
+)
+def test_a_line_that_is_not_progress_says_none(said: str) -> None:
+    assert worker.read_progress(said) is None
+
+
+@given(
+    st.sampled_from(transcriber.PHASES),
+    st.integers(min_value=1, max_value=10**6).flatmap(
+        lambda total: st.tuples(st.integers(min_value=0, max_value=total), st.just(total))
+    ),
+)
+def test_progress_is_the_phase_and_the_whole_percent_done(
+    phase: str, counts: tuple[int, int]
+) -> None:
+    done, total = counts
+
+    progress = worker.read_progress(line(phase, done, total))
+
+    assert progress == {"phase": phase, "percent": done * 100 // total}
+    assert progress is not None
+    assert 0 <= progress["percent"] <= 100
+    assert (progress["percent"] == 100) is (done == total)
+
+
+@given(st.text())
+def test_any_line_reads_as_progress_or_nothing(said: str) -> None:
+    progress = worker.read_progress(said)
+
+    assert progress is None or progress["phase"] in transcriber.PHASES

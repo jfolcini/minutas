@@ -1062,6 +1062,36 @@ def test_cancel_stops_the_running_transcription(
     assert buttons(row)["Delete now"].get_tooltip_text() is None
 
 
+def test_a_running_transcription_shows_how_far_it_has_got_until_it_ends(
+    history: Callable[[], window.HistoryWindow],
+) -> None:
+    progress = store.Progress(phase="identifying speakers", percent=40)
+    recording([run("transcribe", "running", progress=progress)])
+    shown = history()
+    row = expand(shown)
+    controls = shown.details[FIRST]
+
+    assert ("Transcribe", "Identifying speakers · 40%") in lines(row)
+    assert row.get_subtitle() == f"{SUBTITLE} · Identifying speakers · 40%"
+    assert controls.transcribe.progress.get_visible() is True
+    assert controls.transcribe.progress.get_fraction() == 0.4
+    assert [
+        action.progress.get_visible()
+        for action in (controls.summarize, controls.publish, controls.publish_gitlab)
+    ] == [False] * 3
+
+    # The worker says it got further, then ends the run.
+    store.save_runs(FIRST, [run("transcribe", "running", progress={**progress, "percent": 75})])
+    store.write_status()
+    wait_until(lambda: ("Transcribe", "Identifying speakers · 75%") in lines(row))
+    assert controls.transcribe.progress.get_fraction() == 0.75
+    assert row.get_subtitle() == f"{SUBTITLE} · Identifying speakers · 75%"
+    store.save_runs(FIRST, [run("transcribe", "succeeded", output="transcript.md")])
+    store.write_status()
+    wait_until(lambda: ("Transcribe", "Succeeded") in lines(row))
+    assert controls.transcribe.progress.get_visible() is False
+
+
 def test_outputs_and_the_folder_open_in_their_default_apps(
     history: Callable[[], window.HistoryWindow], desktop_calls: Desktop
 ) -> None:
