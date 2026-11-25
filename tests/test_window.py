@@ -206,6 +206,24 @@ def expand(shown: window.HistoryWindow, recording_id: str = FIRST) -> window.Rec
     return row
 
 
+def row_menu(shown: window.HistoryWindow, recording_id: str = FIRST) -> list[str]:
+    model = shown.rows[recording_id].menu.get_menu_model()
+    assert model is not None
+    return list(menu_entries(model))
+
+
+def choose_from_row_menu(
+    shown: window.HistoryWindow, label: str, recording_id: str = FIRST
+) -> None:
+    """Picks an item of the menu on the recording's own line, as a click on it would."""
+    menu = shown.rows[recording_id].menu
+    model = menu.get_menu_model()
+    assert model is not None
+    action, target = menu_entries(model)[label]
+    assert menu.activate_action(action, target) is True
+    settle()
+
+
 SAID = [
     store.Segment(start=4.0, end=9.0, speaker="Speaker 1", text="Arrancamos."),
     store.Segment(start=11.0, end=14.0, speaker="Me", text="Dale."),
@@ -442,11 +460,25 @@ def agaric_settings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> FakeSett
     return fake
 
 
+def store_lock_held() -> bool:
+    with (store.data_dir() / "store.lock").open("a") as file:
+        try:
+            fcntl.flock(file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+    return False
+
+
 class Desktop:
     """Stands in for what GTK would hand to the desktop: files and links to open, a place to
-    save a copy, a track to play. Nothing is opened, asked or played."""
+    save a copy, a track to play, a folder to move to the Trash. Nothing is opened, asked or
+    played, and the desktop's Trash is never touched: GLib reads XDG_DATA_HOME once, before
+    any test sets it, so a real trash would land in the real one."""
 
-    def __init__(self) -> None:
+    def __init__(self, trash: Path) -> None:
+        self.trash_into: Path | GLib.Error = trash
+        # Each folder moved to the Trash, and whether the store lock was held meanwhile.
+        self.trashed: list[tuple[str | None, bool]] = []
         self.opened: list[str | None] = []
         self.open_error: GLib.Error | None = None
         self.save_as: Path | GLib.Error = DISMISSED
@@ -515,6 +547,15 @@ class Desktop:
         assert playing is False
         self.stopped.append(path_of(stream.get_file()))
 
+    def trash(self, file: Gio.File, _cancellable: None) -> bool:
+        self.trashed.append((path_of(file), store_lock_held()))
+        if isinstance(self.trash_into, GLib.Error):
+            raise self.trash_into
+        self.trash_into.mkdir(exist_ok=True)
+        folder = Path(str(path_of(file)))
+        folder.rename(self.trash_into / folder.name)
+        return True
+
 
 def path_of(file: Gio.File | None) -> str | None:
     assert file is not None
@@ -535,8 +576,8 @@ def handed_to(fake: Desktop, name: str) -> Callable[..., object]:
 
 
 @pytest.fixture
-def desktop_calls(monkeypatch: pytest.MonkeyPatch) -> Desktop:
-    fake = Desktop()
+def desktop_calls(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Desktop:
+    fake = Desktop(tmp_path / "Trash")
     for gtk_class, name in (
         (Gtk.FileLauncher, "launch"),
         (Gtk.FileLauncher, "launch_finish"),
@@ -548,6 +589,7 @@ def desktop_calls(monkeypatch: pytest.MonkeyPatch) -> Desktop:
         (Gtk.FileDialog, "open_finish"),
         (Gtk.MediaStream, "play"),
         (Gtk.MediaStream, "set_playing"),
+        (Gio.File, "trash"),
     ):
         monkeypatch.setattr(gtk_class, name, handed_to(fake, name))
     return fake
@@ -641,7 +683,7 @@ def test_the_recordings_are_read_inside_the_store_lock(monkeypatch: pytest.Monke
     assert held == [True]
 
 
-def test_a_row_expands_to_its_name_its_tracks_and_its_actions(
+def test_a_row_has_its_menu_on_the_line_it_shows_collapsed_and_expands_to_the_rest(
     history: Callable[[], window.HistoryWindow],
 ) -> None:
     recording()
@@ -650,12 +692,13 @@ def test_a_row_expands_to_its_name_its_tracks_and_its_actions(
 
     # Built only when the row is expanded: most rows never are.
     assert lines(row) == [("Meeting", SUBTITLE)]
+    assert row_menu(shown) == ["Rename…", "Move to Trash…"]
+    assert row.menu.get_tooltip_text() == "Recording Menu"
 
     expand(shown)
 
     assert lines(row) == [
         ("Meeting", SUBTITLE),
-        ("Meeting", "Default name"),
         ("Microphone", ""),
         ("Call", ""),
         ("Audio files", ""),
@@ -665,7 +708,6 @@ def test_a_row_expands_to_its_name_its_tracks_and_its_actions(
         ("Publish to GitLab", "Not published"),
     ]
     assert list(buttons(row)) == [
-        "Edit",
         "Play",
         "Save a copy",
         "Open folder",
@@ -685,22 +727,34 @@ def test_names_and_errors_are_shown_as_written(history: Callable[[], window.Hist
     row = expand(shown)
 
     # Shown as markup, GTK would refuse the first and swallow the tag of the second.
-    assert texts(row).count("<R&D>") == 2
+    assert texts(row).count("<R&D>") == 1
     assert f"Failed: {error}" in texts(row)
 
 
-def test_edit_keeps_the_typed_name(history: Callable[[], window.HistoryWindow]) -> None:
-    recording()
-    store.write_status()
-    shown = history()
-    row = expand(shown)
-
-    press(row, "Edit")
+def rename_dialog(shown: window.HistoryWindow) -> tuple[Adw.AlertDialog, Gtk.Entry]:
+    choose_from_row_menu(shown, "Rename…")
     dialog = open_dialog(shown)
     assert isinstance(dialog, Adw.AlertDialog)
-    assert dialog.get_heading() == "Name"
     [entry] = [widget for widget in descendants(dialog) if isinstance(widget, Gtk.Entry)]
-    assert entry.get_text() == "Meeting"
+    return dialog, entry
+
+
+def test_rename_keeps_the_typed_name_and_says_where_the_name_came_from(
+    history: Callable[[], window.HistoryWindow],
+) -> None:
+    recording()
+    store.set_calendar_event(FIRST, "Weekly", [])
+    store.write_status()
+    shown = history()
+    row = shown.rows[FIRST]
+
+    dialog, entry = rename_dialog(shown)
+    assert dialog.get_heading() == "Rename"
+    assert dialog.get_body() == (
+        "From the calendar event. "
+        "A typed name is kept for good, and the next Publish to Agaric applies it."
+    )
+    assert entry.get_text() == "Weekly"
     entry.set_text("  Weekly\tsync ")
     press(dialog, "Save")
 
@@ -709,20 +763,22 @@ def test_edit_keeps_the_typed_name(history: Callable[[], window.HistoryWindow]) 
     # The top-bar menu reads the name from status.json, and so does this window.
     assert status_names() == ["Weekly sync"]
     wait_until(lambda: row.get_title() == "Weekly sync")
-    assert lines(row)[:2] == [("Weekly sync", SUBTITLE), ("Weekly sync", "Typed name")]
+    # Renaming never expands or collapses the row.
+    assert row.get_expanded() is False
+    dialog, entry = rename_dialog(shown)
+    assert dialog.get_body().startswith("Typed name. ")
+    assert entry.get_text() == "Weekly sync"
+    press(dialog, "Cancel")
 
 
 @pytest.mark.parametrize(("typed", "answer"), [("Weekly sync", "Cancel"), (" ", "Save")])
-def test_edit_changes_nothing_when_cancelled_or_left_empty(
+def test_rename_changes_nothing_when_cancelled_or_left_empty(
     history: Callable[[], window.HistoryWindow], typed: str, answer: str
 ) -> None:
     recording()
     shown = history()
-    row = expand(shown)
 
-    press(row, "Edit")
-    dialog = open_dialog(shown)
-    [entry] = [widget for widget in descendants(dialog) if isinstance(widget, Gtk.Entry)]
+    dialog, entry = rename_dialog(shown)
     entry.set_text(typed)
     press(dialog, answer)
 
@@ -740,7 +796,7 @@ def test_the_speakers_sit_between_the_transcription_and_the_summary(
 
     row = expand(shown)
 
-    assert lines(row)[5:] == [
+    assert lines(row)[4:] == [
         ("Transcribe", "Succeeded"),
         ("Speaker 1", "Ana Díaz"),
         ("Speaker 2", ""),
@@ -850,7 +906,7 @@ def test_the_speakers_follow_each_transcription(
     recording()
     shown = history()
     row = expand(shown)
-    assert lines(row)[5:] == [
+    assert lines(row)[4:] == [
         ("Transcribe", "Not run yet"),
         ("Summarize", "Not summarized"),
         ("Publish to Agaric", "Not published"),
@@ -860,7 +916,7 @@ def test_the_speakers_follow_each_transcription(
     transcribe(SAID)
 
     wait_until(lambda: ("Speaker 2", "") in lines(row))
-    assert lines(row)[5:] == [
+    assert lines(row)[4:] == [
         ("Transcribe", "Succeeded"),
         ("Speaker 1", ""),
         ("Speaker 2", ""),
@@ -873,7 +929,7 @@ def test_the_speakers_follow_each_transcription(
     transcribe(SAID[:2])
 
     wait_until(lambda: ("Speaker 2", "") not in lines(row))
-    assert lines(row)[5:] == [
+    assert lines(row)[4:] == [
         ("Transcribe", "Succeeded"),
         ("Speaker 1", ""),
         ("Summarize", "Not summarized"),
@@ -1117,7 +1173,7 @@ def test_delete_now_removes_the_audio_once_confirmed(
         "transcript.md",
     ]
     # The entry and its output stay; what needs the audio is off, and says why.
-    assert lines(row)[2:6] == [
+    assert lines(row)[1:5] == [
         ("Microphone", "Deleted"),
         ("Call", "Deleted"),
         ("Audio files", ""),
@@ -1147,6 +1203,139 @@ def test_delete_now_keeps_the_audio_when_not_confirmed(
 
     assert store.holds_audio(FIRST) is True
     assert buttons(row)["Delete now"].get_sensitive() is True
+
+
+def trash_dialog(shown: window.HistoryWindow) -> Adw.AlertDialog:
+    choose_from_row_menu(shown, "Move to Trash…")
+    dialog = open_dialog(shown)
+    assert isinstance(dialog, Adw.AlertDialog)
+    return dialog
+
+
+def test_move_to_trash_sends_the_whole_recording_there_once_confirmed(
+    history: Callable[[], window.HistoryWindow], desktop_calls: Desktop, tmp_path: Path
+) -> None:
+    transcribed()
+    later = recording(started=START + timedelta(hours=1))
+    store.write_status()
+    folder = store.recording_dir(FIRST)
+    shown = history()
+    expand(shown)
+    buttons(shown.details[FIRST].tracks["mic.opus"].row)["Play"].emit("clicked")
+    held = sorted(path.name for path in folder.iterdir())
+
+    dialog = trash_dialog(shown)
+    assert dialog.get_heading() == "Move the recording to the Trash?"
+    assert dialog.get_body() == window.TRASH_WARNING
+    assert desktop_calls.trashed == []
+    press(dialog, "Move to Trash")
+
+    # Inside the store lock, where the worker cannot take a run for it meanwhile.
+    assert desktop_calls.trashed == [(str(folder), True)]
+    assert folder.exists() is False
+    assert sorted(path.name for path in (tmp_path / "Trash" / FIRST).iterdir()) == held
+    # What was playing stopped first.
+    assert desktop_calls.stopped == [str(folder / "mic.opus")]
+    assert list(shown.rows) == [later]
+    assert shown.details == {}
+    # The top-bar menu drops it too.
+    assert status_names() == ["Meeting"]
+
+
+def test_move_to_trash_keeps_the_recording_when_not_confirmed(
+    history: Callable[[], window.HistoryWindow], desktop_calls: Desktop
+) -> None:
+    recording()
+    shown = history()
+
+    press(trash_dialog(shown), "Cancel")
+
+    assert desktop_calls.trashed == []
+    assert store.is_recording(FIRST) is True
+    assert list(shown.rows) == [FIRST]
+
+
+@pytest.mark.parametrize("status", ["queued", "running"])
+def test_move_to_trash_refuses_while_a_transcription_waits_or_runs(
+    history: Callable[[], window.HistoryWindow], desktop_calls: Desktop, status: str
+) -> None:
+    recording([run("transcribe", status)])
+    shown = history()
+
+    choose_from_row_menu(shown, "Move to Trash…")
+
+    assert shown.get_visible_dialog() is None
+    assert "Cancel the transcription first" in texts(shown)
+    assert desktop_calls.trashed == []
+    assert store.is_recording(FIRST) is True
+
+
+def test_move_to_trash_refuses_while_recording(
+    history: Callable[[], window.HistoryWindow], desktop_calls: Desktop
+) -> None:
+    store.create_recording(START)
+    shown = history()
+
+    choose_from_row_menu(shown, "Move to Trash…")
+
+    assert shown.get_visible_dialog() is None
+    assert "Still recording" in texts(shown)
+    assert desktop_calls.trashed == []
+
+
+def test_move_to_trash_refuses_while_the_window_publishes_it(
+    history: Callable[[], window.HistoryWindow], desktop_calls: Desktop, publish: FakePublish
+) -> None:
+    recording()
+    publish.will(run("publish_agaric", "succeeded", output="agaric://page/01HX"))
+    shown = history()
+    row = expand(shown)
+    press(row, "Publish")
+
+    choose_from_row_menu(shown, "Move to Trash…")
+
+    assert shown.get_visible_dialog() is None
+    assert "Publish to Agaric is still running" in texts(shown)
+    assert desktop_calls.trashed == []
+    wait_until(lambda: not shown.running[window.PUBLISH])
+    assert store.is_recording(FIRST) is True
+
+
+def test_move_to_trash_asks_again_once_confirmed(
+    history: Callable[[], window.HistoryWindow], desktop_calls: Desktop
+) -> None:
+    recording()
+    shown = history()
+    dialog = trash_dialog(shown)
+
+    # Queued by another process while the dialog was open, not yet shown.
+    store.save_runs(FIRST, [run("transcribe", "queued")])
+    press(dialog, "Move to Trash")
+
+    assert "Cancel the transcription first" in texts(shown)
+    assert desktop_calls.trashed == []
+    assert store.is_recording(FIRST) is True
+
+
+def test_a_trash_that_fails_says_why_and_deletes_nothing(
+    history: Callable[[], window.HistoryWindow], desktop_calls: Desktop
+) -> None:
+    recording()
+    store.write_status()
+    desktop_calls.trash_into = GLib.Error(
+        "Unable to find or create trash directory",
+        "g-io-error-quark",
+        Gio.IOErrorEnum.NOT_SUPPORTED,
+    )
+    shown = history()
+
+    press(trash_dialog(shown), "Move to Trash")
+
+    assert desktop_calls.trashed == [(str(store.recording_dir(FIRST)), True)]
+    assert "Can't move it to the Trash: Unable to find or create trash directory" in texts(shown)
+    assert store.holds_audio(FIRST) is True
+    assert list(shown.rows) == [FIRST]
+    assert status_names() == ["Meeting"]
 
 
 def test_publish_runs_the_command_and_shows_its_result(
@@ -2280,14 +2469,14 @@ def test_opening_the_window_deletes_the_audio_over_the_limits(
 
     assert [store.holds_audio(one) for one in (old, FIRST, untranscribed)] == [False, True, True]
     # As after Delete now; and the age limit says when it takes what is left.
-    assert lines(expand(shown, old))[2:6] == [
+    assert lines(expand(shown, old))[1:5] == [
         ("Microphone", "Deleted"),
         ("Call", "Deleted"),
         ("Audio files", ""),
         ("Transcribe", "Succeeded"),
     ]
-    assert lines(expand(shown))[4] == ("Audio files", "Kept until 2026-12-18 13:05")
-    assert lines(expand(shown, untranscribed))[4] == ("Audio files", "")
+    assert lines(expand(shown))[3] == ("Audio files", "Kept until 2026-12-18 13:05")
+    assert lines(expand(shown, untranscribed))[3] == ("Audio files", "")
 
 
 @pytest.mark.parametrize(
@@ -2370,8 +2559,8 @@ def test_saving_audio_limits_says_what_goes_and_takes_it_once_accepted(
     # Saved: nothing is left to save, or to ask about on closing.
     assert (buttons(dialog.audio)["Save"].get_sensitive(), dialog.get_can_close()) == (False, True)
     dialog.close()
-    assert lines(expand(shown, ten_days_old))[2] == ("Microphone", "Deleted")
-    assert lines(expand(shown))[4] == ("Audio files", "Kept until 2026-11-25 13:05")
+    assert lines(expand(shown, ten_days_old))[1] == ("Microphone", "Deleted")
+    assert lines(expand(shown))[3] == ("Audio files", "Kept until 2026-11-25 13:05")
 
 
 @pytest.mark.usefixtures("agaric_settings")
@@ -2589,7 +2778,8 @@ def test_a_row_that_goes_takes_everything_it_showed_with_it(
     # Everything that hangs a handler on the row's widgets, dialogs included.
     buttons(shown.details[FIRST].tracks["mic.opus"].row)["Play"].emit("clicked")
     for label, answer in (
-        ("Edit", "Cancel"),
+        ("Rename…", "Cancel"),
+        ("Move to Trash…", "Cancel"),
         ("Delete now", "Cancel"),
         ("Details", None),
         ("Custom name…", "Cancel"),
@@ -2597,6 +2787,8 @@ def test_a_row_that_goes_takes_everything_it_showed_with_it(
     ):
         if label == "Custom name…":
             choose(shown, pickers(row)["Speaker 2"], label)
+        elif label in {"Rename…", "Move to Trash…"}:
+            choose_from_row_menu(shown, label)
         else:
             press(row, label)
         dialog = open_dialog(shown)
