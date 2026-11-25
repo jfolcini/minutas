@@ -519,28 +519,31 @@ def test_extension_without_gnome_shell_stops_the_script(sandbox: Sandbox) -> Non
     assert not extension_dir(sandbox).exists()
 
 
-# --- Devin CLI ---------------------------------------------------------------------------------
+# --- Summarizer --------------------------------------------------------------------------------
 
 
-def test_devin_on_the_path_is_ok(sandbox: Sandbox) -> None:
-    sandbox.fake("devin")
+@pytest.mark.parametrize("summarizer", ["devin", "claude"])
+def test_either_summarizer_on_the_path_is_ok(sandbox: Sandbox, summarizer: str) -> None:
+    sandbox.fake(summarizer)
 
-    assert sandbox.run("step_devin").stdout == "Devin CLI: ok\n"
+    assert sandbox.run("step_summarizer").stdout == "Summarizer: ok\n"
 
 
-def test_devin_missing_says_how_to_install_it(sandbox: Sandbox) -> None:
-    result = sandbox.run("step_devin")
+def test_no_summarizer_says_how_to_install_either(sandbox: Sandbox) -> None:
+    result = sandbox.run("step_summarizer")
 
     assert result.returncode == 0
     assert result.stdout == (
-        "Devin CLI: not installed; Summarize needs it. Install it with "
-        "`curl -fsSL https://cli.devin.ai/install.sh | bash`, then log in with `devin auth login`\n"
+        "Summarizer: not installed; Summarize needs the Devin CLI or Claude Code. Install the "
+        "Devin CLI with `curl -fsSL https://cli.devin.ai/install.sh | bash`, then log in with "
+        "`devin auth login`; or Claude Code with `curl -fsSL https://claude.ai/install.sh | bash`, "
+        "then log in with `claude auth login`\n"
     )
 
 
 # --- Summary -----------------------------------------------------------------------------------
 
-STEPS = "step_gnome_extension; step_agaric_mcp; step_glab; step_devin"
+STEPS = "step_gnome_extension; step_agaric_mcp; step_glab; step_summarizer"
 
 
 def test_the_summary_says_to_log_out_and_names_the_optional_tools_missing(
@@ -555,7 +558,7 @@ def test_the_summary_says_to_log_out_and_names_the_optional_tools_missing(
         "\n"
         "Left to do:\n"
         "- Log out and back in to load the top-bar extension.\n"
-        "- Optional, still missing: glab, Devin CLI; their lines above say what needs them and "
+        "- Optional, still missing: glab, Summarizer; their lines above say what needs them and "
         "how to get them.\n"
     )
     # What the Recordings window looks for after an update.
@@ -571,4 +574,4 @@ def test_the_summary_is_left_out_when_nothing_is_left_to_do(sandbox: Sandbox) ->
 
     result = sandbox.run(f"{STEPS}; summary")
 
-    assert result.stdout == "GNOME extension: ok\nagaric-mcp: ok\nglab: ok\nDevin CLI: ok\n"
+    assert result.stdout == "GNOME extension: ok\nagaric-mcp: ok\nglab: ok\nSummarizer: ok\n"

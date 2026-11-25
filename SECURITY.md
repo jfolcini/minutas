@@ -2,7 +2,7 @@
 
 ## Threat model
 
-Minutas runs on one person's own desktop. It records meeting audio, transcribes it locally, and sends content off the machine only when that person presses a button: the summary prompt to the Devin CLI, the page, audio and transcript to Agaric on the same machine, the summary, transcript and audio to the GitLab server they name, and the summary to the GitHub host they name, with the transcript in a secret gist there. Its secrets are an Agaric agent token and a Hugging Face token, both kept in the GNOME keyring; GitLab credentials stay with `glab`, GitHub's with `gh`.
+Minutas runs on one person's own desktop. It records meeting audio, transcribes it locally, and sends content off the machine only when that person presses a button: the summary prompt to the summarizer chosen in Settings, the Devin CLI or Claude Code, the page, audio and transcript to Agaric on the same machine, the summary, transcript and audio to the GitLab server they name, and the summary to the GitHub host they name, with the transcript in a secret gist there. Its secrets are an Agaric agent token and a Hugging Face token, both kept in the GNOME keyring; GitLab credentials stay with `glab`, GitHub's with `gh`.
 
 ## In scope
 
@@ -14,7 +14,7 @@ Minutas runs on one person's own desktop. It records meeting audio, transcribes 
 ## Out of scope
 
 - An attacker who already runs code as the user or has the user's unlocked session.
-- What Agaric, GitLab, `glab`, GitHub, `gh`, the Devin CLI or the models do with content once Minutas has handed it over; report those upstream.
+- What Agaric, GitLab, `glab`, GitHub, `gh`, the Devin CLI, Claude Code or the models do with content once Minutas has handed it over; report those upstream.
 
 ## Supported versions
 

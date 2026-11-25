@@ -131,6 +131,42 @@ def test_set_summary_model_keeps_it_with_the_other_settings_and_none_clears_it()
     assert settings.agaric_space_id() == "01HZWORK"
 
 
+def test_no_summarizer_is_chosen_until_one_is() -> None:
+    assert settings.summarizer() is None
+
+
+def test_set_summarizer_keeps_it_with_the_other_settings() -> None:
+    settings.set_summary_model("swe-2-high")
+
+    settings.set_summarizer("claude")
+
+    assert settings.summarizer() == "claude"
+    assert settings.summary_model() == "swe-2-high"
+
+
+def test_claude_has_no_model_or_effort_until_they_are_set() -> None:
+    assert (settings.claude_model(), settings.claude_effort()) == (None, None)
+
+
+def test_claude_keeps_a_model_and_an_effort_of_its_own_and_none_clears_each() -> None:
+    settings.set_summary_model("swe-2-high")
+
+    settings.set_claude_model("opus")
+    settings.set_claude_effort("xhigh")
+
+    assert (settings.claude_model(), settings.claude_effort()) == ("opus", "xhigh")
+    assert settings.summary_model() == "swe-2-high"
+
+    settings.set_claude_model(None)
+
+    assert (settings.claude_model(), settings.claude_effort()) == (None, "xhigh")
+
+    settings.set_claude_effort(None)
+
+    assert (settings.claude_model(), settings.claude_effort()) == (None, None)
+    assert settings.summary_model() == "swe-2-high"
+
+
 def test_no_summary_skill_is_set_until_one_is() -> None:
     assert settings.summary_skill() is None
 

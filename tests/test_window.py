@@ -2162,7 +2162,8 @@ def test_the_main_menu_opens_the_settings_once(
     assert shown.get_visible_dialog() is dialog
     assert dialog.get_title() == "Settings"
     assert dialog.summarizer.get_selected_item() is not None
-    assert offered(dialog.summarizer) == ["Devin CLI"]
+    assert offered(dialog.summarizer) == ["Devin CLI", "Claude Code"]
+    assert dialog.summarizer.get_selected() == 0
     dialog.close()
 
 
@@ -2366,6 +2367,193 @@ def test_without_devin_the_model_says_how_to_install_it(
 
     dialog = open_settings(shown)
 
+    assert (dialog.model.get_subtitle(), dialog.model.get_sensitive()) == (
+        summarizer.DEVIN_MISSING,
+        False,
+    )
+    dialog.close()
+
+
+CLAUDE_MODELS = ["Claude's default", "Fable", "Opus", "Sonnet", "Haiku"]
+CLAUDE_EFFORTS = ["Claude's default", "Low", "Medium", "High", "Extra high", "Max"]
+CLAUDE_MISSING = (
+    "claude not found: install Claude Code with "
+    "`curl -fsSL https://claude.ai/install.sh | bash`, then log in with `claude auth login`"
+)
+
+
+@pytest.fixture
+def claude_installed(devin_installed: FakeDevin) -> None:
+    """A claude on PATH, never run: the window only looks for one."""
+    script = devin_installed.folder / "claude"
+    script.write_text("#!/bin/sh\n")
+    script.chmod(0o755)
+
+
+@pytest.mark.usefixtures("agaric_settings", "claude_installed")
+def test_choosing_claude_code_offers_its_models_and_efforts_and_saves_each_one_chosen(
+    history: Callable[[], window.HistoryWindow],
+) -> None:
+    settings.set_summary_model("opus-high-fast")
+    shown = history()
+    dialog = open_settings(shown)
+
+    dialog.summarizer.set_selected(1)
+
+    assert settings.summarizer() == "claude"
+    assert (dialog.model.get_subtitle(), dialog.model.get_sensitive()) == ("", True)
+    assert (offered(dialog.model), dialog.model.get_selected()) == (CLAUDE_MODELS, 0)
+    assert (offered(dialog.effort), dialog.effort.get_selected()) == (CLAUDE_EFFORTS, 0)
+    assert dialog.effort.get_visible() is True
+    # Offering them chooses nothing.
+    assert (settings.claude_model(), settings.claude_effort()) == (None, None)
+
+    dialog.model.set_selected(2)
+    assert (settings.claude_model(), settings.claude_effort()) == ("opus", None)
+
+    dialog.effort.set_selected(4)
+    assert (settings.claude_model(), settings.claude_effort()) == ("opus", "xhigh")
+
+    dialog.model.set_selected(0)
+    assert (settings.claude_model(), settings.claude_effort()) == (None, "xhigh")
+
+    dialog.effort.set_selected(0)
+    assert (settings.claude_model(), settings.claude_effort()) == (None, None)
+    # Devin's model stays its own.
+    assert settings.summary_model() == "opus-high-fast"
+    dialog.close()
+
+
+@pytest.mark.usefixtures("agaric_settings", "claude_installed")
+def test_claudes_saved_model_and_effort_are_chosen_without_asking_devin(
+    history: Callable[[], window.HistoryWindow],
+    devin_installed: FakeDevin,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings.set_summarizer("claude")
+    settings.set_claude_model("sonnet")
+    settings.set_claude_effort("max")
+    saved: list[str | None] = []
+    monkeypatch.setattr(settings, "set_claude_model", saved.append)
+    monkeypatch.setattr(settings, "set_claude_effort", saved.append)
+    shown = history()
+
+    dialog = open_settings(shown)
+
+    assert dialog.summarizer.get_selected() == 1
+    assert (dialog.model.get_selected(), dialog.effort.get_selected()) == (3, 5)
+    assert dialog.effort.get_visible() is True
+    # Showing the saved ones saves nothing, not even on the way.
+    assert saved == []
+    assert not (devin_installed.folder / "asked").exists()
+    dialog.close()
+
+
+@pytest.mark.usefixtures("agaric_settings", "claude_installed")
+def test_choosing_devin_again_asks_it_for_its_models_and_offers_none_of_claudes_meanwhile(
+    history: Callable[[], window.HistoryWindow],
+) -> None:
+    settings.set_summarizer("claude")
+    settings.set_claude_model("opus")
+    settings.set_summary_model("opus-high-fast")
+    shown = history()
+    dialog = open_settings(shown)
+
+    dialog.summarizer.set_selected(0)
+
+    assert settings.summarizer() == "devin"
+    assert (dialog.model.get_subtitle(), dialog.model.get_sensitive()) == (
+        window.ASKING_DEVIN,
+        False,
+    )
+    assert (offered(dialog.model), dialog.effort.get_visible()) == ([], False)
+
+    wait_until(lambda: dialog.model.get_subtitle() != window.ASKING_DEVIN)
+
+    assert (offered(dialog.model), dialog.model.get_selected()) == (MODELS, 2)
+    assert (offered(dialog.effort), dialog.effort.get_selected()) == (OPUS_EFFORTS, 2)
+    assert (dialog.model.get_sensitive(), dialog.effort.get_visible()) == (True, True)
+    # Each keeps its own model through the change.
+    assert (settings.summary_model(), settings.claude_model()) == ("opus-high-fast", "opus")
+    dialog.close()
+
+
+@pytest.mark.usefixtures("agaric_settings", "claude_installed")
+def test_devins_models_arriving_once_claude_code_is_chosen_are_not_offered(
+    history: Callable[[], window.HistoryWindow], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings.set_summary_model("opus-high-fast")
+    answered: list[bool] = []
+    models_listed = window.HistoryWindow.models_listed
+
+    def listed_and_counted(
+        shown: window.HistoryWindow,
+        command: Gio.Subprocess,
+        result: Gio.AsyncResult,
+        dialog: window.SettingsDialog,
+    ) -> None:
+        models_listed(shown, command, result, dialog)
+        answered.append(True)
+
+    monkeypatch.setattr(window.HistoryWindow, "models_listed", listed_and_counted)
+    shown = history()
+    dialog = open_settings(shown)
+    assert answered == [True]
+
+    # Devin is asked, and Claude Code chosen before it answers.
+    dialog.summarizer.set_selected(1)
+    dialog.summarizer.set_selected(0)
+    dialog.summarizer.set_selected(1)
+    wait_until(lambda: answered == [True, True])
+
+    assert (offered(dialog.model), dialog.model.get_selected()) == (CLAUDE_MODELS, 0)
+    assert (dialog.model.get_subtitle(), dialog.model.get_sensitive()) == ("", True)
+    assert offered(dialog.effort) == CLAUDE_EFFORTS
+    assert (settings.summary_model(), settings.claude_model()) == ("opus-high-fast", None)
+    dialog.close()
+
+
+def test_with_claude_code_chosen_summarize_needs_claude_and_not_devin(
+    history: Callable[[], window.HistoryWindow], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    recording([TRANSCRIBED])
+    settings.set_summarizer("claude")
+    claude = tmp_path / "bin" / "claude"
+    claude.parent.mkdir()
+    claude.write_text("#!/bin/sh\n")
+    claude.chmod(0o755)
+    monkeypatch.setenv("PATH", str(claude.parent))
+    shown = history()
+    expand(shown)
+
+    presets = shown.details[FIRST].presets
+    assert (presets.get_sensitive(), presets.get_tooltip_text()) == (True, None)
+
+
+@pytest.mark.usefixtures("agaric_settings")
+def test_summarize_is_off_while_the_summarizer_chosen_is_missing_and_says_how_to_install_it(
+    history: Callable[[], window.HistoryWindow], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    recording([TRANSCRIBED])
+    settings.set_summarizer("claude")
+    monkeypatch.setenv("PATH", str(tmp_path / "nowhere"))
+    shown = history()
+    row = expand(shown)
+
+    presets = shown.details[FIRST].presets
+    assert (presets.get_sensitive(), presets.get_tooltip_text()) == (False, CLAUDE_MISSING)
+    assert ("Summarize", f"Not summarized · {CLAUDE_MISSING}") in lines(row)
+
+    # Its models can be chosen before it is installed; the Settings say it is missing too.
+    dialog = open_settings(shown)
+    assert (dialog.model.get_subtitle(), dialog.model.get_sensitive()) == (CLAUDE_MISSING, True)
+
+    # Choosing the other summarizer is seen at once, without waiting for a recording to change.
+    dialog.summarizer.set_selected(0)
+    assert (presets.get_sensitive(), presets.get_tooltip_text()) == (
+        False,
+        summarizer.DEVIN_MISSING,
+    )
     assert (dialog.model.get_subtitle(), dialog.model.get_sensitive()) == (
         summarizer.DEVIN_MISSING,
         False,
