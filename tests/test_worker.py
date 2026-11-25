@@ -16,7 +16,7 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 import minutas
-from minutas import store, transcriber, worker
+from minutas import settings, store, transcriber, worker
 
 START = datetime(2026, 11, 18, 13, 5, 42, tzinfo=UTC)
 FIRST = "2026-11-18T13-05-42"
@@ -509,6 +509,83 @@ def test_work_finds_the_glossary_in_dot_config_by_default(
     words = store.recording_dir(recording_id) / "words.txt"
     assert system.commands()[0][4:] == ["--words", str(words)]
     assert words.read_text() == "deploy\n"
+
+
+def write_vocabulary(name: str, words: str) -> None:
+    worker.vocabulary_file(name).parent.mkdir(parents=True, exist_ok=True)
+    worker.vocabulary_file(name).write_text(words)
+
+
+@pytest.mark.usefixtures("speech", "sigterm")
+def test_work_passes_the_words_of_every_vocabulary_used_each_once_in_a_stable_order(
+    system: FakeSystem,
+) -> None:
+    recording_id = recording()
+    store.set_calendar_event(recording_id, "Weekly sync", ["Ana Díaz", "Atlas"])
+    put_runs(recording_id, [queued_run(START)])
+    write_vocabulary(settings.GLOSSARY, "deploy\nPR\n")
+    write_vocabulary("Zeta", "Zeta\n")
+    write_vocabulary("Atlas", "Atlas\n  PR \n\n")
+    write_vocabulary("Off", "Off\n")
+    # In the order switched on, with one deleted since.
+    settings.set_vocabularies(["Zeta", "Gone", settings.GLOSSARY, "Atlas"])
+
+    worker.work()
+
+    words = store.recording_dir(recording_id) / "words.txt"
+    assert system.commands()[0][4:] == ["--words", str(words)]
+    assert words.read_text() == "Ana Díaz\nAtlas\ndeploy\nPR\nZeta\n"
+
+
+@pytest.mark.usefixtures("speech", "sigterm")
+def test_work_fails_each_run_at_once_naming_a_vocabulary_it_cant_read_and_goes_on(
+    system: FakeSystem,
+) -> None:
+    first, second = recording(), recording(START + timedelta(hours=1))
+    put_runs(first, [queued_run(START)])
+    put_runs(second, [queued_run(START + timedelta(hours=1))])
+    write_vocabulary("Atlas", "")
+    worker.vocabulary_file("Atlas").write_bytes("Díaz\n".encode("latin-1"))
+    settings.set_vocabularies([settings.GLOSSARY, "Atlas"])
+
+    worker.work()
+
+    file = worker.vocabulary_file("Atlas")
+    said = f"Can't read the vocabulary {file}: fix it in Settings, or switch it off"
+    assert system.commands() == []
+    for recording_id in (first, second):
+        runs = store.load_runs(recording_id)
+        assert [(run["status"], run["error"]) for run in runs] == [("failed", said)]
+
+
+@pytest.mark.usefixtures("speech", "sigterm")
+def test_work_passes_no_word_list_with_every_vocabulary_switched_off(system: FakeSystem) -> None:
+    recording_id = recording()
+    put_runs(recording_id, [queued_run(START)])
+    write_vocabulary(settings.GLOSSARY, "deploy\n")
+    write_vocabulary("Atlas", "Atlas\n")
+    settings.set_vocabularies([])
+
+    worker.work()
+
+    assert system.commands()[0][4:] == []
+    assert not (store.recording_dir(recording_id) / "words.txt").exists()
+
+
+def test_vocabularies_are_the_glossary_and_the_visible_text_files_of_the_vocabulary_folder(
+    xdg_dirs: Path,
+) -> None:
+    folder = xdg_dirs / "config" / "minutas" / "vocabulary"
+    assert worker.vocabulary_file(settings.GLOSSARY) == worker.glossary()
+    assert worker.vocabulary_file("Atlas") == folder / "Atlas.txt"
+    assert worker.vocabulary_names() == []
+
+    folder.mkdir(parents=True)
+    for name in ("Team words.txt", "atlas.txt", "Zeta.txt", "notes.md", ".hidden.txt"):
+        (folder / name).write_text("")
+    (folder / "folder.txt").mkdir()
+
+    assert worker.vocabulary_names() == ["atlas", "Team words", "Zeta"]
 
 
 @pytest.mark.usefixtures("speech", "sigterm")

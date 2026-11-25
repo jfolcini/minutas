@@ -71,7 +71,7 @@ Then it checks for the optional tools, installs none of them, and says what each
 | Agaric's `agaric-mcp` bridge | Publish to Agaric | Agaric 0.26 or newer has been started once |
 | `glab` | Publish to GitLab | 1.91 or newer is on the PATH. Use GitLab's own `.deb` from [its releases](https://gitlab.com/gitlab-org/cli/-/releases): the snap can't read the recordings, which live in a hidden folder |
 | `gh` | Publish to GitHub | 2.45 or newer is on the PATH: `sudo apt install gh` |
-| The Devin CLI or Claude Code | Summarize | Either is on the PATH; install.sh prints the install and login commands for both |
+| The Devin CLI or Claude Code | Summarize | Either is on the PATH, Claude Code at 2.1.166 or newer (`claude update` updates an older one); install.sh prints the install and login commands for both |
 
 ## First steps
 
@@ -92,10 +92,10 @@ A recording's ⋮ menu renames it or moves it to the Trash; its audio files can 
 Open them from the window's main menu or the top-bar menu. Every change is saved as you make it, except the audio limits, which wait for Save because they delete audio.
 
 <p>
-  <img src="docs/screenshots/settings.png" width="49%" alt="The Settings dialog: Transcription, Summary, Agaric, GitLab, GitHub, Audio limits and Top-bar menu">
+  <img src="docs/screenshots/settings.png" width="49%" alt="The Settings dialog: Transcription, Summary, Summary context, Agaric, GitLab, GitHub, Audio limits and Top-bar menu">
 </p>
 
-- **Transcription:** the vocabulary, one word or phrase a line, opened in your text editor.
+- **Transcription:** the vocabulary, one word or phrase a line, opened in your text editor. Most people need only this one; New… makes another, say for one client, and each one switched on is used from the next transcription.
 - **Summary:** the summarizer, the Devin CLI or Claude Code, with its model and effort, and the skill file the summary follows, a built-in meeting-notes one unless you choose another. Log in to the summarizer once in a terminal: `devin auth login` or `claude auth login`.
 - **Agaric:** paste the config Agaric shows when you add an agent in its Settings → Agent access, with read-write access to the Work space. The token goes to the GNOME keyring and is never shown back.
 - **GitLab:** the default link Publish to GitLab starts from, and whether `glab` is logged in to its server. Log in with `glab auth login`, or paste a personal access token with the api scope here; it is handed to `glab`, which keeps it in the keyring.

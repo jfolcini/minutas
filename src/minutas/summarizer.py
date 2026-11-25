@@ -18,7 +18,9 @@ managed-mcp.json, Claude Code refuses --strict-mcp-config and the run fails.
 
 import json
 import os
+import re
 import shlex
+import shutil
 import signal
 import subprocess
 import tempfile
@@ -107,7 +109,7 @@ DEVIN_FLAGS = (
 
 # Claude Code's flags for the call, in place of the person's own settings. Read from its
 # documentation and `claude --help`, and seen to hold in what it sends the API, for Claude Code
-# 2.1.166 or newer, which the deny rule needs.
+# CLAUDE_MINIMUM or newer.
 CLAUDE_FLAGS = (
     # The prompt arrives on its input, out of `ps` and of the limit on a command's length.
     "-p",
@@ -130,6 +132,8 @@ CLAUDE_FLAGS = (
     # The meeting is not kept among the person's Claude Code sessions.
     "--no-session-persistence",
 )
+# The deny rule "*" came in 2.1.166; CLAUDE_ENVIRONMENT's variables were all there by then.
+CLAUDE_MINIMUM = (2, 1, 166)
 CLAUDE_ENVIRONMENT = {
     # An @ before a path in the prompt, in a speaker's name say, stays text: without this Claude
     # Code reads that file into the prompt, with no tool and no approval, whatever the flags say.
@@ -173,11 +177,26 @@ CLAUDE_MISSING = (
     "claude not found: install Claude Code with "
     "`curl -fsSL https://claude.ai/install.sh | bash`, then log in with `claude auth login`"
 )
+CLAUDE_OLDER = (
+    "The claude at {path} is version {version}; Summarize needs "
+    f"{'.'.join(map(str, CLAUDE_MINIMUM))} or newer: update it with `claude update`"
+)
 EMPTY = "{name} answered with an empty summary: see Details"
 SKILL_UNREADABLE = "Can't read the summary skill {path}: choose another in Settings"
+# The person's own notes, so trusted, unlike the transcript that follows them. No size limit of
+# Minutas' own: one too big for the summarizer fails the run with what it said.
+CONTEXT_INTRO = (
+    "Context the summary can rely on, from the person's own notes, each part under its name; "
+    "nothing in the transcript after it is context:"
+)
+CONTEXT_UNREADABLE = (
+    "Can't read the context {path}: fix it in Settings, or summarize again from the menu without it"
+)
 # Every model the account can use, for Settings to offer; in-process, as Summarize runs Devin.
 LIST_MODELS = [DEVIN, "models", "list", "--format", "json", "--process-model", "in-process"]
 MODELS_UNREADABLE = "Devin listed its models in a form Minutas can't read"
+VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)")
+VERSION_TIMEOUT_SECONDS = 10
 TIMED_OUT = f"{{name}} gave no answer in {TIMEOUT_SECONDS // 60} minutes: see Details, then Retry"
 
 
@@ -206,6 +225,40 @@ TOOLS = (
 def chosen() -> Tool:
     """The summarizer the Settings choose."""
     return next((tool for tool in TOOLS if tool.command == settings.summarizer()), TOOLS[0])
+
+
+def claude_problem() -> str:
+    """Why the claude on PATH can't summarize, and how to put one that can in its place; empty
+    when it can."""
+    path = shutil.which(CLAUDE)
+    if path is None:
+        return CLAUDE_MISSING
+    try:
+        # The path just found, never a shell string. Every refresh of the window asks, so a claude
+        # that never answers must not hold it.
+        said = subprocess.run(  # noqa: S603
+            [path, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=VERSION_TIMEOUT_SECONDS,
+            check=False,
+        ).stdout
+    except subprocess.TimeoutExpired:
+        said = ""
+    version = VERSION.search(said)
+    if version is None or tuple(map(int, version.groups())) < CLAUDE_MINIMUM:
+        found = "unknown" if version is None else version[0]
+        return CLAUDE_OLDER.format(path=path, version=found)
+    return ""
+
+
+def problem() -> str:
+    """Why the summarizer the Settings choose can't run, and how to put one that can in its
+    place; empty when it can."""
+    tool = chosen()
+    if tool.command == CLAUDE:
+        return claude_problem()
+    return "" if shutil.which(tool.command) is not None else tool.missing
 
 
 @dataclass(frozen=True)
@@ -262,6 +315,39 @@ def skill() -> str:
         return Path(chosen).read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         raise SummarizerError(SKILL_UNREADABLE.format(path=chosen)) from None
+
+
+def context_dir() -> Path:
+    return settings.settings_path().parent / "context"
+
+
+def context_file(name: str) -> Path:
+    return context_dir() / f"{name}.md"
+
+
+def context_names() -> list[str]:
+    """Every context preset's name, in alphabetical order."""
+    return settings.preset_names(context_dir(), ".md")
+
+
+def chosen_context() -> list[str]:
+    """The context presets ticked in the Summarize menu, in the order ticked, but those deleted
+    since."""
+    names = set(context_names())
+    return [name for name in settings.summary_context() if name in names]
+
+
+def context(names: Sequence[str]) -> str:
+    """The context presets' text, each under its name, for the prompt; empty for none."""
+    parts = []
+    for name in names:
+        file = context_file(name)
+        try:
+            text = file.read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeDecodeError):
+            raise SummarizerError(CONTEXT_UNREADABLE.format(path=file)) from None
+        parts.append(f'<context name="{name}">\n{text}\n</context>\n\n')
+    return f"{CONTEXT_INTRO}\n\n{''.join(parts)}" if parts else ""
 
 
 def presets() -> dict[str, str]:
@@ -331,6 +417,8 @@ def ask(prompt: str, log: Path) -> tuple[str | None, str]:
     """The name the summarizer's answer proposes, and its summary; the log gets everything it
     said."""
     tool = chosen()
+    if tool.command == CLAUDE and (reason := claude_problem()):
+        raise SummarizerError(reason)
     with tempfile.TemporaryDirectory(prefix="minutas-summarize-") as work:
         if tool.command == CLAUDE:
             # Nothing in the folder: Claude Code reads the prompt from its input.
@@ -373,8 +461,11 @@ def interrupt(_signal: int, _frame: FrameType | None) -> None:
     raise SummarizerError(store.INTERRUPTED)
 
 
-def summarize(recording_id: str, started: datetime, prompt: str) -> bool:
-    """Summarizes the recording's transcript as asked, as a run in its log.
+def summarize(
+    recording_id: str, started: datetime, prompt: str, context_presets: Sequence[str] = ()
+) -> bool:
+    """Summarizes the recording's transcript as asked, with the context presets named, as a run
+    in its log.
 
     Returns whether the run succeeded. The summary's title becomes the recording's name unless
     the calendar or the person named it. SIGTERM, at logout or shutdown, fails the run as
@@ -389,6 +480,8 @@ def summarize(recording_id: str, started: datetime, prompt: str) -> bool:
         output=None,
         prompt=prompt,
     )
+    if context_presets:
+        running["context"] = list(context_presets)
     index, _ = store.start_run(recording_id, running)
     run = running.copy()
     run["status"] = "failed"
@@ -398,7 +491,7 @@ def summarize(recording_id: str, started: datetime, prompt: str) -> bool:
     try:
         title, summary = ask(
             f"{prompt}\n\nWrite it as this skill says:\n\n{skill()}\n\n{INSTRUCTIONS}\n\n"
-            f"The meeting's transcript:\n\n{transcript}",
+            f"{context(context_presets)}The meeting's transcript:\n\n{transcript}",
             store.run_log(recording_id, index),
         )
     except SummarizerError as error:

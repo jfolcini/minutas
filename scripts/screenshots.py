@@ -41,7 +41,7 @@ gi.require_version("Adw", "1")
 gi.require_version("Gtk", "4.0")
 from gi.repository import Adw, GLib, Graphene, Gsk, Gtk  # noqa: E402
 
-from minutas import settings, store, window  # noqa: E402
+from minutas import settings, store, window, worker  # noqa: E402
 
 ART = timezone(timedelta(hours=-3))
 NOW = datetime(2026, 11, 25, 12, 0, tzinfo=ART)
@@ -181,8 +181,13 @@ def seed() -> None:
             "claude_effort": "high",
             "gitlab_link": "https://gitlab.com/acme/platform",
             "github_link": "https://github.com/acme/platform",
+            "vocabularies": [settings.GLOSSARY, "Acme"],
         }
     )
+    # A client's vocabulary besides the glossary, so the Settings show its switch and Delete.
+    acme = worker.vocabulary_file("Acme")
+    acme.parent.mkdir(parents=True)
+    acme.write_text("Acme\n")
 
 
 def wait_until(happened: Callable[[], bool]) -> None:
@@ -225,6 +230,9 @@ def descendants(widget: Gtk.Widget) -> Iterator[Gtk.Widget]:
         child = child.get_next_sibling()
 
 
+SIDE_BY_SIDE = (780, 910)
+
+
 def open_window(width: int, height: int) -> window.HistoryWindow:
     shown = window.HistoryWindow()
     shown.set_default_size(width, height)
@@ -256,7 +264,8 @@ def main(out: Path) -> None:
     gtk_settings.props.gtk_enable_animations = False
     out.mkdir(parents=True, exist_ok=True)
 
-    shown = open_window(780, 910)
+    # The README shows these two side by side: one size, so every renderer draws them alike.
+    shown = open_window(*SIDE_BY_SIDE)
     row(shown, "Weekly sync").set_expanded(True)
     save(shown, out / "recordings.png")
     close(shown)
@@ -267,7 +276,7 @@ def main(out: Path) -> None:
     close(shown)
 
     # A search for a word two transcripts hold, and the failed run of one of them.
-    shown = open_window(780, 845)
+    shown = open_window(*SIDE_BY_SIDE)
     shown.search_bar.set_search_mode(True)
     shown.search.set_text("release")
     wait_until(lambda: len(shown.matching) == 2)  # noqa: PLR2004 - the two that say it
@@ -276,10 +285,10 @@ def main(out: Path) -> None:
     close(shown)
 
     # Tall enough for every setting at once.
-    shown = open_window(780, 2000)
+    shown = open_window(780, 2400)
     shown.open_settings()
     dialog = cast("window.SettingsDialog", shown.get_visible_dialog())
-    dialog.set_content_height(1900)
+    dialog.set_content_height(2300)
     wait_until(
         lambda: (
             dialog.gitlab.get_description() != window.ASKING_GLAB

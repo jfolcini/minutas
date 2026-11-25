@@ -291,8 +291,20 @@ step_gh() {
   report gh "$found; Publish to GitHub stays off until gh 2.45 or newer is installed: \`sudo apt install gh\`, or see https://cli.github.com"
 }
 
+# Claude Code's deny rule "*", which keeps every tool from the summary, came in 2.1.166.
 step_summarizer() {
-  if command -v devin >/dev/null || command -v claude >/dev/null; then
+  if [[ $(claude --version 2>/dev/null) =~ ([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
+    local major=${BASH_REMATCH[1]} minor=${BASH_REMATCH[2]} patch=${BASH_REMATCH[3]}
+    if ((major > 2 || (major == 2 && (minor > 1 || (minor == 1 && patch >= 166))))); then
+      report Summarizer ok
+      return
+    fi
+    # The Devin CLI can still summarize.
+    command -v devin >/dev/null || missing_tools+=(Summarizer)
+    report Summarizer "the PATH has claude ${BASH_REMATCH[0]}; Summarize with Claude Code stays off until it is updated to 2.1.166 or newer: \`claude update\`"
+    return
+  fi
+  if command -v devin >/dev/null; then
     report Summarizer ok
     return
   fi

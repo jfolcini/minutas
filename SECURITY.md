@@ -18,7 +18,7 @@ Minutas runs on one person's own desktop. It records meeting audio, transcribes 
 
 ## Supported versions
 
-Minutas is pre-release. Only the latest commit on `main` is supported.
+Only the latest release, the one `minutas update` installs, is supported. Fixes land on `main` and ship in the next release.
 
 ## How to report
 

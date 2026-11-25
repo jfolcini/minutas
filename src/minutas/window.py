@@ -10,10 +10,10 @@ everything in it, for good.
 """
 
 import contextlib
-import shutil
 import sys
 from collections.abc import Callable, Collection, Mapping, Sequence
 from datetime import UTC, datetime
+from functools import partial
 from importlib.metadata import metadata
 from pathlib import Path
 from typing import cast, override
@@ -91,8 +91,27 @@ DEVINS_DEFAULT = "Devin's default"
 ASKING_DEVIN = "Asking Devin for the models your account can use…"
 BUILT_IN_SKILL = "Built-in: meeting notes"
 VOCABULARY_NOTE = (
-    "Names, products and jargon to listen for, one per line, besides each meeting's attendees; "
-    "used from the next transcription, or Run again"
+    "Names, products and jargon to listen for, one per line, besides each meeting's attendees. "
+    "The vocabularies switched on are used from the next transcription, or Run again. Keep them "
+    "to words your meetings use: a long list of common words can make them heard where they "
+    "weren't said."
+)
+NEW_VOCABULARY_NOTE = "Its file then opens in the text editor: one word or phrase a line."
+VOCABULARY_TRASH_WARNING = (
+    "Its file goes to the Trash, where it can be restored. Transcripts already written stay as "
+    "they are."
+)
+CONTEXT_NOTE = (
+    "Glossaries, background and references a summary can rely on, a Markdown file each, ticked "
+    "in the Summarize menu. Links aren't followed: the summarizer reads nothing but its prompt, "
+    "so paste references in as text."
+)
+NEW_CONTEXT_NOTE = "Its name in the Summarize menu. Its file then opens in the text editor."
+NAME_BAD = "A {kind}'s name can't start with a dot or hold a slash"
+NAME_TAKEN = "There is a {kind} named {name} already"
+CONTEXT_TRASH_WARNING = (
+    "Its file goes to the Trash, where it can be restored. Summaries already written stay as "
+    "they are."
 )
 # Read once: an update replaces the package on disk, not the one this window runs.
 PROJECT = metadata("minutas")
@@ -107,11 +126,9 @@ def now() -> datetime:
 def load_views(running: Mapping[str, Collection[str]]) -> list[RowView]:
     """Every recording's row, newest first; running holds the recordings of each action whose
     command the window is running."""
-    # Looked for at each refresh: one installed while the window is open is found.
-    tool = summarizer.chosen()
-    found = shutil.which(tool.command) is not None
+    # Looked for at each refresh: one installed or updated while the window is open is found.
     missing_tools = {
-        SUMMARIZE: "" if found else tool.missing,
+        SUMMARIZE: summarizer.problem(),
         PUBLISH_GITLAB: gitlab.glab_problem(),
         PUBLISH_GITHUB: github.gh_problem(),
     }
@@ -153,7 +170,7 @@ def button(label: str, pressed: Callable[..., None], *arguments: object) -> Gtk.
     return made
 
 
-def menu_item(label: str, action: str, target: GLib.Variant) -> Gio.MenuItem:
+def menu_item(label: str, action: str, target: GLib.Variant | None) -> Gio.MenuItem:
     # A typed preset name's "_" is shown, not taken for a keyboard shortcut.
     item = Gio.MenuItem.new(label.replace("_", "__"), None)
     item.set_action_and_target_value(action, target)
@@ -185,6 +202,18 @@ def chosen_limit(switch: Adw.ExpanderRow, value: Adw.SpinRow) -> int | None:
 def last_line(said: str) -> str:
     lines = said.strip().splitlines()
     return lines[-1].strip() if lines else ""
+
+
+def vocabulary_row(title: str, name: str, window: "HistoryWindow") -> Adw.ActionRow:
+    row = text_row(title)
+    row.add_suffix(button("Open", window.open_vocabulary, name))
+    if name != settings.GLOSSARY:
+        row.add_suffix(button("Delete", window.ask_to_delete_vocabulary, name))
+    used = Gtk.Switch(active=name in settings.vocabularies(), valign=Gtk.Align.CENTER)
+    used.connect("notify::active", window.vocabulary_switched, name)
+    row.add_suffix(used)
+    row.set_activatable_widget(used)
+    return row
 
 
 class SpaceRow(Adw.ComboRow):
@@ -241,11 +270,6 @@ class SettingsDialog(Adw.PreferencesDialog):
         self.built_in = button("Use built-in", window.use_built_in_skill)
         self.skill.add_suffix(self.built_in)
         self.show_skill()
-        self.vocabulary = Adw.ActionRow(title="Vocabulary", subtitle=VOCABULARY_NOTE)
-        self.vocabulary.add_suffix(button("Open", window.open_vocabulary))
-        transcription = Adw.PreferencesGroup(title="Transcription")
-        transcription.add(self.vocabulary)
-
         summary = Adw.PreferencesGroup(title="Summary")
         for row in (self.summarizer, self.model, self.effort, self.skill):
             summary.add(row)
@@ -284,8 +308,9 @@ class SettingsDialog(Adw.PreferencesDialog):
 
         page = Adw.PreferencesPage()
         for group in (
-            transcription,
+            self.transcription_group(window),
             summary,
+            self.context_group(window),
             self.agaric,
             self.gitlab,
             self.github,
@@ -314,6 +339,45 @@ class SettingsDialog(Adw.PreferencesDialog):
         group = Adw.PreferencesGroup(title="Top-bar menu")
         group.add(self.recent)
         return group
+
+    def transcription_group(self, window: "HistoryWindow") -> Adw.PreferencesGroup:
+        """The glossary, then the other vocabularies, each with whether it is used, Open and,
+        but for the glossary, Delete; and New… to make one."""
+        self.transcription = Adw.PreferencesGroup(
+            title="Transcription", description=VOCABULARY_NOTE
+        )
+        self.transcription.set_header_suffix(button("New…", window.new_vocabulary))
+        self.vocabulary = vocabulary_row("Vocabulary", settings.GLOSSARY, window)
+        self.transcription.add(self.vocabulary)
+        self.vocabulary_rows: list[Adw.ActionRow] = []
+        self.show_vocabularies(window)
+        return self.transcription
+
+    def show_vocabularies(self, window: "HistoryWindow") -> None:
+        for row in self.vocabulary_rows:
+            self.transcription.remove(row)
+        self.vocabulary_rows = [
+            vocabulary_row(name, name, window) for name in worker.vocabulary_names()
+        ]
+        for row in self.vocabulary_rows:
+            self.transcription.add(row)
+
+    def context_group(self, window: "HistoryWindow") -> Adw.PreferencesGroup:
+        """The context presets, each with Open and Delete, and New… to make one."""
+        self.context = Adw.PreferencesGroup(title="Summary context", description=CONTEXT_NOTE)
+        self.context.set_header_suffix(button("New…", window.new_context))
+        self.context_rows: list[Adw.ActionRow] = []
+        self.show_context(window)
+        return self.context
+
+    def show_context(self, window: "HistoryWindow") -> None:
+        for row in self.context_rows:
+            self.context.remove(row)
+        self.context_rows = [text_row(name) for name in summarizer.context_names()]
+        for row in self.context_rows:
+            row.add_suffix(button("Open", window.open_context, row.get_title()))
+            row.add_suffix(button("Delete", window.ask_to_delete_context, row.get_title()))
+            self.context.add(row)
 
     def gitlab_group(self, window: "HistoryWindow") -> Adw.PreferencesGroup:
         """The default link Publish to GitLab starts from, and the token glab keeps for it."""
@@ -360,8 +424,7 @@ class SettingsDialog(Adw.PreferencesDialog):
         self.found = []
         offer(self.model, self.model_handler, summarizer.CLAUDE_MODELS, settings.claude_model())
         offer(self.effort, self.effort_handler, summarizer.CLAUDE_EFFORTS, settings.claude_effort())
-        found = shutil.which(summarizer.CLAUDE) is not None
-        self.model.set_subtitle("" if found else summarizer.CLAUDE_MISSING)
+        self.model.set_subtitle(summarizer.claude_problem())
         self.model.set_sensitive(True)
         self.effort.set_visible(True)
 
@@ -1085,12 +1148,117 @@ class HistoryWindow(Adw.ApplicationWindow):
     def open_skill(self, _button: Gtk.Button) -> None:
         self.open(Gio.File.new_for_path(settings.summary_skill() or str(summarizer.BUILT_IN_SKILL)))
 
-    def open_vocabulary(self, _button: Gtk.Button) -> None:
+    def open_vocabulary(self, _button: Gtk.Button, name: str) -> None:
         # The text editor opens a file that exists: the first time, an empty one.
-        glossary = worker.glossary()
-        glossary.parent.mkdir(parents=True, exist_ok=True)
-        glossary.touch()
-        self.open(Gio.File.new_for_path(str(glossary)))
+        file = worker.vocabulary_file(name)
+        file.parent.mkdir(parents=True, exist_ok=True)
+        file.touch()
+        self.open(Gio.File.new_for_path(str(file)))
+
+    def new_vocabulary(self, new: Gtk.Button) -> None:
+        self.ask_name(
+            "New vocabulary", "", self.create_vocabulary, settings_of(new), body=NEW_VOCABULARY_NOTE
+        )
+
+    def create_vocabulary(self, dialog: SettingsDialog, name: str) -> None:
+        """Makes the vocabulary's file, empty and used, and opens it in the text editor."""
+        if self.created_preset(dialog, "vocabulary", name, worker.vocabulary_file(name)):
+            used = [used for used in settings.vocabularies() if used != name]
+            settings.set_vocabularies([*used, name])
+            dialog.show_vocabularies(self)
+
+    def vocabulary_switched(self, switch: Gtk.Switch, _property: object, name: str) -> None:
+        used = [used for used in settings.vocabularies() if used != name]
+        settings.set_vocabularies([*used, name] if switch.get_active() else used)
+
+    def ask_to_delete_vocabulary(self, delete: Gtk.Button, name: str) -> None:
+        dialog = settings_of(delete)
+        trashed = partial(self.vocabulary_trashed, dialog, name)
+        file = worker.vocabulary_file(name)
+        self.ask_to_trash_preset(dialog, "vocabulary", VOCABULARY_TRASH_WARNING, file, trashed)
+
+    def vocabulary_trashed(self, dialog: SettingsDialog, name: str) -> None:
+        settings.set_vocabularies([used for used in settings.vocabularies() if used != name])
+        dialog.show_vocabularies(self)
+
+    def new_context(self, new: Gtk.Button) -> None:
+        self.ask_name(
+            "New context", "", self.create_context, settings_of(new), body=NEW_CONTEXT_NOTE
+        )
+
+    def create_context(self, dialog: SettingsDialog, name: str) -> None:
+        """Makes the context preset's file, empty, and opens it in the text editor."""
+        if self.created_preset(dialog, "context", name, summarizer.context_file(name)):
+            dialog.show_context(self)
+
+    def open_context(self, _button: Gtk.Button, name: str) -> None:
+        self.open(Gio.File.new_for_path(str(summarizer.context_file(name))))
+
+    def ask_to_delete_context(self, delete: Gtk.Button, name: str) -> None:
+        dialog = settings_of(delete)
+        trashed = partial(self.context_trashed, dialog, name)
+        file = summarizer.context_file(name)
+        self.ask_to_trash_preset(dialog, "context", CONTEXT_TRASH_WARNING, file, trashed)
+
+    def context_trashed(self, dialog: SettingsDialog, name: str) -> None:
+        settings.set_summary_context([kept for kept in settings.summary_context() if kept != name])
+        dialog.show_context(self)
+
+    def created_preset(self, dialog: SettingsDialog, kind: str, name: str, file: Path) -> bool:
+        """Makes a context preset's or a vocabulary's file, empty, and opens it in the text
+        editor; else says why not."""
+        if settings.bad_preset_name(name):
+            said = NAME_BAD.format(kind=kind)
+        else:
+            try:
+                file.parent.mkdir(parents=True, exist_ok=True)
+                file.touch(exist_ok=False)
+            except FileExistsError:
+                said = NAME_TAKEN.format(kind=kind, name=name)
+            except OSError as error:
+                said = f"Can't create it: {error.strerror}"
+            else:
+                self.open(Gio.File.new_for_path(str(file)))
+                return True
+        dialog.add_toast(Adw.Toast(title=said, use_markup=False))
+        return False
+
+    def ask_to_trash_preset(
+        self,
+        dialog: SettingsDialog,
+        kind: str,
+        warning: str,
+        file: Path,
+        trashed: Callable[[], None],
+    ) -> None:
+        """Asks before moving a context preset's or a vocabulary's file to the Trash, and once it
+        is there, has the rest done."""
+        question = Adw.AlertDialog(
+            heading=f"Move the {kind} to the Trash?", body=warning, close_response="cancel"
+        )
+        question.add_response("cancel", "Cancel")
+        question.add_response("trash", "Move to Trash")
+        question.set_response_appearance("trash", Adw.ResponseAppearance.DESTRUCTIVE)
+        question.choose(dialog, None, self.preset_trash_chosen, dialog, file, trashed)
+
+    def preset_trash_chosen(
+        self,
+        question: Adw.AlertDialog,
+        result: Gio.AsyncResult,
+        dialog: SettingsDialog,
+        file: Path,
+        trashed: Callable[[], None],
+    ) -> None:
+        if question.choose_finish(result) != "trash":
+            return
+        try:
+            # Never deleted instead, whatever the trash says: the person's notes are theirs.
+            Gio.File.new_for_path(str(file)).trash(None)
+        except GLib.Error as error:
+            said = f"Can't move it to the Trash: {error.message}"
+            dialog.add_toast(Adw.Toast(title=said, use_markup=False))
+            return
+        trashed()
 
     def use_built_in_skill(self, built_in: Gtk.Button) -> None:
         settings.set_summary_skill(None)
@@ -1276,7 +1444,7 @@ class HistoryWindow(Adw.ApplicationWindow):
         elif action == PUBLISH_GITHUB:
             self.ask_github_link(recording_id, shown.link or settings.github_link() or "")
         elif action == SUMMARIZE:
-            self.summarize(recording_id, str(shown.prompt))
+            self.summarize(recording_id, str(shown.prompt), shown.context)
         elif shown.cancels is not None:
             worker.cancel(recording_id, shown.cancels)
         else:
@@ -1416,7 +1584,8 @@ class HistoryWindow(Adw.ApplicationWindow):
         dialog.github.set_description(GITHUB_LINK_NOTE)
 
     def list_presets(self, presets: Gtk.MenuButton, recording_id: str) -> None:
-        """The built-in and saved presets, Custom, and the saved ones to delete."""
+        """The built-in and saved presets, Custom, the saved ones to delete, and the context
+        presets to tick."""
         chosen = Gio.Menu()
         for name, prompt in summarizer.presets().items():
             target = GLib.Variant("(ss)", (recording_id, prompt))
@@ -1435,11 +1604,33 @@ class HistoryWindow(Adw.ApplicationWindow):
         menu = Gio.Menu()
         menu.append_section(None, chosen)
         menu.append_section(None, others)
+        if summarizer.context_names():
+            menu.append_section("Context", self.context_menu())
         presets.set_menu_model(menu)
+
+    def context_menu(self) -> Gio.Menu:
+        """A check item for each context preset, ticked while every summary includes it."""
+        ticked = settings.summary_context()
+        menu = Gio.Menu()
+        for place, name in enumerate(summarizer.context_names()):
+            # A check item's action holds whether it is ticked, and takes no target.
+            action = Gio.SimpleAction.new_stateful(
+                f"context-{place}", None, GLib.Variant("b", name in ticked)
+            )
+            action.connect("change-state", self.context_ticked, name)
+            self.add_action(action)
+            menu.append_item(menu_item(name, f"win.context-{place}", None))
+        return menu
+
+    def context_ticked(self, action: Gio.SimpleAction, state: GLib.Variant, name: str) -> None:
+        action.set_state(state)
+        # One deleted since it was ticked is dropped on the way.
+        kept = [ticked for ticked in summarizer.chosen_context() if ticked != name]
+        settings.set_summary_context([*kept, name] if state.get_boolean() else kept)
 
     def summarize_with(self, _action: Gio.SimpleAction, target: GLib.Variant) -> None:
         recording_id, prompt = target.unpack()
-        self.summarize(recording_id, prompt)
+        self.summarize(recording_id, prompt, summarizer.chosen_context())
 
     def write_prompt(self, _action: Gio.SimpleAction, target: GLib.Variant) -> None:
         prompt = Gtk.TextView(
@@ -1482,14 +1673,17 @@ class HistoryWindow(Adw.ApplicationWindow):
         preset = window_view.clean_name(name.get_text())
         if preset is not None:
             settings.save_preset(preset, text)
-        self.summarize(recording_id, text)
+        self.summarize(recording_id, text, summarizer.chosen_context())
 
     def delete_preset(self, _action: Gio.SimpleAction, target: GLib.Variant) -> None:
         settings.delete_preset(target.get_string())
 
-    def summarize(self, recording_id: str, prompt: str) -> None:
-        # With "=": a prompt that starts with a dash is still the prompt, never another option.
-        self.start(SUMMARIZE, recording_id, ["summarize", recording_id, f"--prompt={prompt}"])
+    def summarize(self, recording_id: str, prompt: str, context: Sequence[str]) -> None:
+        # With "=": a prompt or name that starts with a dash is still itself, never an option.
+        named = [f"--context={name}" for name in context]
+        self.start(
+            SUMMARIZE, recording_id, ["summarize", recording_id, f"--prompt={prompt}", *named]
+        )
 
     def start(self, action: str, recording_id: str, arguments: list[str]) -> None:
         """Runs the minutas command that does the action, and follows it until it exits."""

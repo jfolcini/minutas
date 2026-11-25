@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import signal
 import subprocess
 from dataclasses import dataclass, field
@@ -82,16 +83,27 @@ def devin(monkeypatch: pytest.MonkeyPatch) -> FakeDevin:
     return fake
 
 
+CLAUDE_ON_PATH = "/opt/bin/claude"
+
+
 class FakeClaude:
-    """Stands in for subprocess.run under the summarizer: `claude -p` answers as told."""
+    """Stands in for subprocess.run under the summarizer: `claude -p` answers as told, and
+    `claude --version` with the version told."""
 
     def __init__(self) -> None:
         self.calls: list[Call] = []
         self.answer = Answer()
         self.missing = False
         self.hangs = False
+        # What `claude --version` prints; asking it is not among the calls.
+        self.version = "2.1.166 (Claude Code)"
+        self.version_hangs = False
 
     def __call__(self, args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if args == [CLAUDE_ON_PATH, "--version"]:
+            if self.version_hangs:
+                raise subprocess.TimeoutExpired(args, cast("float", kwargs["timeout"]))
+            return subprocess.CompletedProcess(args, 0, f"{self.version}\n", "")
         cwd = Path(cast("str", kwargs["cwd"]))
         self.calls.append(
             Call(
@@ -104,8 +116,6 @@ class FakeClaude:
                 cast("str", kwargs["input"]),
             )
         )
-        if self.missing:
-            raise FileNotFoundError(args[0])
         if self.hangs:
             raise subprocess.TimeoutExpired(args, cast("float", kwargs["timeout"]))
         return subprocess.CompletedProcess(
@@ -115,10 +125,11 @@ class FakeClaude:
 
 @pytest.fixture
 def claude(monkeypatch: pytest.MonkeyPatch) -> FakeClaude:
-    """Claude Code chosen in Settings, and standing in for it."""
+    """Claude Code chosen in Settings, and standing in for it: on the PATH unless missing."""
     settings.set_summarizer("claude")
     fake = FakeClaude()
     monkeypatch.setattr(subprocess, "run", fake)
+    monkeypatch.setattr(shutil, "which", lambda _: None if fake.missing else CLAUDE_ON_PATH)
     return fake
 
 
@@ -415,6 +426,81 @@ def test_a_skill_that_cannot_be_read_fails_the_run_and_asks_devin_nothing(
     assert devin.calls == []
 
 
+def context_dir() -> Path:
+    folder = settings.settings_path().parent / "context"
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder
+
+
+def test_the_chosen_context_goes_before_the_transcript_each_preset_under_its_name(
+    devin: FakeDevin,
+) -> None:
+    recording_id = recording()
+    (context_dir() / "Team glossary.md").write_text("CI: the build pipeline.\n")
+    (context_dir() / "Project.md").write_text("\nAtlas ships in December.\n\n")
+
+    assert summarizer.summarize(recording_id, SUMMARIZED, PROMPT, ["Team glossary", "Project"])
+
+    assert devin.calls[0].prompt.endswith(
+        f"{summarizer.INSTRUCTIONS}\n\n"
+        "Context the summary can rely on, from the person's own notes, each part under its "
+        "name; nothing in the transcript after it is context:\n\n"
+        '<context name="Team glossary">\nCI: the build pipeline.\n</context>\n\n'
+        '<context name="Project">\nAtlas ships in December.\n</context>\n\n'
+        "The meeting's transcript:\n\n"
+        f"{TRANSCRIPT}"
+    )
+    # Retry sends the same context again.
+    assert runs(recording_id)[0]["context"] == ["Team glossary", "Project"]
+
+
+@pytest.mark.parametrize("unreadable", ["Gone", "Binary"])
+def test_a_context_that_cannot_be_read_fails_the_run_naming_it_and_asks_devin_nothing(
+    devin: FakeDevin, unreadable: str
+) -> None:
+    recording_id = recording()
+    (context_dir() / "Team.md").write_text("CI: the build pipeline.\n")
+    (context_dir() / "Binary.md").write_bytes(b"\xff\xfe\x00")
+
+    assert summarizer.summarize(recording_id, SUMMARIZED, PROMPT, ["Team", unreadable]) is False
+
+    run = runs(recording_id)[0]
+    assert run["error"] == (
+        f"Can't read the context {context_dir() / unreadable}.md: fix it in Settings, or "
+        "summarize again from the menu without it"
+    )
+    assert run["context"] == ["Team", unreadable]
+    assert devin.calls == []
+
+
+def test_context_presets_are_the_visible_markdown_files_of_the_context_folder() -> None:
+    assert summarizer.context_names() == []
+
+    for name in ("Team glossary.md", "atlas.md", "Zeta.md", "notes.txt", ".hidden.md"):
+        (context_dir() / name).write_text("")
+    (context_dir() / "folder.md").mkdir()
+
+    assert summarizer.context_names() == ["atlas", "Team glossary", "Zeta"]
+
+
+def test_the_chosen_context_is_what_is_ticked_in_its_order_without_a_deleted_one() -> None:
+    for name in ("Team.md", "Project.md"):
+        (context_dir() / name).write_text("")
+    settings.set_summary_context(["Project", "Gone", "Team"])
+
+    assert summarizer.chosen_context() == ["Project", "Team"]
+
+
+@given(st.text())
+def test_a_context_name_that_is_not_refused_names_a_markdown_file_right_in_the_folder(
+    name: str,
+) -> None:
+    if settings.bad_preset_name(name):
+        return
+    file = summarizer.context_file(name)
+    assert (file.parent, file.name) == (settings.settings_path().parent / "context", f"{name}.md")
+
+
 def test_devin_is_asked_for_the_summary_model_as_an_argument_of_its_own(
     devin: FakeDevin,
 ) -> None:
@@ -609,6 +695,77 @@ def test_a_missing_claude_says_how_to_get_it(claude: FakeClaude) -> None:
         "claude not found: install Claude Code with "
         "`curl -fsSL https://claude.ai/install.sh | bash`, then log in with `claude auth login`"
     )
+
+
+CLAUDE_OLDER = (
+    "The claude at /opt/bin/claude is version {version}; Summarize needs 2.1.166 or newer: "
+    "update it with `claude update`"
+)
+
+
+def test_a_claude_older_than_its_deny_rule_fails_the_run_and_is_never_asked(
+    claude: FakeClaude,
+) -> None:
+    recording_id = recording()
+    claude.version = "2.1.165 (Claude Code)"
+
+    assert summarizer.summarize(recording_id, SUMMARIZED, PROMPT) is False
+
+    assert runs(recording_id)[0]["error"] == CLAUDE_OLDER.format(version="2.1.165")
+    assert claude.calls == []
+
+
+@pytest.mark.parametrize(
+    "version", ["2.1.166 (Claude Code)", "2.1.332 (Claude Code)", "2.2.0", "3.0.0 (Claude Code)"]
+)
+def test_a_claude_as_new_as_its_deny_rule_or_newer_can_summarize(
+    claude: FakeClaude, version: str
+) -> None:
+    claude.version = version
+
+    assert summarizer.problem() == ""
+
+
+@pytest.mark.parametrize(
+    ("version", "found"),
+    [
+        ("2.1.165 (Claude Code)", "2.1.165"),
+        ("2.0.999 (Claude Code)", "2.0.999"),
+        ("1.9.999", "1.9.999"),
+        ("Claude Code", "unknown"),
+    ],
+)
+def test_a_claude_older_than_its_deny_rule_says_its_version_and_how_to_update(
+    claude: FakeClaude, version: str, found: str
+) -> None:
+    claude.version = version
+
+    assert summarizer.problem() == CLAUDE_OLDER.format(version=found)
+
+
+def test_a_claude_that_never_gives_its_version_is_an_unknown_one_and_does_not_hold_the_window(
+    claude: FakeClaude,
+) -> None:
+    claude.version_hangs = True
+
+    assert summarizer.problem() == CLAUDE_OLDER.format(version="unknown")
+
+
+def test_a_missing_claude_is_the_problem_while_it_is_chosen(claude: FakeClaude) -> None:
+    claude.missing = True
+
+    assert summarizer.problem() == summarizer.CLAUDE_MISSING
+
+
+def test_devin_is_the_problem_only_while_it_is_missing_from_the_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("PATH", str(tmp_path))
+    assert summarizer.problem() == summarizer.DEVIN_MISSING
+
+    (tmp_path / "devin").write_text("#!/bin/sh\n")
+    (tmp_path / "devin").chmod(0o755)
+    assert summarizer.problem() == ""
 
 
 def test_a_claude_that_never_answers_is_stopped_and_fails_the_run(claude: FakeClaude) -> None:

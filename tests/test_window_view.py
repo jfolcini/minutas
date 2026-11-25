@@ -491,6 +491,21 @@ SUMMARIZED = run("summarize", "succeeded", output="summary.md", prompt="Summariz
                 prompt="Only the blockers.",
             ),
         ),
+        # Retry sends the context the failed run had too.
+        (
+            [
+                TRANSCRIBED,
+                run("summarize", "failed", error="boom", prompt="P", context=["Team", "Project"]),
+            ],
+            action(
+                "Failed: boom",
+                "Retry",
+                failed=True,
+                menu="Summarize",
+                prompt="P",
+                context=("Team", "Project"),
+            ),
+        ),
         # A transcription that failed after one that succeeded leaves its transcript.
         (
             [TRANSCRIBED, run("transcribe", "failed", error="Out of memory")],
