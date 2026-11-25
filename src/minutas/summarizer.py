@@ -197,7 +197,7 @@ LIST_MODELS = [DEVIN, "models", "list", "--format", "json", "--process-model", "
 MODELS_UNREADABLE = "Devin listed its models in a form Minutas can't read"
 VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)")
 VERSION_TIMEOUT_SECONDS = 10
-TIMED_OUT = f"{{name}} gave no answer in {TIMEOUT_SECONDS // 60} minutes: see Details, then Retry"
+TIMED_OUT = "{name} gave no answer in {minutes} minutes: see Details, then Retry"
 
 
 class SummarizerError(Exception):
@@ -445,7 +445,9 @@ def ask(prompt: str, log: Path) -> tuple[str | None, str]:
                 raise SummarizerError(tool.missing) from None
             except subprocess.TimeoutExpired:
                 out.write(f"no answer in {TIMEOUT_SECONDS} s: stopped\n")
-                raise SummarizerError(TIMED_OUT.format(name=tool.name)) from None
+                raise SummarizerError(
+                    TIMED_OUT.format(name=tool.name, minutes=TIMEOUT_SECONDS // 60)
+                ) from None
             out.write(f"{result.stdout}{result.stderr}exit status {result.returncode}\n")
     if result.returncode != 0:
         # Not its last line, which can be Devin's "Logged in as …": Details holds all it said.
