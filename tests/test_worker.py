@@ -984,6 +984,17 @@ def test_progress_said_after_a_cancel_leaves_the_run_cancelled(system: FakeSyste
     assert transcribe_progress(recording_id) is None
 
 
+def test_progress_said_after_a_cancel_rewrites_nothing() -> None:
+    recording_id = recording()
+    cancelled = cast("store.Run", {**QUEUED, "status": "cancelled"})
+    put_runs(recording_id, [cancelled])
+
+    worker.set_progress(recording_id, 0, store.Progress(phase="transcribing", percent=50))
+
+    assert store.load_runs(recording_id) == [cancelled]
+    assert not (store.data_dir() / "status.json").exists()
+
+
 @pytest.mark.usefixtures("speech", "sigterm")
 def test_sigterm_while_the_transcriber_says_how_far_it_has_got_fails_the_run(
     system: FakeSystem,

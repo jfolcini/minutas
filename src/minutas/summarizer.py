@@ -173,16 +173,12 @@ CLAUDE_MISSING = (
     "claude not found: install Claude Code with "
     "`curl -fsSL https://claude.ai/install.sh | bash`, then log in with `claude auth login`"
 )
-EMPTY = "Devin answered with an empty summary: see Details"
-CLAUDE_EMPTY = "Claude answered with an empty summary: see Details"
+EMPTY = "{name} answered with an empty summary: see Details"
 SKILL_UNREADABLE = "Can't read the summary skill {path}: choose another in Settings"
 # Every model the account can use, for Settings to offer; in-process, as Summarize runs Devin.
 LIST_MODELS = [DEVIN, "models", "list", "--format", "json", "--process-model", "in-process"]
 MODELS_UNREADABLE = "Devin listed its models in a form Minutas can't read"
-TIMED_OUT = f"Devin gave no answer in {TIMEOUT_SECONDS // 60} minutes: see Details, then Retry"
-CLAUDE_TIMED_OUT = (
-    f"Claude gave no answer in {TIMEOUT_SECONDS // 60} minutes: see Details, then Retry"
-)
+TIMED_OUT = f"{{name}} gave no answer in {TIMEOUT_SECONDS // 60} minutes: see Details, then Retry"
 
 
 class SummarizerError(Exception):
@@ -191,19 +187,19 @@ class SummarizerError(Exception):
 
 @dataclass(frozen=True)
 class Tool:
-    """A summarizer: the command it runs as, its name in Settings, and what its failures say."""
+    """A summarizer: the command it runs as, its title in Settings, the name its failures call it
+    by, and what a run says when it isn't installed."""
 
     command: str
     title: str
+    name: str
     missing: str
-    empty: str
-    timed_out: str
 
 
 # In the order Settings offer them: the first is the one Summarize runs until another is chosen.
 TOOLS = (
-    Tool(DEVIN, "Devin CLI", DEVIN_MISSING, EMPTY, TIMED_OUT),
-    Tool(CLAUDE, "Claude Code", CLAUDE_MISSING, CLAUDE_EMPTY, CLAUDE_TIMED_OUT),
+    Tool(DEVIN, "Devin CLI", "Devin", DEVIN_MISSING),
+    Tool(CLAUDE, "Claude Code", "Claude", CLAUDE_MISSING),
 )
 
 
@@ -361,7 +357,7 @@ def ask(prompt: str, log: Path) -> tuple[str | None, str]:
                 raise SummarizerError(tool.missing) from None
             except subprocess.TimeoutExpired:
                 out.write(f"no answer in {TIMEOUT_SECONDS} s: stopped\n")
-                raise SummarizerError(tool.timed_out) from None
+                raise SummarizerError(TIMED_OUT.format(name=tool.name)) from None
             out.write(f"{result.stdout}{result.stderr}exit status {result.returncode}\n")
     if result.returncode != 0:
         # Not its last line, which can be Devin's "Logged in as …": Details holds all it said.
@@ -369,7 +365,7 @@ def ask(prompt: str, log: Path) -> tuple[str | None, str]:
         raise SummarizerError(reason)
     title, summary = split_title(result.stdout)
     if not summary:
-        raise SummarizerError(tool.empty)
+        raise SummarizerError(EMPTY.format(name=tool.name))
     return title, summary
 
 

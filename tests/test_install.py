@@ -543,7 +543,7 @@ def test_no_summarizer_says_how_to_install_either(sandbox: Sandbox) -> None:
 
 # --- Summary -----------------------------------------------------------------------------------
 
-STEPS = "step_gnome_extension; step_agaric_mcp; step_glab; step_summarizer"
+STEPS = "step_gnome_extension; step_agaric_mcp; step_glab; step_gh; step_summarizer"
 
 
 def test_the_summary_says_to_log_out_and_names_the_optional_tools_missing(
@@ -558,8 +558,8 @@ def test_the_summary_says_to_log_out_and_names_the_optional_tools_missing(
         "\n"
         "Left to do:\n"
         "- Log out and back in to load the top-bar extension.\n"
-        "- Optional, still missing: glab, Summarizer; their lines above say what needs them and "
-        "how to get them.\n"
+        "- Optional, still missing: glab, gh, Summarizer; their lines above say what needs them "
+        "and how to get them.\n"
     )
     # What the Recordings window looks for after an update.
     assert f"- {window_view.LOG_OUT}\n" in result.stdout
@@ -570,8 +570,11 @@ def test_the_summary_is_left_out_when_nothing_is_left_to_do(sandbox: Sandbox) ->
     sandbox.run("step_gnome_extension")
     sandbox.fake("agaric-mcp", WITH_CALL)
     sandbox.fake("glab", 'echo "glab 1.91.0"')
+    sandbox.fake("gh", 'echo "gh version 2.45.0"')
     sandbox.fake("devin")
 
     result = sandbox.run(f"{STEPS}; summary")
 
-    assert result.stdout == "GNOME extension: ok\nagaric-mcp: ok\nglab: ok\nSummarizer: ok\n"
+    assert result.stdout == (
+        "GNOME extension: ok\nagaric-mcp: ok\nglab: ok\ngh: ok\nSummarizer: ok\n"
+    )
