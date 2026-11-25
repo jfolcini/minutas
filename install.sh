@@ -9,14 +9,20 @@ set -euo pipefail
 repo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 
 # The window, its player and the calendar, then the recorder (pulsesrc through
-# pipewire-pulse, opusenc, gst-launch-1.0, gio); curl fetches uv's installer and
-# libsecret-tools keeps the Hugging Face token.
+# pipewire-pulse, opusenc, gst-launch-1.0, gio); curl downloads uv and libsecret-tools keeps the
+# Hugging Face token.
 system_packages=(
   python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 libgtk-4-media-gstreamer gir1.2-ecal-2.0 gir1.2-edataserver-1.2
   gstreamer1.0-plugins-good gstreamer1.0-plugins-base gstreamer1.0-tools libglib2.0-bin pipewire-pulse
   curl libsecret-tools
 )
 uv_version=0.13.6
+# The sha256 of that release's uv-<machine>-unknown-linux-gnu.tar.gz, as uv publishes it beside
+# each archive: a download that doesn't match is never unpacked.
+declare -A uv_sha256=(
+  [x86_64]=f29c3e94ffabd7e6f3ba521dba169a9b7ec12100bf3257087f0f24f6123f3645
+  [aarch64]=229e194255c7958d86d56e8790d969a6f74736592133f0dfd0076f754c642c1d
+)
 uv_bin=$HOME/.local/bin/uv
 speech_env=$HOME/.local/share/minutas/speech
 app_dir=$HOME/.local/share/minutas/app
@@ -33,6 +39,24 @@ models=(
   "pyannote/speaker-diarization-community-1 3533c8cf8e369892e6b79ff1bf80f7b0286a54ee *"
 )
 token_attributes=(service minutas username huggingface)
+# For the summary: the optional tools missing, and whether GNOME Shell has a new extension to load.
+missing_tools=()
+log_out=false
+
+intro() {
+  cat <<'EOF'
+Installs Minutas, or brings it up to date: the system packages it needs, uv,
+the speech environment and its models, the app with its launcher, and the
+top-bar extension. All but the system packages go in your home folder, and all
+it downloads besides Ubuntu's own packages is pinned to an exact version.
+It asks for two things, and only when it needs them: your password, through
+sudo, to install missing system packages with apt; and once, a Hugging Face
+token, to download the speaker model.
+Each step prints ok when there was nothing to do, else what it did. A step that
+fails says how to fix it, and running install.sh again carries on from there.
+
+EOF
+}
 
 report() { printf '%s: %s\n' "$1" "$2"; }
 
@@ -52,23 +76,36 @@ step_system_packages() {
     report "System packages" ok
     return
   fi
-  if ! sudo -n true 2>/dev/null && [[ ! -t 0 ]]; then
-    fail "System packages" "missing ${missing[*]}, and sudo needs a password. Run: sudo apt install ${missing[*]}"
+  if ! sudo -n true 2>/dev/null; then
+    [[ -t 0 ]] || fail "System packages" "missing ${missing[*]}, and sudo can ask for its password only in a terminal. Run: sudo apt install ${missing[*]}, then $repo_dir/install.sh again."
+    echo "sudo asks for your password only to install these with apt: ${missing[*]}"
   fi
   sudo apt-get install -y "${missing[@]}" \
     || fail "System packages" "apt could not install ${missing[*]} (see above). Fix that, then run install.sh again."
   report "System packages" "installed ${missing[*]}"
 }
 
+# The archive stays in the cache, where the next uv update overwrites it.
 step_uv() {
   if [[ -x $uv_bin && $("$uv_bin" --version) == "uv $uv_version "* ]]; then
     report uv ok
     return
   fi
-  curl -LsSf "https://astral.sh/uv/$uv_version/install.sh" \
-    | UV_INSTALL_DIR=$HOME/.local/bin UV_NO_MODIFY_PATH=1 sh \
-    || fail uv "could not install uv $uv_version (see above). Check the network, then run install.sh again."
-  report uv "installed uv $uv_version in $HOME/.local/bin"
+  local machine archive download
+  machine=$(uname -m)
+  [[ -n ${uv_sha256[$machine]:-} ]] \
+    || fail uv "uv $uv_version is pinned for x86_64 and aarch64 only, and this computer is $machine."
+  archive=uv-$machine-unknown-linux-gnu
+  download=$HOME/.cache/minutas/$archive.tar.gz
+  mkdir -p "${download%/*}"
+  curl -fLsS -o "$download" "https://github.com/astral-sh/uv/releases/download/$uv_version/$archive.tar.gz" \
+    || fail uv "could not download uv $uv_version (see above). Check the network, then run install.sh again."
+  sha256sum --check --status <<<"${uv_sha256[$machine]}  $download" \
+    || fail uv "the uv $uv_version download doesn't match the checksum install.sh pins for it, so it wasn't installed. Run install.sh again; if it fails the same way, report it at https://github.com/jfolcini/minutas/issues"
+  mkdir -p "${uv_bin%/*}"
+  tar -xzf "$download" -C "${uv_bin%/*}" --strip-components=1 "$archive/uv" "$archive/uvx" \
+    || fail uv "could not unpack $download (see above). Run install.sh again."
+  report uv "installed uv $uv_version in ${uv_bin%/*}"
 }
 
 # The environment holds only what uv.lock pins, so an unchanged lock means nothing to do.
@@ -141,6 +178,7 @@ step_gnome_extension() {
     mkdir -p "$extension_dir"
     cp "${extension_files[@]/#/$repo_dir/extension/}" "$extension_dir/"
     outcome="installed in $extension_dir; log out and back in once to load it"
+    log_out=true
   fi
   if [[ $enabled != *"'$extension_uuid'"* ]]; then
     # The list as gsettings prints it: "@as []" when empty, else "['a', 'b']".
@@ -157,11 +195,12 @@ step_huggingface_token() {
     report "Hugging Face token" ok
     return
   fi
+  local why="pyannote's speaker model, which tells who said what, downloads only with the token of a Hugging Face account that accepted its conditions"
   local conditions="Accept the conditions of https://huggingface.co/pyannote/speaker-diarization-community-1, then create a read token at https://huggingface.co/settings/tokens"
   if [[ ! -t 0 ]]; then
-    fail "Hugging Face token" "none in the GNOME keyring. $conditions, and run install.sh again in a terminal, or store it with: secret-tool store --label='Minutas: Hugging Face token' ${token_attributes[*]}"
+    fail "Hugging Face token" "none in the GNOME keyring; $why. $conditions, and run $repo_dir/install.sh again in a terminal, or store it with: secret-tool store --label='Minutas: Hugging Face token' ${token_attributes[*]}"
   fi
-  printf '%s.\n' "$conditions"
+  printf '%s. %s; it is kept in the GNOME keyring.\n' "$why" "$conditions"
   local token
   read -rsp "Hugging Face token: " token
   echo
@@ -215,6 +254,7 @@ step_agaric_mcp() {
     report agaric-mcp ok
     return
   fi
+  missing_tools+=(agaric-mcp)
   report agaric-mcp "no agaric-mcp with \`call\` at $own or on the PATH; Publish to Agaric needs it. Install Agaric 0.26 or newer and start it once"
 }
 
@@ -232,6 +272,7 @@ step_glab() {
     fi
     found="the PATH has glab ${BASH_REMATCH[0]}"
   fi
+  missing_tools+=(glab)
   report glab "$found; Publish to GitLab stays off until glab 1.91 or newer is installed from GitLab's own .deb: https://gitlab.com/gitlab-org/cli/-/releases"
 }
 
@@ -240,10 +281,29 @@ step_devin() {
     report "Devin CLI" ok
     return
   fi
+  missing_tools+=("Devin CLI")
   report "Devin CLI" "not installed; Summarize needs it. Install it with \`curl -fsSL https://cli.devin.ai/install.sh | bash\`, then log in with \`devin auth login\`"
 }
 
+# What is left for the person to do, if anything.
+summary() {
+  local left=() list
+  if [[ $log_out == true ]]; then
+    left+=("Log out and back in to load the top-bar extension.")
+  fi
+  if ((${#missing_tools[@]} > 0)); then
+    list=$(printf '%s, ' "${missing_tools[@]}")
+    left+=("Optional, still missing: ${list%, }; their lines above say what needs them and how to get them.")
+  fi
+  if ((${#left[@]} > 0)); then
+    printf '\nLeft to do:\n'
+    printf -- '- %s\n' "${left[@]}"
+  fi
+}
+
 main() {
+  # The intro says what it may ask for, which it can ask only in a terminal: not under Update Minutas.
+  if [[ -t 0 ]]; then intro; fi
   step_system_packages
   step_uv
   step_speech_environment
@@ -260,6 +320,7 @@ main() {
   step_agaric_mcp
   step_glab
   step_devin
+  summary
 }
 
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then

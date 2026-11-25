@@ -35,3 +35,9 @@ Please include the affected commit, a reproduction, and your assessment of the i
 ## Automated coverage
 
 Every pull request runs gitleaks, ruff's security rules (bandit's `S` set), ty with every rule an error, zizmor over the workflows, and `pip-audit` over `uv.lock`. CodeQL and the OpenSSF Scorecard run weekly. Dependabot proposes dependency and Actions updates after a seven-day cooldown.
+
+## Supply chain
+
+- `install.sh` downloads uv's release archive from GitHub and unpacks it only when it matches the sha256 pinned beside uv's version. uv then installs only what `uv.lock` pins, checking each package against its hash there, and checks the Python builds it downloads itself.
+- The models come from the Hugging Face commits `install.sh` pins.
+- Every GitHub Action is pinned to a commit SHA, and the extension's tools are exact versions that `npm ci` installs from `extension/package-lock.json`, checking their integrity hashes.

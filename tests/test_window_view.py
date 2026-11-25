@@ -12,6 +12,7 @@ from minutas.window_view import (
     RowView,
     SpeakerView,
     TrackView,
+    UpdateView,
     agaric,
     clean_name,
     duration,
@@ -19,6 +20,7 @@ from minutas.window_view import (
     row,
     trash_refusal,
     unrecorded_failure,
+    update,
 )
 
 STATUSES = ("queued", "running", "succeeded", "failed", "cancelled")
@@ -1038,3 +1040,47 @@ GOES = (
 )
 def test_the_limits_warning_says_how_much_audio_goes_now(over: int, said: str) -> None:
     assert limits_warning(over, "1.2 GB") == said
+
+
+INSTALLED = "uv: ok\nApp: installed /home/ana/.local/share/minutas/app and the minutas command\n"
+REOPEN = "Close this window and open it again to run the new version."
+LOGGED_OUT = "\nLeft to do:\n- Log out and back in to load the top-bar extension.\n"
+
+
+@pytest.mark.parametrize(
+    ("said", "shown"),
+    [
+        (
+            f"Updating to v0.4.0.\n{INSTALLED}",
+            UpdateView("Updated", f"Updated to v0.4.0. {REOPEN}"),
+        ),
+        (
+            f"Updating to v0.4.0.\n{INSTALLED}{LOGGED_OUT}",
+            UpdateView(
+                "Updated",
+                f"Updated to v0.4.0. {REOPEN} Log out and back in to load the top-bar extension.",
+            ),
+        ),
+        (
+            "Already on the latest release, v0.4.0.\nuv: ok\nApp: ok\n",
+            UpdateView("Up to date", "Already on the latest release, v0.4.0."),
+        ),
+    ],
+)
+def test_an_update_that_worked_says_what_to_do_next(said: str, shown: UpdateView) -> None:
+    assert update(said, exited_ok=True) == shown
+
+
+def test_a_failed_update_says_the_fix_it_was_given_last() -> None:
+    said = (
+        "Updating to v0.4.0.\nSystem packages: ok\n"
+        "Hugging Face token: failed: none in the GNOME keyring  \n\n"
+    )
+
+    assert update(said, exited_ok=False) == UpdateView(
+        "Update failed", "Hugging Face token: failed: none in the GNOME keyring", failed=True
+    )
+
+
+def test_a_failed_update_that_said_nothing_says_so() -> None:
+    assert update("", exited_ok=False).body == "minutas update stopped without saying why"

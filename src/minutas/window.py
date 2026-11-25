@@ -14,6 +14,8 @@ import shutil
 import sys
 from collections.abc import Callable, Collection, Mapping, Sequence
 from datetime import UTC, datetime
+from importlib.metadata import metadata
+from pathlib import Path
 from typing import cast, override
 
 import gi
@@ -81,6 +83,10 @@ VOCABULARY_NOTE = (
     "Names, products and jargon to listen for, one per line, besides each meeting's attendees; "
     "used from the next transcription, or Run again"
 )
+# Read once: an update replaces the package on disk, not the one this window runs.
+PROJECT = metadata("minutas")
+ABOUT, UPDATE = "about", "update"
+UPDATING = "Updating Minutas…"
 
 
 def now() -> datetime:
@@ -555,6 +561,12 @@ class HistoryWindow(Adw.ApplicationWindow):
         open_settings = Gio.SimpleAction(name=SETTINGS)
         open_settings.connect("activate", self.open_settings)
         self.add_action(open_settings)
+        about = Gio.SimpleAction(name=ABOUT)
+        about.connect("activate", self.show_about)
+        self.add_action(about)
+        self.update_action = Gio.SimpleAction(name=UPDATE)
+        self.update_action.connect("activate", self.update)
+        self.add_action(self.update_action)
         self.list = Gtk.ListBox(
             selection_mode=Gtk.SelectionMode.NONE,
             css_classes=["boxed-list"],
@@ -580,6 +592,8 @@ class HistoryWindow(Adw.ApplicationWindow):
         self.toasts = Adw.ToastOverlay(child=self.pages)
         menu = Gio.Menu()
         menu.append("Settings", f"win.{SETTINGS}")
+        menu.append("Update Minutas", f"win.{UPDATE}")
+        menu.append("About Minutas", f"win.{ABOUT}")
         header = Adw.HeaderBar()
         header.pack_end(
             Gtk.MenuButton(
@@ -591,6 +605,8 @@ class HistoryWindow(Adw.ApplicationWindow):
         )
         page = Adw.ToolbarView(content=self.toasts)
         page.add_top_bar(header)
+        self.updating = Adw.Banner(title=UPDATING)
+        page.add_top_bar(self.updating)
         self.set_content(page)
         # GLib polls for a monitored file whose folder is missing; in one that exists it waits.
         store.data_dir().mkdir(parents=True, exist_ok=True)
@@ -1074,7 +1090,11 @@ class HistoryWindow(Adw.ApplicationWindow):
                 worker.queue(recording_id, now())
 
     def show_details(self, _button: Gtk.Button, recording_id: str, action: str) -> None:
-        log = store.recording_dir(recording_id) / str(self.shown(recording_id, action).details)
+        self.show_log(
+            store.recording_dir(recording_id) / str(self.shown(recording_id, action).details)
+        )
+
+    def show_log(self, log: Path) -> None:
         text = Gtk.TextView(
             editable=False,
             monospace=True,
@@ -1256,6 +1276,51 @@ class HistoryWindow(Adw.ApplicationWindow):
             store.fail_left_running(recording_id, action, problem)
             self.say(problem)
         self.refresh()
+
+    def show_about(self, *_activated: object) -> None:
+        links = dict(link.split(", ", 1) for link in PROJECT.get_all("Project-URL", []))
+        Adw.AboutDialog(
+            application_name="Minutas",
+            application_icon="audio-input-microphone",
+            version=PROJECT["Version"],
+            comments=PROJECT["Summary"],
+            license_type=Gtk.License.GPL_3_0,
+            website=links["Repository"],
+            issue_url=links["Issues"],
+        ).present(self)
+
+    def update(self, *_activated: object) -> None:
+        """Runs `minutas update`, saying so until it ends, then what came of it.
+
+        It prints to a file, not to this window: closing the window, which an update ends by
+        asking for, must not cut it off midway.
+        """
+        log = store.data_dir() / "update.log"
+        # The launcher writes over the file without truncating it: the last update's tail stays.
+        log.unlink(missing_ok=True)
+        launcher = Gio.SubprocessLauncher.new(Gio.SubprocessFlags.STDERR_MERGE)
+        launcher.set_stdout_file_path(str(log))
+        command = launcher.spawnv([*MINUTAS, "update"])
+        self.update_action.set_enabled(False)
+        self.updating.set_revealed(True)
+        command.wait_async(None, self.updated, log)
+
+    def updated(self, command: Gio.Subprocess, result: Gio.AsyncResult, log: Path) -> None:
+        command.wait_finish(result)
+        self.update_action.set_enabled(True)
+        self.updating.set_revealed(False)
+        outcome = window_view.update(
+            log.read_text(errors="replace"), exited_ok=command.get_successful()
+        )
+        dialog = Adw.AlertDialog(heading=outcome.heading, body=outcome.body, close_response="close")
+        dialog.add_response("close", "Close")
+        if outcome.failed:
+            dialog.add_response("details", "Details")
+        dialog.choose(self, None, self.update_answered, log)
+
+    def update_answered(self, dialog: Adw.AlertDialog, result: Gio.AsyncResult, log: Path) -> None:
+        if dialog.choose_finish(result) == "details":
+            self.show_log(log)
 
 
 class History(Adw.Application):
