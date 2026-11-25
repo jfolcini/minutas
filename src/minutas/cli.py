@@ -275,10 +275,11 @@ def record_continue(args: argparse.Namespace) -> int:
             tracks=store.PARTS,
         )
     except recorder.RecorderError as error:
-        # A unit that ran has stopped the recording again, as any stop does; one that never
-        # started ran no exit command.
+        # A unit that ran has stopped the recording again and queued its transcription, as any
+        # stop does; one that never started ran no exit command, so this does the same.
         if store.load_recording(recording_id)["stopped_at"] is None:
             store.mark_stopped(recording_id, now(), incomplete=recording["incomplete"])
+            queue_transcription(recording_id)
         store.write_status()
         return fail(f"Could not start the recorder: {error}")
     store.write_status()
