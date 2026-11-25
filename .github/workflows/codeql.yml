@@ -1,7 +1,9 @@
 name: CodeQL
 
-# Weekly, not per PR: ruff (with its bandit rules), ty and zizmor gate PRs.
+# Advisory on every PR (Scorecard's SAST check counts the PRs it ran on), and weekly on main
+# so new queries reach code no PR touches.
 on:
+  pull_request:
   schedule:
     - cron: '0 6 * * 2'
   workflow_dispatch:
@@ -11,7 +13,7 @@ permissions:
 
 concurrency:
   group: codeql-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   analyze:

@@ -56,9 +56,9 @@ jobs:
           persist-credentials: false
 
       # The review is cast as the dedicated reviewer app: the repository does
-      # not let GitHub Actions approve pull requests. The ruleset requires no
-      # approval, so the review is advisory. Without the two REVIEWER_APP_*
-      # secrets the review falls back to the workflow token.
+      # not let GitHub Actions approve pull requests, and the ruleset requires
+      # an approval of the latest push. Without the two REVIEWER_APP_* secrets
+      # the review falls back to the workflow token, which cannot approve.
       - name: Generate reviewer app token
         id: app-token
         if: env.HAS_REVIEWER_APP == 'true'
