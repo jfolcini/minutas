@@ -124,7 +124,7 @@ def test_a_typed_name_says_so() -> None:
 def test_a_name_from_the_calendar_says_so() -> None:
     view = shown([], {"name": "Weekly sync", "name_source": "calendar"})
 
-    assert (view.name, view.name_source) == ("Weekly sync", "Calendar event")
+    assert (view.name, view.name_source) == ("Weekly sync", "From the calendar event")
 
 
 def test_a_name_from_the_summary_says_so() -> None:

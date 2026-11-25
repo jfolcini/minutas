@@ -18,10 +18,11 @@ COMMAND_TITLES = {
     PUBLISH_GITLAB: "Publish to GitLab",
 }
 TRACK_TITLES = dict(zip(store.TRACKS, ("Microphone", "Call"), strict=True))
+# Each starts the Rename dialog's body, a sentence of its own.
 NAME_SOURCES = {
     "default": "Default name",
     "summary": "Proposed by the summary",
-    "calendar": "Calendar event",
+    "calendar": "From the calendar event",
     "typed": "Typed name",
 }
 RESULTS = {
@@ -199,7 +200,9 @@ def trash_refusal(
 ) -> str:
     """Why the recording can't go to the Trash now; empty when it can.
 
-    running: the actions whose command the window is running for it.
+    running: the actions whose command the window is running for it. The log's running runs are
+    not asked: a command stopped with Ctrl-C or killed leaves its run running until the next run
+    of its action, and would keep the recording from the Trash for good.
     """
     if recording["stopped_at"] is None:
         return STILL_RECORDING

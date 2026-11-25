@@ -677,7 +677,7 @@ def test_the_recordings_are_read_inside_the_store_lock(monkeypatch: pytest.Monke
     assert held == [True]
 
 
-def test_a_row_has_its_menu_on_its_own_line_and_expands_to_its_tracks_and_actions(
+def test_a_row_has_its_menu_on_the_line_it_shows_collapsed_and_expands_to_the_rest(
     history: Callable[[], window.HistoryWindow],
 ) -> None:
     recording()
@@ -745,7 +745,8 @@ def test_rename_keeps_the_typed_name_and_says_where_the_name_came_from(
     dialog, entry = rename_dialog(shown)
     assert dialog.get_heading() == "Rename"
     assert dialog.get_body() == (
-        "Calendar event. A typed name is kept for good, and the next Publish to Agaric applies it."
+        "From the calendar event. "
+        "A typed name is kept for good, and the next Publish to Agaric applies it."
     )
     assert entry.get_text() == "Weekly"
     entry.set_text("  Weekly\tsync ")
@@ -1248,26 +1249,17 @@ def test_move_to_trash_keeps_the_recording_when_not_confirmed(
     assert list(shown.rows) == [FIRST]
 
 
-@pytest.mark.parametrize(
-    ("runs", "said"),
-    [
-        ([run("transcribe", "queued")], "Cancel the transcription first"),
-        ([run("transcribe", "running")], "Cancel the transcription first"),
-    ],
-)
+@pytest.mark.parametrize("status", ["queued", "running"])
 def test_move_to_trash_refuses_while_a_transcription_waits_or_runs(
-    history: Callable[[], window.HistoryWindow],
-    desktop_calls: Desktop,
-    runs: list[store.Run],
-    said: str,
+    history: Callable[[], window.HistoryWindow], desktop_calls: Desktop, status: str
 ) -> None:
-    recording(runs)
+    recording([run("transcribe", status)])
     shown = history()
 
     choose_from_row_menu(shown, "Move to Trash…")
 
     assert shown.get_visible_dialog() is None
-    assert said in texts(shown)
+    assert "Cancel the transcription first" in texts(shown)
     assert desktop_calls.trashed == []
     assert store.is_recording(FIRST) is True
 
@@ -1275,7 +1267,7 @@ def test_move_to_trash_refuses_while_a_transcription_waits_or_runs(
 def test_move_to_trash_refuses_while_recording(
     history: Callable[[], window.HistoryWindow], desktop_calls: Desktop
 ) -> None:
-    store.save_runs(store.create_recording(START)["id"], [])
+    store.create_recording(START)
     shown = history()
 
     choose_from_row_menu(shown, "Move to Trash…")
