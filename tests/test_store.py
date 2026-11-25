@@ -903,6 +903,20 @@ def test_keys_a_newer_minutas_wrote_survive_a_change() -> None:
     assert cast("dict[str, object]", store.load_runs(recording_id)[0])["uploads"] == {"x": "y"}
 
 
+def test_a_recording_that_does_not_read_stops_no_list_and_is_named(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    good = make_stopped(START)
+    bad = make_stopped(START + timedelta(hours=1))
+    (store.recording_dir(bad) / "recording.json").write_text('{"id": 1}')
+
+    store.write_status()
+
+    recent = cast("list[dict[str, object]]", read_status()["recent"])
+    assert [entry["id"] for entry in recent] == [good]
+    assert f"skipped {store.recording_dir(bad)}" in capsys.readouterr().err
+
+
 def a_run(action: str, status: str, **changes: object) -> store.Run:
     run = {
         "action": action,

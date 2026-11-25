@@ -7,7 +7,8 @@ changes: whatever reads it, publishing included, reads the current names.
 
 import fcntl
 import os
-from collections.abc import Generator, Iterable, Mapping, Sequence
+import sys
+from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -197,10 +198,22 @@ def save_runs(recording_id: str, runs: list[Run]) -> None:
     write_json(recording_dir(recording_id) / "runs.json", runs)
 
 
+def readable[T](recording_ids: Iterable[str], read: Callable[[str], T]) -> dict[str, T]:
+    """What read gives of each recording, in their order, but of one whose files aren't in the
+    form Minutas writes, which is named on stderr: a damaged file stops no list."""
+    found: dict[str, T] = {}
+    for recording_id in recording_ids:
+        try:
+            found[recording_id] = read(recording_id)
+        except ValueError as error:
+            sys.stderr.write(f"minutas: skipped {recording_dir(recording_id)}: {error}\n")
+    return found
+
+
 def load_recordings() -> list[Recording]:
     """Newest first."""
     folders = sorted(recordings_dir().glob("*/recording.json"), reverse=True)
-    return [load_recording(path.parent.name) for path in folders]
+    return list(readable((path.parent.name for path in folders), load_recording).values())
 
 
 def has_audio(track: Path) -> bool:
@@ -529,9 +542,9 @@ def recordings_over_limits(
 ) -> list[str]:
     """The recordings whose tracks the limits would delete now."""
     # By runs.json, which a recording gets only after its recording.json.
-    ids = [path.parent.name for path in recordings_dir().glob("*/runs.json")]
-    recordings = [(load_recording(i), load_runs(i), audio_size(i)) for i in ids]
-    return audio_over_limits(recordings, now, age_limit_days, size_limit_gb)
+    ids = (path.parent.name for path in recordings_dir().glob("*/runs.json"))
+    recordings = readable(ids, lambda i: (load_recording(i), load_runs(i), audio_size(i)))
+    return audio_over_limits(list(recordings.values()), now, age_limit_days, size_limit_gb)
 
 
 def delete_audio_over_limits(

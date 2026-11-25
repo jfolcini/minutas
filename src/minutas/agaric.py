@@ -22,7 +22,7 @@ from types import FrameType
 from typing import Annotated, NamedTuple, NotRequired, TypedDict, cast
 
 from keyring.errors import KeyringError
-from pydantic import Field, TypeAdapter
+from pydantic import ConfigDict, Field, TypeAdapter, with_config
 
 from minutas import settings, store
 
@@ -144,16 +144,19 @@ def token_in(pasted: str) -> str | None:
     return None if found is None else found.group()
 
 
+@with_config(ConfigDict(strict=True))
 class Space(TypedDict):
     id: str
     name: str
 
 
+@with_config(ConfigDict(strict=True))
 class Meeting(TypedDict):
     page_id: str
     recording_block_id: str
 
 
+@with_config(ConfigDict(strict=True))
 class Resolved(TypedDict):
     page_id: str
 
@@ -162,7 +165,6 @@ class Resolved(TypedDict):
 SPACES = TypeAdapter(list[Space])
 MEETING = TypeAdapter(Meeting)
 RESOLVED = TypeAdapter(Annotated[list[Resolved], Field(min_length=1)])
-ANY_JSON = TypeAdapter(object)
 
 
 @contextmanager
@@ -194,7 +196,7 @@ def call(token: str, tool: str, arguments: Mapping[str, object], log: Path) -> o
     if result.returncode != 0:
         raise failure(result.stderr, result.returncode)
     with unexpected():
-        return ANY_JSON.validate_json(result.stdout)
+        return json.loads(result.stdout)
 
 
 def mixed(tracks: Sequence[str], into: Sequence[str]) -> list[str]:
@@ -319,10 +321,10 @@ def send(recording_id: str, runs: list[store.Run], page: str | None, log: Path) 
     except NameTakenError:
         found = call(token, "resolve", {"space_id": space_id, "names": [title]}, log)
         with unexpected():
-            holder = RESOLVED.validate_python(found, strict=True)[0]["page_id"]
+            holder = RESOLVED.validate_python(found)[0]["page_id"]
         raise AgaricError(taken, store.Choice(kind="name_taken", page_id=holder)) from None
     with unexpected():
-        made = MEETING.validate_python(answer, strict=True)
+        made = MEETING.validate_python(answer)
     note = None if "audio_path" in files else AUDIO_LEFT_OUT
     return Published(made["page_id"], title, made["recording_block_id"], summary_run, note)
 
@@ -383,5 +385,5 @@ def list_spaces() -> list[tuple[str, str]]:
     """Every space the agent token may use, as its id and name."""
     answer = call(agent_token(), "list_spaces", {}, Path(os.devnull))
     with unexpected():
-        spaces = SPACES.validate_python(answer, strict=True)
+        spaces = SPACES.validate_python(answer)
     return [(space["id"], space["name"]) for space in spaces]

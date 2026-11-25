@@ -181,9 +181,10 @@ def load_views(running: Mapping[str, Collection[str]]) -> list[RowView]:
     # Inside the lock, so a recording being discarded is seen whole or not at all.
     with store.lock():
         logs = worker.runs_by_recording()
+        recordings = store.readable(sorted(logs, reverse=True), store.load_recording)
         return [
             window_view.row(
-                store.load_recording(recording_id),
+                recording,
                 logs[recording_id],
                 [
                     name
@@ -194,7 +195,7 @@ def load_views(running: Mapping[str, Collection[str]]) -> list[RowView]:
                 missing_tools=missing_tools,
                 age_limit_days=age_limit_days,
             )
-            for recording_id in sorted(logs, reverse=True)
+            for recording_id, recording in recordings.items()
         ]
 
 

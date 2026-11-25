@@ -32,7 +32,7 @@ from pathlib import Path
 from types import FrameType
 from typing import TypedDict
 
-from pydantic import TypeAdapter
+from pydantic import ConfigDict, TypeAdapter, with_config
 
 from minutas import settings, store
 
@@ -281,16 +281,19 @@ class Model:
     efforts: tuple[tuple[str, str], ...]
 
 
+@with_config(ConfigDict(strict=True))
 class DevinVariant(TypedDict):
     label: str
     model_uid: str
 
 
+@with_config(ConfigDict(strict=True))
 class DevinFamily(TypedDict):
     family_label: str
     variants: list[DevinVariant]
 
 
+@with_config(ConfigDict(strict=True))
 class DevinModels(TypedDict):
     """What `devin models list --format json` says, as much of it as Settings shows."""
 
@@ -318,7 +321,7 @@ def models(listed: str, saved: str | None) -> list[Model]:
                     for variant in family["variants"]
                 ),
             )
-            for family in DEVIN_MODELS.validate_json(listed, strict=True)["families"]
+            for family in DEVIN_MODELS.validate_json(listed)["families"]
             if family["variants"]
         ]
     except ValueError as error:

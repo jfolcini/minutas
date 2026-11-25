@@ -20,7 +20,7 @@ from pathlib import Path
 from types import FrameType
 from typing import IO, TypedDict, cast
 
-from pydantic import TypeAdapter
+from pydantic import ConfigDict, TypeAdapter, with_config
 
 from minutas import settings, store, transcriber
 
@@ -198,10 +198,8 @@ def queue(recording_id: str, queued: datetime) -> None:
 
 def runs_by_recording() -> dict[str, list[store.Run]]:
     # By runs.json, which a recording gets only after its recording.json.
-    return {
-        path.parent.name: store.load_runs(path.parent.name)
-        for path in store.recordings_dir().glob("*/runs.json")
-    }
+    folders = store.recordings_dir().glob("*/runs.json")
+    return store.readable((path.parent.name for path in folders), store.load_runs)
 
 
 def fail_interrupted() -> None:
@@ -267,6 +265,8 @@ def cancel(recording_id: str, index: int) -> None:
     store.write_status()
 
 
+# Strict, so a bool, which is an int too, is no count.
+@with_config(ConfigDict(strict=True))
 class TranscriberSaid(TypedDict):
     """A progress line of the transcriber's stdout."""
 
@@ -282,8 +282,7 @@ def read_progress(line: str) -> store.Progress | None:
     """The phase and whole percent done a line of the transcriber's stdout says; None for any
     other line, such as one a library printed."""
     try:
-        # Strict, so a bool, which is an int too, is no count.
-        said = TRANSCRIBER_SAID.validate_json(line, strict=True)
+        said = TRANSCRIBER_SAID.validate_json(line)
     except ValueError:
         return None
     phase, done, total = said["phase"], said["done"], said["total"]
