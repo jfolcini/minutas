@@ -53,11 +53,11 @@ def start_recorder(
     )
     if echo_cancel:
         store.mark_echo_cancelled(recording_id, echo_cancelled=echo_cancelled)
-    if echo_cancel and not echo_cancelled:
-        sys.stderr.write(
-            "Echo cancellation didn't start, so the microphone is recorded as it is; "
-            f"journalctl --user -u {recorder.ECHO_CANCEL_UNIT} says why.\n"
-        )
+        if not echo_cancelled:
+            sys.stderr.write(
+                "Echo cancellation didn't start, so the microphone is recorded as it is; "
+                f"journalctl --user -u {recorder.ECHO_CANCEL_UNIT} says why.\n"
+            )
 
 
 def record_start(_: argparse.Namespace) -> int:

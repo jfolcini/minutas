@@ -216,7 +216,6 @@ def test_record_start_records_the_cancelled_mic_by_default_and_notes_it(
 def test_record_start_whose_echo_canceller_fails_records_the_plain_mic_and_says_so(
     fake_recorder: FakeRecorder, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    settings.set_echo_cancel(on=True)
     fake_recorder.canceller_starts = False
 
     assert main(["record", "start"]) == 0

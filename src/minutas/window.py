@@ -97,8 +97,8 @@ VOCABULARY_NOTE = (
     "weren't said."
 )
 ECHO_CANCEL_NOTE = (
-    "For calls on speakers: records the microphone with the computer's sound taken out. "
-    "Applies from the next recording."
+    "Records the microphone with the computer's sound taken out, so a call on speakers isn't "
+    "transcribed twice. Applies from the next recording."
 )
 NEW_VOCABULARY_NOTE = "Its file then opens in the text editor: one word or phrase a line."
 VOCABULARY_TRASH_WARNING = (
