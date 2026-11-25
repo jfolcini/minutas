@@ -101,23 +101,6 @@ def target(link: str = ISSUE_LINK) -> github.Target:
     return found
 
 
-def github_run(status: str, link: str = ISSUE_LINK, **changes: object) -> dict[str, object]:
-    return {
-        "action": "publish_github",
-        "status": status,
-        "queued_at": "2026-11-18T13:30:00+00:00",
-        "error": None if status == "succeeded" else "boom",
-        "details": "run-0.log",
-        "output": COMMENT if status == "succeeded" else None,
-        "link": link,
-        **changes,
-    }
-
-
-def put_runs(recording_id: str, runs: list[dict[str, object]]) -> None:
-    (store.recording_dir(recording_id) / "runs.json").write_text(json.dumps(runs))
-
-
 def runs(recording_id: str) -> list[dict[str, object]]:
     return cast(
         "list[dict[str, object]]",
@@ -134,8 +117,8 @@ def log_text(recording_id: str) -> str:
     return (store.recording_dir(recording_id) / "run-0.log").read_text()
 
 
-def body(gist: str = GIST) -> str:
-    return f"{SUMMARY.strip()}\n\n[{FIRST}.transcript.md]({gist})\n"
+def body() -> str:
+    return f"{SUMMARY.strip()}\n\n[{FIRST}.transcript.md]({GIST})\n"
 
 
 def test_an_issue_link_gets_the_summary_as_a_comment_linking_a_secret_gist(
@@ -146,7 +129,8 @@ def test_an_issue_link_gets_the_summary_as_a_comment_linking_a_secret_gist(
     assert github.publish(recording_id, PUBLISHED, target()) is True
 
     [gist, comment] = system.calls
-    # Without --public, gh makes the gist secret; every text goes on stdin, never as an argument.
+    # Without --public, gh makes the gist secret; the transcript and summary go on stdin, never
+    # as an argument.
     assert (gist.argv, gist.stdin) == (GIST_CREATE, TRANSCRIPT)
     assert (comment.argv, comment.stdin) == (COMMENT_ON, body())
     assert runs(recording_id) == [
@@ -159,7 +143,6 @@ def test_an_issue_link_gets_the_summary_as_a_comment_linking_a_secret_gist(
             "output": COMMENT,
             "link": ISSUE_LINK,
             "note": NO_AUDIO,
-            "gist": GIST,
         }
     ]
     assert failed_in_status(recording_id) == []
@@ -189,40 +172,22 @@ def test_a_repository_link_gets_a_new_issue_titled_with_the_name_and_date(
     assert (run["output"], run["link"]) == (NEW_ISSUE, REPOSITORY_LINK)
 
 
-def test_retry_on_the_same_host_reuses_the_failed_runs_gist(system: FakeSystem) -> None:
+def test_retry_makes_a_new_gist_of_the_transcript_there_is_now(system: FakeSystem) -> None:
     recording_id = recording()
-    kept = f"https://{HOST}/gist/ana/kept"
-    put_runs(recording_id, [github_run("failed", gist=kept)])
-
-    # Another repository on the same host: the gist is the account's, not the repository's.
-    assert github.publish(recording_id, PUBLISHED, target(f"https://{HOST}/other/repo")) is True
-
-    [issue] = system.calls
-    assert (issue.kind, issue.stdin) == ("create", body(kept))
-    assert runs(recording_id)[1]["gist"] == kept
-
-
-@pytest.mark.parametrize(
-    "before",
-    [
-        [github_run("failed", "https://github.com/owner/repo/issues/7", gist="x")],
-        # Only a failed run is carried on: publishing again posts what is there now.
-        [github_run("succeeded", gist="x")],
-        [github_run("failed", gist="x"), github_run("succeeded", gist="y")],
-        [{**github_run("failed", gist="x"), "action": "publish_gitlab"}],
-        [github_run("failed")],
-    ],
-    ids=["other host", "after a success", "after a later success", "gitlab", "no gist"],
-)
-def test_a_new_gist_is_made_unless_it_retries_a_failure_on_the_host(
-    system: FakeSystem, before: list[dict[str, object]]
-) -> None:
-    recording_id = recording()
-    put_runs(recording_id, before)
+    system.answers["comment"] = [Answer(1, stderr="HTTP 502: Bad Gateway\n")]
+    assert github.publish(recording_id, PUBLISHED, target()) is False
+    # A speaker named before Retry.
+    renamed = "[00:00:01] **Ana:** Hola.\n"
+    (store.recording_dir(recording_id) / "transcript.md").write_text(renamed)
 
     assert github.publish(recording_id, PUBLISHED, target()) is True
 
-    assert [call.kind for call in system.calls] == ["gist", "comment"]
+    assert [(call.kind, call.stdin) for call in system.calls] == [
+        ("gist", TRANSCRIPT),
+        ("comment", body()),
+        ("gist", renamed),
+        ("comment", body()),
+    ]
 
 
 NOT_LOGGED_IN = f"gh isn't logged in to {HOST}: run `gh auth login --hostname {HOST}`, then Retry"
@@ -230,7 +195,7 @@ NO_ACCESS = f"no access to {ISSUE_LINK}: check the link, and that your account o
 
 
 @pytest.mark.parametrize(
-    ("kind", "answer", "error", "gist"),
+    ("kind", "answer", "error"),
     [
         (
             "gist",
@@ -241,7 +206,6 @@ NO_ACCESS = f"no access to {ISSUE_LINK}: check the link, and that your account o
                 "authentication token.\n",
             ),
             f"Could not make the transcript's gist: {NOT_LOGGED_IN}",
-            None,
         ),
         (
             "comment",
@@ -251,7 +215,6 @@ NO_ACCESS = f"no access to {ISSUE_LINK}: check the link, and that your account o
                 "Try authenticating with:  gh auth login\n",
             ),
             f"Could not comment on issue #7: {NOT_LOGGED_IN}",
-            GIST,
         ),
         (
             "comment",
@@ -261,7 +224,6 @@ NO_ACCESS = f"no access to {ISSUE_LINK}: check the link, and that your account o
                 "of 7. (repository.issue)\n",
             ),
             f"Could not comment on issue #7: {NO_ACCESS}",
-            GIST,
         ),
         (
             "gist",
@@ -274,7 +236,6 @@ NO_ACCESS = f"no access to {ISSUE_LINK}: check the link, and that your account o
                 f"Could not make the transcript's gist: {HOST} is out of reach: check the "
                 "network, then Retry"
             ),
-            None,
         ),
         (
             "gist",
@@ -287,20 +248,18 @@ NO_ACCESS = f"no access to {ISSUE_LINK}: check the link, and that your account o
                 "Could not make the transcript's gist: HTTP 500: Server Error "
                 "(https://api.github.com/gists)"
             ),
-            None,
         ),
         (
             "comment",
             Answer(1, stderr="unknown flag: --body-file\n\nUsage:  gh issue comment [flags]\n"),
             f"Could not comment on issue #7: gh is older than 2.45.0: {INSTALL}",
-            GIST,
         ),
-        ("comment", Answer(2), "Could not comment on issue #7: gh exited with status 2", GIST),
+        ("comment", Answer(2), "Could not comment on issue #7: gh exited with status 2"),
     ],
     ids=["logged out", "unknown to host", "no issue", "offline", "server error", "old", "quiet"],
 )
 def test_a_gh_failure_fails_the_run_at_its_step_with_the_fix(
-    system: FakeSystem, kind: str, answer: Answer, error: str, gist: str | None
+    system: FakeSystem, kind: str, answer: Answer, error: str
 ) -> None:
     recording_id = recording()
     system.answers[kind] = [answer]
@@ -314,8 +273,6 @@ def test_a_gh_failure_fails_the_run_at_its_step_with_the_fix(
         "run-0.log",
         None,
     )
-    # A gist it made is kept, so Retry doesn't make another.
-    assert run.get("gist") == gist
     assert system.calls[-1].kind == kind
     assert answer.stderr in log_text(recording_id)
     assert failed_in_status(recording_id) == ["publish_github"]
@@ -368,7 +325,7 @@ def test_a_missing_gh_fails_the_run(system: FakeSystem) -> None:
     )
 
 
-def test_sigterm_fails_the_run_as_interrupted_and_keeps_the_gist(system: FakeSystem) -> None:
+def test_sigterm_fails_the_run_as_interrupted(system: FakeSystem) -> None:
     recording_id = recording()
     before = signal.getsignal(signal.SIGTERM)
 
@@ -381,7 +338,7 @@ def test_sigterm_fails_the_run_as_interrupted_and_keeps_the_gist(system: FakeSys
     assert github.publish(recording_id, PUBLISHED, target()) is False
 
     run = runs(recording_id)[0]
-    assert (run["status"], run["error"], run["gist"]) == ("failed", "interrupted", GIST)
+    assert (run["status"], run["error"]) == ("failed", "interrupted")
     assert signal.getsignal(signal.SIGTERM) == before
 
 

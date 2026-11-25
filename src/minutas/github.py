@@ -2,9 +2,9 @@
 
 An issue link gets a comment, a repository link a new issue. GitHub takes no audio file, and gh
 attaches none but images, so the transcript goes to a secret gist, which anyone with its link
-can read, and the summary links it; the audio is left out. A failed run keeps its gist, so
-Retry on the same host doesn't make another. Every text goes to gh on its stdin, never as an
-argument.
+can read, and the summary links it; the audio is left out. Every run makes its own gist, Retry
+too: naming a speaker changes the transcript. The transcript and the summary go to gh on its
+stdin, never as an argument.
 """
 
 import os
@@ -16,7 +16,7 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 from types import FrameType
-from typing import NamedTuple, NotRequired, cast
+from typing import NamedTuple
 from urllib.parse import urlsplit, urlunsplit
 
 from minutas import agaric, store
@@ -57,11 +57,6 @@ class Target(NamedTuple):
         if self.issue is None:
             return f"Opens a new issue in {self.repository}"
         return f"Comments on issue #{self.issue} of {self.repository}"
-
-
-class GitHubRun(store.Run):
-    # The secret gist the run put the transcript in.
-    gist: NotRequired[str]
 
 
 class GitHubError(Exception):
@@ -185,21 +180,6 @@ def post(recording_id: str, target: Target, gist: str, log: Path) -> str:
     return gh(target, f"comment on issue #{target.issue}", arguments, body, log)
 
 
-def carried(runs: list[store.Run], target: Target) -> str | None:
-    """The gist of the last run, when it failed publishing to the target's host.
-
-    A gist belongs to the account on its host; publishing again, after a success, makes a new
-    one of the transcript there is now.
-    """
-    last = next((run for run in reversed(runs) if run["action"] == ACTION), None)
-    if last is None or last["status"] != "failed":
-        return None
-    before = parse_link(last.get("link", ""))
-    if before is None or before.host != target.host:
-        return None
-    return cast("GitHubRun", last).get("gist")
-
-
 def interrupt(_signal: int, _frame: FrameType | None) -> None:
     raise GitHubError(store.INTERRUPTED)
 
@@ -208,10 +188,10 @@ def publish(recording_id: str, published: datetime, target: Target) -> bool:
     """Publishes the recording's summary to the target, as a run in its log.
 
     Returns whether the run succeeded. SIGTERM, at logout or shutdown, fails the run as
-    interrupted: gh is killed, and a gist already made is kept.
+    interrupted: gh is killed.
     """
     queued_at = published.isoformat(timespec="seconds")
-    index, runs = store.start_run(
+    index, _ = store.start_run(
         recording_id,
         store.Run(
             action=ACTION,
@@ -223,7 +203,7 @@ def publish(recording_id: str, published: datetime, target: Target) -> bool:
             link=target.link,
         ),
     )
-    run = GitHubRun(
+    run = store.Run(
         action=ACTION,
         status="failed",
         queued_at=queued_at,
@@ -232,21 +212,16 @@ def publish(recording_id: str, published: datetime, target: Target) -> bool:
         output=None,
         link=target.link,
     )
-    gist = carried(runs[:index], target)
     log = store.run_log(recording_id, index)
     on_term = signal.signal(signal.SIGTERM, interrupt)
     try:
-        if gist is None:
-            gist = make_gist(recording_id, target, log)
-        output = post(recording_id, target, gist, log)
+        output = post(recording_id, target, make_gist(recording_id, target, log), log)
     except GitHubError as error:
         run["error"] = str(error)
     else:
         run.update(status="succeeded", output=output, note=AUDIO_LEFT_OUT)
     finally:
         signal.signal(signal.SIGTERM, on_term)
-    if gist is not None:
-        run["gist"] = gist
     run["details"] = store.written_log(recording_id, index)
     store.end_run(recording_id, index, run)
     return run["status"] == "succeeded"
