@@ -5,7 +5,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from minutas import store
+from minutas import store, window_view
 from minutas.window_view import (
     ActionView,
     AgaricView,
@@ -15,6 +15,7 @@ from minutas.window_view import (
     UpdateView,
     agaric,
     clean_name,
+    clock,
     duration,
     folded,
     limits_warning,
@@ -82,8 +83,9 @@ def test_a_stopped_recording_shows_its_name_its_tracks_and_what_can_run() -> Non
         subtitle="2026-11-18 13:05 · 30 min",
         warning=False,
         tracks=(
-            TrackView(file="mic.opus", title="Microphone", subtitle="", available=True),
-            TrackView(file="call.opus", title="Call", subtitle="", available=True),
+            TrackView(key="mic.opus", title="Microphone", subtitle="", available=True),
+            TrackView(key="call.opus", title="Call", subtitle="", available=True),
+            TrackView(key="mixed", title="Microphone and call", subtitle="", available=True),
         ),
         delete_disabled="",
         transcribe=action("Not run yet", "Transcribe"),
@@ -144,8 +146,9 @@ def test_a_recording_in_progress_offers_nothing_but_its_name() -> None:
 
     assert view.subtitle == "2026-11-18 13:05 · Recording"
     assert view.tracks == (
-        TrackView(file="mic.opus", title="Microphone", subtitle="Recording", available=False),
-        TrackView(file="call.opus", title="Call", subtitle="Recording", available=False),
+        TrackView(key="mic.opus", title="Microphone", subtitle="Recording", available=False),
+        TrackView(key="call.opus", title="Call", subtitle="Recording", available=False),
+        TrackView(key="mixed", title="Microphone and call", subtitle="Recording", available=False),
     )
     assert view.delete_disabled == "Still recording"
     assert view.transcribe == action(
@@ -330,8 +333,9 @@ def test_transcribing_needs_the_audio(status: str | None, label: str) -> None:
 
     assert (view.transcribe.label, view.transcribe.disabled) == (label, "The audio was deleted")
     assert view.tracks == (
-        TrackView(file="mic.opus", title="Microphone", subtitle="Deleted", available=False),
-        TrackView(file="call.opus", title="Call", subtitle="Deleted", available=False),
+        TrackView(key="mic.opus", title="Microphone", subtitle="Deleted", available=False),
+        TrackView(key="call.opus", title="Call", subtitle="Deleted", available=False),
+        TrackView(key="mixed", title="Microphone and call", subtitle="Deleted", available=False),
     )
     assert view.delete_disabled == "The audio was deleted"
 
@@ -340,8 +344,51 @@ def test_one_track_is_enough_to_transcribe_and_to_delete() -> None:
     view = shown([], tracks=("call.opus",))
 
     assert view.transcribe.disabled == ""
-    assert [track.available for track in view.tracks] == [False, True]
+    # The mix of what is left is that track alone, as Publish to Agaric would publish it.
+    assert [(track.available, track.subtitle) for track in view.tracks] == [
+        (False, "Deleted"),
+        (True, ""),
+        (True, ""),
+    ]
     assert view.delete_disabled == ""
+
+
+def test_the_speeds_on_offer_go_from_normal_to_twice() -> None:
+    assert window_view.SPEEDS == (1.0, 1.25, 1.5, 1.75, 2.0)
+    # The multiplication sign, not an x.
+    assert window_view.SPEED_LABELS == ("1×", "1.25×", "1.5×", "1.75×", "2×")  # noqa: RUF001
+
+
+@pytest.mark.parametrize(
+    ("seconds", "text"),
+    [
+        (0.0, "0:00"),
+        (0.99, "0:00"),
+        (5.5, "0:05"),
+        (65.0, "1:05"),
+        (599.0, "9:59"),
+        (3599.9, "59:59"),
+        (3600.0, "1:00:00"),
+        (3723.0, "1:02:03"),
+        (36000.0, "10:00:00"),
+    ],
+)
+def test_a_time_in_a_recording_reads_as_a_clock(seconds: float, text: str) -> None:
+    assert clock(seconds) == text
+
+
+@given(st.floats(min_value=0, max_value=100 * 3600))
+def test_a_clock_says_the_whole_seconds_gone(seconds: float) -> None:
+    said = clock(seconds).split(":")
+    fields = [int(field) for field in said]
+    *hours, minutes, whole = fields
+
+    assert sum(field * 60**place for place, field in enumerate(reversed(fields))) == int(seconds)
+    # Hours only past the hour; every field after the first has two digits and stays in its unit.
+    assert hours != [0]
+    assert [len(field) for field in said[1:]] == [2] * (len(said) - 1)
+    assert whole < 60
+    assert minutes < 60 or not hours
 
 
 @pytest.mark.parametrize("status", ["queued", "running"])
@@ -1066,8 +1113,10 @@ def test_every_row_keeps_the_rules(case: Row) -> None:
     # Cancel can always be pressed.
     assert (view.transcribe.disabled == "") is (transcribing or (stopped and tracks != ()))
     assert (view.delete_disabled == "") is (stopped and tracks != () and not transcribing)
-    assert [track.file for track in view.tracks if track.available] == (
-        [name for name in store.TRACKS if name in tracks] if stopped else []
+    assert [track.key for track in view.tracks if track.available] == (
+        [*(name for name in store.TRACKS if name in tracks), *(["mixed"] if tracks else [])]
+        if stopped
+        else []
     )
     # A failure is shown, with its reason, exactly when the latest run of the action failed.
     for shown_action, last, running, missing_tool in (

@@ -18,7 +18,7 @@ uv run just ext setup   # the extension's oxfmt, oxlint, TypeScript and vitest, 
 
 The extension's tools need Node and npm; its tests need GNOME Shell and gjs (`sudo apt install gnome-shell gjs` on Ubuntu 24.04).
 
-The test suite runs the Recordings window for real, on Ubuntu's own PyGObject, GTK and libadwaita and on a display and session bus of its own, never your desktop's, and the recorder's pipeline on GStreamer with a test source: `sudo apt install python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 gir1.2-gstreamer-1.0 gstreamer1.0-plugins-base xvfb dbus-daemon`.
+The test suite runs the Recordings window for real, on Ubuntu's own PyGObject, GTK and libadwaita and on a display and session bus of its own, never your desktop's, the recorder's pipeline on GStreamer with a test source, and the player on the good plugins' scaletempo: `sudo apt install python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 gir1.2-gstreamer-1.0 gstreamer1.0-plugins-base gstreamer1.0-plugins-good xvfb dbus-daemon`.
 
 ### The `just` task runner
 

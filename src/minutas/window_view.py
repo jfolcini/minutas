@@ -21,6 +21,11 @@ COMMAND_TITLES = {
     PUBLISH_GITHUB: "Publish to GitHub",
 }
 TRACK_TITLES = dict(zip(store.TRACKS, ("Microphone", "Call"), strict=True))
+# The row that plays the tracks that hold audio mixed, as Publish to Agaric mixes them.
+MIXED, MIXED_TITLE = "mixed", "Microphone and call"
+SPEEDS = (1.0, 1.25, 1.5, 1.75, 2.0)
+# The multiplication sign, as GNOME's typography writes a speed.
+SPEED_LABELS = tuple(f"{speed:g}×" for speed in SPEEDS)  # noqa: RUF001
 # Each starts the Rename dialog's body, a sentence of its own.
 NAME_SOURCES = {
     "default": "Default name",
@@ -52,7 +57,8 @@ UPDATE_SILENT = "minutas update stopped without saying why"
 
 @dataclass(frozen=True)
 class TrackView:
-    file: str
+    # A track's file, or MIXED.
+    key: str
     title: str
     subtitle: str
     # It can be played and saved.
@@ -158,6 +164,13 @@ def duration(seconds: int) -> str:
     if minutes < 60:  # noqa: PLR2004 - minutes in an hour
         return f"{minutes} min"
     return f"{minutes // 60} h {minutes % 60:02d} min"
+
+
+def clock(seconds: float) -> str:
+    """A time in a recording as its player shows it: 4:05, or 1:02:03 past the hour."""
+    minutes, whole = divmod(int(seconds), 60)
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}:{minutes:02}:{whole:02}" if hours else f"{minutes}:{whole:02}"
 
 
 def clean_name(typed: str) -> str | None:
@@ -403,14 +416,15 @@ def row(  # noqa: PLR0913 - each is a separate input to the row; all after track
         or github_failed,
         tracks=tuple(
             TrackView(
-                file=name,
+                key=key,
                 title=title,
-                subtitle=""
-                if stopped and name in tracks
-                else ("Deleted" if stopped else "Recording"),
-                available=stopped and name in tracks,
+                subtitle="" if stopped and holds_audio else ("Deleted" if stopped else "Recording"),
+                available=stopped and holds_audio,
             )
-            for name, title in TRACK_TITLES.items()
+            for key, title, holds_audio in (
+                *((name, title, name in tracks) for name, title in TRACK_TITLES.items()),
+                (MIXED, MIXED_TITLE, bool(tracks)),
+            )
         ),
         delete_disabled=no_audio or ("" if transcribing is None else CANCEL_TRANSCRIPTION),
         transcribe=transcribe,
