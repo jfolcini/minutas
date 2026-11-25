@@ -129,6 +129,10 @@ VOCABULARY_NOTE = (
     "to words your meetings use: a long list of common words can make them heard where they "
     "weren't said."
 )
+SILENCE_NOTE = (
+    "The top bar says when neither your microphone nor the computer's audio has been heard for "
+    "that long, in case the recording was forgotten."
+)
 ECHO_CANCEL_NOTE = (
     "Records the microphone with the computer's sound taken out, so a call on speakers isn't "
     "transcribed twice. Applies from the next recording."
@@ -223,13 +227,13 @@ def warning_icon() -> Gtk.Image:
 
 
 def limit_row(
-    title: str, unit: str, limit: int | None, default: int
+    title: str, unit: str, limit: int | None, default: int, upper: int = 10_000
 ) -> tuple[Adw.ExpanderRow, Adw.SpinRow]:
     """A limit's switch, and its value in unit, which shows the default while it is off."""
     on = limit is not None
     switch = Adw.ExpanderRow(title=title, show_enable_switch=True, enable_expansion=on, expanded=on)
     # GTK needs an upper bound; nobody keeps audio that long, or that much of it.
-    value = Adw.SpinRow.new_with_range(1, 10_000, 1)
+    value = Adw.SpinRow.new_with_range(1, upper, 1)
     value.set_title(unit)
     value.set_value(default if limit is None else limit)
     switch.add_row(value)
@@ -372,6 +376,29 @@ class SettingsDialog(Adw.PreferencesDialog):
         self.save_limits.set_sensitive(unsaved)
         self.set_can_close(not unsaved)
 
+    def recording_group(self, window: "HistoryWindow") -> Adw.PreferencesGroup:
+        """Whether a recording takes the echo-cancelled mic, and how long it is silent before the
+        top bar reminds that it is still going."""
+        echo_cancel = Adw.SwitchRow(
+            title="Echo cancellation", subtitle=ECHO_CANCEL_NOTE, active=settings.echo_cancel()
+        )
+        echo_cancel.connect("notify::active", window.echo_cancel_switched)
+        self.silence = limit_row(
+            "Remind after silence",
+            "Minutes",
+            settings.silence_reminder_minutes(),
+            settings.SILENCE_REMINDER_MINUTES,
+            settings.LONGEST_SILENCE_REMINDER,
+        )
+        switch, minutes = self.silence
+        switch.set_subtitle(SILENCE_NOTE)
+        switch.connect("notify::enable-expansion", window.silence_reminder_chosen)
+        minutes.connect("notify::value", window.silence_reminder_chosen)
+        group = Adw.PreferencesGroup(title="Recording")
+        group.add(echo_cancel)
+        group.add(switch)
+        return group
+
     def top_bar_group(self, window: "HistoryWindow") -> Adw.PreferencesGroup:
         """How many recent recordings the top-bar menu lists."""
         self.recent = Adw.SpinRow.new_with_range(1, settings.MOST_RECENT_IN_MENU, 1)
@@ -380,16 +407,6 @@ class SettingsDialog(Adw.PreferencesDialog):
         self.recent.connect("notify::value", window.recent_chosen)
         group = Adw.PreferencesGroup(title="Top-bar menu")
         group.add(self.recent)
-        return group
-
-    def recording_group(self, window: "HistoryWindow") -> Adw.PreferencesGroup:
-        """Whether a recording takes the echo-cancelled mic."""
-        echo_cancel = Adw.SwitchRow(
-            title="Echo cancellation", subtitle=ECHO_CANCEL_NOTE, active=settings.echo_cancel()
-        )
-        echo_cancel.connect("notify::active", window.echo_cancel_switched)
-        group = Adw.PreferencesGroup(title="Recording")
-        group.add(echo_cancel)
         return group
 
     def transcription_group(self, window: "HistoryWindow") -> Adw.PreferencesGroup:
@@ -1543,6 +1560,10 @@ class HistoryWindow(Adw.ApplicationWindow):
             self.say(AUDIO_LIMITS_SAVED)
         else:
             dialog.add_toast(Adw.Toast(title=AUDIO_LIMITS_SAVED))
+
+    def silence_reminder_chosen(self, row: Adw.PreferencesRow, _property: object) -> None:
+        # The recording in progress follows too: its recorder reads it each second it is silent.
+        settings.set_silence_reminder_minutes(chosen_limit(*settings_of(row).silence))
 
     def echo_cancel_switched(self, row: Adw.SwitchRow, _property: object) -> None:
         settings.set_echo_cancel(on=row.get_active())

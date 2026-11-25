@@ -2,7 +2,10 @@
 
 /** @typedef {null | 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'} RunStatus */
 /** @typedef {{id: string, started_at: string}} Recording */
-/** @typedef {Recording & {paused_at?: string, paused_seconds?: number, continued?: boolean}} Active */
+/**
+ * @typedef {Recording & {paused_at?: string, paused_seconds?: number, continued?: boolean,
+ *     silent_since?: string}} Active
+ */
 /** @typedef {{phase: string, percent: number}} Progress */
 /**
  * @typedef {Recording & {name: string, duration_seconds: number, incomplete: boolean,
@@ -10,6 +13,7 @@
  */
 /** @typedef {{recording: Active | null, recent: Recent[]}} Status */
 /** @typedef {{recordingId: string, title: string, body: string}} Notice */
+/** @typedef {{title: string, body: string}} Reminder */
 /** @typedef {{label: string, args: string[], failureTitle: string}} Control */
 
 const RUN_STATUSES = [null, 'queued', 'running', 'succeeded', 'failed', 'cancelled'];
@@ -47,11 +51,12 @@ const isRecording = value =>
 const isFlag = value => value === undefined || typeof value === 'boolean';
 
 // paused_at is there only while it is paused, paused_seconds only once it has been, continued
-// only once it has been stopped and continued.
+// only once it has been stopped and continued, silent_since only while it is silent.
 /** @param {any} value */
 const isActive = value =>
     isRecording(value) &&
     (value.paused_at === undefined || isTimestamp(value.paused_at)) &&
+    (value.silent_since === undefined || isTimestamp(value.silent_since)) &&
     (value.paused_seconds === undefined ||
         (Number.isInteger(value.paused_seconds) && value.paused_seconds >= 0)) &&
     isFlag(value.continued);
@@ -137,6 +142,25 @@ export function notificationsFor(previous, current) {
         }
     }
     return notifications;
+}
+
+/**
+ * Once for each silence the program says the recording has gone on through, as long as the
+ * Settings' silence reminder: one a new snapshot still says is the same silence, and the first
+ * snapshot after the Shell starts reminds of it too, since the recording may have been forgotten.
+ * @param {Status} previous
+ * @param {Status} current
+ * @param {number} nowMs
+ * @returns {Reminder | null}
+ */
+export function silenceReminder(previous, current, nowMs) {
+    const since = current.recording?.silent_since;
+    if (since === undefined || since === previous.recording?.silent_since) return null;
+    const minutes = Math.floor((nowMs - Date.parse(since)) / 60000);
+    return {
+        title: 'Still recording',
+        body: `Nothing heard for ${minutes} minute${minutes === 1 ? '' : 's'}`,
+    };
 }
 
 /** @param {number} n */

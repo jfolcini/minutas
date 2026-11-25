@@ -285,10 +285,10 @@ def main(out: Path) -> None:
     close(shown)
 
     # Tall enough for every setting at once.
-    shown = open_window(780, 2500)
+    shown = open_window(780, 3200)
     shown.open_settings()
     dialog = cast("window.SettingsDialog", shown.get_visible_dialog())
-    dialog.set_content_height(2400)
+    dialog.set_content_height(2240)
     wait_until(
         lambda: (
             dialog.gitlab.get_description() != window.ASKING_GLAB

@@ -300,3 +300,27 @@ def test_a_preset_name_is_bad_when_empty_hidden_or_holding_a_slash(name: str, *,
 
 def test_the_glossary_is_no_preset_name() -> None:
     assert settings.bad_preset_name(settings.GLOSSARY) is True
+
+
+def test_silence_reminds_after_5_minutes_until_changed() -> None:
+    assert settings.silence_reminder_minutes() == 5
+
+
+@pytest.mark.parametrize("minutes", [1, 45, 120, None])
+def test_set_silence_reminder_keeps_it_with_the_other_settings_and_none_turns_it_off(
+    minutes: int | None,
+) -> None:
+    settings.set_agaric_space_id("01HZWORK")
+
+    settings.set_silence_reminder_minutes(minutes)
+
+    assert settings.silence_reminder_minutes() == minutes
+    assert settings.agaric_space_id() == "01HZWORK"
+
+
+# Only a hand edit writes these; 0 taken at its word would remind at the first quiet second.
+@pytest.mark.parametrize("value", [0, -1, 121, "7", 2.5, True, [7]])
+def test_a_hand_edited_silence_reminder_out_of_range_is_the_default(value: object) -> None:
+    settings.save({"silence_reminder_minutes": value})
+
+    assert settings.silence_reminder_minutes() == 5

@@ -21,6 +21,7 @@ import {
     parseStatus,
     recentControls,
     recentLabel,
+    silenceReminder,
 } from './status.js';
 
 const ICON = 'audio-input-microphone-symbolic';
@@ -64,12 +65,7 @@ export default class MinutasExtension extends Extension {
         this._installItem = menu.addAction('Install Minutas…', () => this._openInstallPage());
         this._recordItem = menu.addAction('Record', () => this._startRecording());
         this._pauseItem = menu.addAction('Pause', () => this._togglePause());
-        this._recordingItems = [
-            this._pauseItem,
-            menu.addAction('Finish', () =>
-                this._run(['record', 'stop'], "Couldn't finish the recording")
-            ),
-        ];
+        this._recordingItems = [this._pauseItem, menu.addAction('Finish', () => this._finish())];
         this._discardItem = menu.addAction('Discard…', () => this._askToDiscard());
         menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
         this._recentSection = new PopupMenu.PopupMenuSection();
@@ -104,6 +100,13 @@ export default class MinutasExtension extends Extension {
         this._monitor.cancel();
         this._stopTimer();
         this._source?.destroy();
+        // The silence reminder went with the source, so a silence still going once the screen
+        // is unlocked reminds again.
+        if (this._status.recording)
+            this._status = {
+                ...this._status,
+                recording: {...this._status.recording, silent_since: undefined},
+            };
         this._dialog?.destroy();
         // The Shell ties handlers between the panel, the menu and the section to owners without a
         // destroy signal, so destroy() leaves them connected, and they would keep every disabled
@@ -153,6 +156,17 @@ export default class MinutasExtension extends Extension {
             }
             for (const {recordingId, title, body} of notificationsFor(this._status, status))
                 this._notify(title, body, recordingId);
+            const reminder = silenceReminder(this._status, status, Date.now());
+            // CRITICAL shows through Do Not Disturb, often still on from the meeting that was
+            // forgotten, and stays up until dismissed.
+            if (reminder) {
+                this._notify(
+                    reminder.title,
+                    reminder.body,
+                    null,
+                    MessageTray.Urgency.CRITICAL
+                ).addAction('Finish', () => this._finish());
+            }
             this._status = status;
             this._render();
         });
@@ -242,6 +256,10 @@ export default class MinutasExtension extends Extension {
                     MessageTray.Urgency.CRITICAL
                 )
         );
+    }
+
+    _finish() {
+        this._run(['record', 'stop'], "Couldn't finish the recording");
     }
 
     _togglePause() {

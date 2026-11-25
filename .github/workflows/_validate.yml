@@ -115,7 +115,8 @@ jobs:
       # The window's tests run it on Ubuntu's own PyGObject, GTK and libadwaita, on an Xvfb
       # display and a session bus of their own (tests/conftest.py); the calendar's tests read
       # libical events through Evolution Data Server's typelibs; the recorder's run its pipeline
-      # on GStreamer, with a test source, and the player's on the good plugins' scaletempo.
+      # on GStreamer, with a test source, its silence on the good plugins' level and the
+      # player's on their scaletempo.
       - name: Install GTK, libadwaita, Evolution Data Server's typelibs, GStreamer, PyGObject and Xvfb
         run: |
           sudo apt-get update -q
