@@ -327,10 +327,7 @@ def context_file(name: str) -> Path:
 
 def context_names() -> list[str]:
     """Every context preset's name, in alphabetical order."""
-    files = context_dir().glob("*.md")
-    names = (file.stem for file in files if file.is_file())
-    # pathlib's glob, unlike the shell's, finds hidden files too.
-    return sorted((name for name in names if not bad_context_name(name)), key=str.casefold)
+    return settings.preset_names(context_dir(), ".md")
 
 
 def chosen_context() -> list[str]:
@@ -338,11 +335,6 @@ def chosen_context() -> list[str]:
     since."""
     names = set(context_names())
     return [name for name in settings.summary_context() if name in names]
-
-
-def bad_context_name(name: str) -> bool:
-    # A slash would put the file in another folder, and a dot first hide it in this one.
-    return not name or "/" in name or name.startswith(".")
 
 
 def context(names: Sequence[str]) -> str:
