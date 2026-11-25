@@ -8,12 +8,14 @@ changes: whatever reads it, publishing included, reads the current names.
 import fcntl
 import json
 import os
-import tempfile
 from collections.abc import Generator, Iterable, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import NotRequired, TypedDict, cast
+
+from minutas import settings
+from minutas.atomic import write_json, write_text
 
 RECORDING_ID_FORMAT = "%Y-%m-%dT%H-%M-%S"
 TRACKS = ("mic.opus", "call.opus")
@@ -23,7 +25,6 @@ TRANSCRIPT = "transcript.md"
 ME = "Me"
 SUMMARY = "summary.md"
 ACTIONS = ("transcribe", "summarize", "publish_agaric", "publish_gitlab", "publish_github")
-RECENT_IN_STATUS = 5
 INTERRUPTED = "interrupted"
 # Where a name can come from, lowest first: a name gives way only to one from as high a source.
 NAME_ORDER = ("default", "summary", "calendar", "typed")
@@ -120,21 +121,6 @@ def lock() -> Generator[None]:
 def is_recording(recording_id: str) -> bool:
     folder = recording_dir(recording_id)
     return folder.parent == recordings_dir() and (folder / "recording.json").is_file()
-
-
-def write_text(path: Path, text: str) -> None:
-    with tempfile.NamedTemporaryFile(
-        "w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}.", suffix=".tmp", delete=False
-    ) as tmp:
-        tmp.write(text)
-        tmp.flush()
-        # A rename that reaches the disk before the data leaves an empty file after a power cut.
-        os.fsync(tmp.fileno())
-    Path(tmp.name).replace(path)
-
-
-def write_json(path: Path, value: object) -> None:
-    write_text(path, json.dumps(value, indent=2) + "\n")
 
 
 def create_recording(started: datetime) -> Recording:
@@ -454,6 +440,6 @@ def write_status() -> None:
             "recording": None
             if active is None
             else {"id": active["id"], "started_at": active["started_at"]},
-            "recent": [recent_entry(r) for r in stopped[:RECENT_IN_STATUS]],
+            "recent": [recent_entry(r) for r in stopped[: settings.recent_in_menu()]],
         }
         write_json(data_dir() / "status.json", status)

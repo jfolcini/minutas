@@ -200,8 +200,9 @@ layers = [
     # GitLab's mixes the tracks; both name a new issue as Publish to Agaric does for a page.
     "(minutas.gitlab) | (minutas.github)",
     "(minutas.recorder) | (minutas.worker) | (minutas.agaric) | (minutas.summarizer) | (minutas.window_view) | (minutas.calendar)",
-    "minutas.settings",
     "minutas.store",
+    "minutas.settings",
+    "minutas.atomic",
 ]
 
 [[tool.importlinter.contracts]]
