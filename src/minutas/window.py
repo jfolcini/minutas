@@ -39,11 +39,16 @@ from minutas.window_view import (  # noqa: E402
 APP_ID = "io.github.jfolcini.Minutas"
 # The program itself, as the recorder's and the worker's units run it.
 MINUTAS = [sys.executable, "-m", "minutas"]
+TRASH_WARNING = (
+    "Its folder goes to the Trash, with the audio, the transcript, the summary and the history "
+    "of its runs, and can be restored from there. What was published stays in Agaric and GitLab."
+)
 DELETE_WARNING = (
     "Both tracks are deleted for good. The transcript and everything published stay. "
     "Without the audio the recording can't be transcribed again, and publishing leaves it out."
 )
 CUSTOM_NAME = "Custom name…"
+RENAME_NOTE = "A typed name is kept for good, and the next Publish to Agaric applies it."
 ASK_LINK = "Paste an issue link to comment on it, or a project link to open a new issue"
 NOT_A_LINK = "Not a GitLab issue or project link"
 AUDIO_LIMITS_NOTE = (
@@ -377,14 +382,12 @@ class ActionControls:
 
 
 class Details:
-    """What a recording expands to: its name, its tracks, its actions and its speakers."""
+    """What a recording expands to: its tracks, its actions and its speakers."""
 
     def __init__(self, view: RowView, expander: Adw.ExpanderRow, window: "HistoryWindow") -> None:
         recording_id = view.recording_id
         self.expander = expander
         self.speakers: dict[str, SpeakerControls] = {}
-        self.name = text_row("")
-        self.name.add_suffix(button("Edit", window.edit_name, recording_id))
         self.tracks = {
             track.file: TrackControls(track.title, track.file, recording_id, window)
             for track in view.tracks
@@ -411,7 +414,6 @@ class Details:
             "Publish to GitLab", "Open in GitLab", PUBLISH_GITLAB, recording_id, window
         )
         for row in (
-            self.name,
             *(controls.row for controls in self.tracks.values()),
             self.files,
             self.transcribe.row,
@@ -435,8 +437,6 @@ class Details:
             self.expander.add_row(row)
 
     def display(self, view: RowView) -> None:
-        self.name.set_title(view.name)
-        self.name.set_subtitle(view.name_source)
         for track in view.tracks:
             controls = self.tracks[track.file]
             controls.row.set_subtitle(track.subtitle)
@@ -471,6 +471,18 @@ class RecordingRow(Adw.ExpanderRow):
         self.view = view
         self.warning = warning_icon()
         self.add_suffix(self.warning)
+        target = GLib.Variant("s", view.recording_id)
+        actions = Gio.Menu()
+        actions.append_item(menu_item("Rename…", "win.rename-recording", target))
+        actions.append_item(menu_item("Move to Trash…", "win.trash-recording", target))
+        self.menu = Gtk.MenuButton(
+            icon_name="view-more-symbolic",
+            menu_model=actions,
+            tooltip_text="Recording Menu",
+            valign=Gtk.Align.CENTER,
+            css_classes=["flat"],
+        )
+        self.add_suffix(self.menu)
         self.display(view)
 
     def display(self, view: RowView) -> None:
@@ -501,6 +513,8 @@ class HistoryWindow(Adw.ApplicationWindow):
             ("summarize", "(ss)", self.summarize_with),
             ("custom-summary", "s", self.write_prompt),
             ("delete-preset", "s", self.delete_preset),
+            ("rename-recording", "s", self.rename_recording),
+            ("trash-recording", "s", self.ask_to_trash),
         ):
             action = Gio.SimpleAction(name=name, parameter_type=GLib.VariantType(parameter))
             action.connect("activate", activated)
@@ -637,12 +651,21 @@ class HistoryWindow(Adw.ApplicationWindow):
             self.say(error.message)
 
     def ask_name(
-        self, heading: str, name: str, named: Callable[..., None], *arguments: object
+        self,
+        heading: str,
+        name: str,
+        named: Callable[..., None],
+        *arguments: object,
+        body: str = "",
     ) -> None:
         """Asks for a name, starting from the one there is, and hands it on after the arguments."""
         entry = Gtk.Entry(text=name, activates_default=True)
         dialog = Adw.AlertDialog(
-            heading=heading, extra_child=entry, default_response="save", close_response="cancel"
+            heading=heading,
+            body=body,
+            extra_child=entry,
+            default_response="save",
+            close_response="cancel",
         )
         dialog.add_response("cancel", "Cancel")
         dialog.add_response("save", "Save")
@@ -661,9 +684,52 @@ class HistoryWindow(Adw.ApplicationWindow):
         if dialog.choose_finish(result) == "save" and name is not None:
             named(*arguments, name)
 
-    def edit_name(self, _button: Gtk.Button, recording_id: str) -> None:
-        name = self.rows[recording_id].view.name
-        self.ask_name("Name", name, self.name_recording, recording_id)
+    def rename_recording(self, _action: Gio.SimpleAction, target: GLib.Variant) -> None:
+        recording_id = target.get_string()
+        view = self.rows[recording_id].view
+        said = f"{view.name_source}. {RENAME_NOTE}"
+        self.ask_name("Rename", view.name, self.name_recording, recording_id, body=said)
+
+    def ask_to_trash(self, _action: Gio.SimpleAction, target: GLib.Variant) -> None:
+        recording_id = target.get_string()
+        refused = self.rows[recording_id].view.trash_disabled
+        if refused:
+            self.say(refused)
+            return
+        dialog = Adw.AlertDialog(
+            heading="Move the recording to the Trash?", body=TRASH_WARNING, close_response="cancel"
+        )
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("trash", "Move to Trash")
+        dialog.set_response_appearance("trash", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.choose(self, None, self.trash_chosen, recording_id)
+
+    def trash_chosen(
+        self, dialog: Adw.AlertDialog, result: Gio.AsyncResult, recording_id: str
+    ) -> None:
+        if dialog.choose_finish(result) != "trash":
+            return
+        running = [action for action, ids in self.running.items() if recording_id in ids]
+        try:
+            # The worker takes its runs inside the lock: it cannot start one for the folder going.
+            with store.lock():
+                # Asked again: a transcription may have been queued while the dialog was open.
+                refused = window_view.trash_refusal(
+                    store.load_recording(recording_id), store.load_runs(recording_id), running
+                )
+                if not refused:
+                    if recording_id in self.details:
+                        self.details[recording_id].stop_playing()
+                    # Never deleted instead, whatever the trash says: a recording is never lost.
+                    Gio.File.new_for_path(str(store.recording_dir(recording_id))).trash(None)
+        except GLib.Error as error:
+            self.say(f"Can't move it to the Trash: {error.message}")
+            return
+        if refused:
+            self.say(refused)
+            return
+        store.write_status()
+        self.refresh()
 
     def speaker_picked(self, _action: Gio.SimpleAction, picked: GLib.Variant) -> None:
         self.name_speaker(*picked.unpack())

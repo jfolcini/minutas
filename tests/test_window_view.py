@@ -18,6 +18,7 @@ from minutas.window_view import (
     duration,
     limits_warning,
     row,
+    trash_refusal,
     unrecorded_failure,
     update,
 )
@@ -125,7 +126,7 @@ def test_a_typed_name_says_so() -> None:
 def test_a_name_from_the_calendar_says_so() -> None:
     view = shown([], {"name": "Weekly sync", "name_source": "calendar"})
 
-    assert (view.name, view.name_source) == ("Weekly sync", "Calendar event")
+    assert (view.name, view.name_source) == ("Weekly sync", "From the calendar event")
 
 
 def test_a_name_from_the_summary_says_so() -> None:
@@ -288,6 +289,32 @@ def test_the_audio_stays_while_it_is_being_transcribed(status: str) -> None:
 
     assert view.delete_disabled == "Cancel the transcription first"
     assert view.transcribe.disabled == ""
+
+
+@pytest.mark.parametrize(
+    ("changes", "runs", "running", "refused"),
+    [
+        ({}, [], (), ""),
+        ({}, [run("transcribe", "failed"), run("summarize", "succeeded")], (), ""),
+        ({"stopped_at": None}, [], (), "Still recording"),
+        ({}, [run("transcribe", "queued")], (), "Cancel the transcription first"),
+        # An older run still waiting counts too: the worker takes it from the folder.
+        (
+            {},
+            [run("transcribe", "running"), run("transcribe", "failed")],
+            (),
+            "Cancel the transcription first",
+        ),
+        ({}, [], ("summarize",), "Summarize is still running"),
+        ({}, [], ("publish_agaric",), "Publish to Agaric is still running"),
+        ({}, [], ("publish_gitlab",), "Publish to GitLab is still running"),
+    ],
+)
+def test_a_recording_goes_to_the_trash_only_once_nothing_works_on_it(
+    changes: dict[str, object], runs: list[store.Run], running: tuple[str, ...], refused: str
+) -> None:
+    assert trash_refusal(recording(**changes), runs, running) == refused
+    assert shown(runs, changes, running=running).trash_disabled == refused
 
 
 @pytest.mark.parametrize(
@@ -838,6 +865,11 @@ def test_every_row_keeps_the_rules(case: Row) -> None:
     # Cancel can always be pressed.
     assert (view.transcribe.disabled == "") is (transcribing or (stopped and tracks != ()))
     assert (view.delete_disabled == "") is (stopped and tracks != () and not transcribing)
+    # Nothing goes to the Trash while it is recorded, transcribed, or worked on by a command.
+    in_progress = any(
+        r["action"] == "transcribe" and r["status"] in {"queued", "running"} for r in runs
+    )
+    assert (view.trash_disabled == "") is (stopped and not in_progress and not running)
     assert [track.file for track in view.tracks if track.available] == (
         [name for name in store.TRACKS if name in tracks] if stopped else []
     )
