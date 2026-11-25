@@ -118,9 +118,7 @@ test('parseStatus rejects a half-written file', () => {
 });
 
 test('parseStatus rejects another version', () => {
-    expect(parseStatus(JSON.stringify({version: 2, recording: null, recent: []}))).toStrictEqual(
-        null
-    );
+    expect(parseStatus(JSON.stringify({version: 2, recording: null, recent: []}))).toBeNull();
 });
 
 test('parseStatus rejects a recent entry whose failed is not a list', () => {
