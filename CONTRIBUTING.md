@@ -62,6 +62,8 @@ Coverage is measured with branches, and `pytest` fails under the floor set in `p
 The suite has no PipeWire, microphone or speakers, so whether the echo-cancelled mic keeps the call out of the mic track is checked by hand, after a change to the recorder's echo canceller. It needs only what install.sh installs. First make the speakers the output, unmuted and at the volume of a call, in GNOME's Settings › Sound or with `wpctl status`, `wpctl set-default <sink id>` and `wpctl set-mute <sink id> 0`: the canceller takes out what the default output plays, so headphones left as the output prove nothing. Then, with Echo cancellation on in Minutas's Settings:
 
 ```bash
+# The far side: any speech, here the oldest recording's call track, picked before this one starts.
+speech=$(ls ~/.local/share/minutas/recordings/*/call.opus | head -n 1)
 minutas record start
 systemctl --user is-active minutas-echo-cancel.service   # active
 pw-link --output | grep minutas-echo-cancelled           # the source the mic track records
@@ -71,8 +73,8 @@ wav="audioconvert ! audioresample ! audio/x-raw,rate=16000,channels=1,format=S16
 timeout --signal=INT 20 gst-launch-1.0 -e \
   pulsesrc ! $wav location=plain.wav \
   pulsesrc device=minutas-echo-cancelled ! $wav location=cancelled.wav &
-# The far side: any speech, such as an earlier recording's call.opus. Say nothing meanwhile.
-sleep 2; timeout 15 pw-play speech.opus; wait
+# Say nothing while the far side plays.
+sleep 2; timeout 15 pw-play "$speech"; wait
 minutas record stop
 systemctl --user is-active minutas-echo-cancel.service   # inactive: it stopped with the recorder
 python3 - plain.wav cancelled.wav <<'LEVELS'

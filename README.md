@@ -92,7 +92,7 @@ A recording's ⋮ menu renames it or moves it to the Trash; its audio files can 
 Open them from the window's main menu or the top-bar menu. Every change is saved as you make it, except the audio limits, which wait for Save because they delete audio.
 
 <p>
-  <img src="docs/screenshots/settings.png" width="49%" alt="The Settings dialog: Transcription, Summary, Summary context, Agaric, GitLab, GitHub, Audio limits and Top-bar menu">
+  <img src="docs/screenshots/settings.png" width="49%" alt="The Settings dialog: Recording, Transcription, Summary, Summary context, Agaric, GitLab, GitHub, Audio limits and Top-bar menu">
 </p>
 
 - **Recording:** Echo cancellation, for calls on speakers: the microphone is recorded with the computer's sound taken out, so the people on the call aren't transcribed twice. It applies from the next recording.
