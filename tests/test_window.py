@@ -6,12 +6,13 @@ import shlex
 import shutil
 import subprocess
 import sys
-from collections.abc import Callable, Iterator
+import tempfile
+from collections.abc import Callable, Iterator, Sequence
 from datetime import UTC, datetime, timedelta
 from importlib.metadata import version
 from pathlib import Path
 from types import TracebackType
-from typing import cast
+from typing import cast, override
 
 import pytest
 from keyring.errors import KeyringLocked
@@ -22,7 +23,17 @@ gi.require_version("Adw", "1")
 gi.require_version("Gtk", "4.0")
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Graphene, Gtk  # noqa: E402
 
-from minutas import github, gitlab, settings, store, summarizer, window, window_view, worker  # noqa: E402
+from minutas import (  # noqa: E402
+    github,
+    gitlab,
+    player,
+    settings,
+    store,
+    summarizer,
+    window,
+    window_view,
+    worker,
+)
 
 pytestmark = pytest.mark.usefixtures("no_handler_raised")
 
@@ -514,11 +525,50 @@ def store_lock_held() -> bool:
     return False
 
 
+class FakePlayer(player.Player):
+    """Stands where GStreamer would reach the sound card: it makes no pipeline, plays nothing,
+    and keeps what it is told in its desktop's lists."""
+
+    desktop: "Desktop"
+
+    @override
+    def __init__(self, tracks: Sequence[Path], ended: player.Ended) -> None:
+        self.tracks = tuple(str(track) for track in tracks)
+        self.ended = ended
+        self.desktop.played.append(self.tracks)
+        self.desktop.players.append(self)
+
+    @override
+    def play(self) -> None:
+        self.desktop.told.append("play")
+
+    @override
+    def pause(self) -> None:
+        self.desktop.told.append("pause")
+
+    @override
+    def seek(self, seconds: float) -> None:
+        self.desktop.told.append(("seek", seconds))
+
+    @override
+    def set_speed(self, speed: float) -> None:
+        self.desktop.told.append(("speed", speed))
+
+    @override
+    def position(self) -> tuple[float, float]:
+        return self.desktop.position
+
+    @override
+    def stop(self) -> None:
+        self.desktop.stopped.append(self.tracks)
+
+
 class Desktop:
     """Stands in for what GTK would hand to the desktop: files and links to open, a place to
-    save a copy, a track to play, a folder to move to the Trash. Nothing is opened, asked or
-    played, and the desktop's Trash is never touched: GLib reads XDG_DATA_HOME once, before
-    any test sets it, so a real trash would land in the real one."""
+    save a copy, a folder to move to the Trash; and for the sound card, which the tracks would
+    play through. Nothing is opened, asked or played, and the desktop's Trash is never touched:
+    GLib reads XDG_DATA_HOME once, before any test sets it, so a real trash would land in the
+    real one."""
 
     def __init__(self, trash: Path) -> None:
         self.trash_into: Path | GLib.Error = trash
@@ -530,8 +580,16 @@ class Desktop:
         self.suggested: list[str | None] = []
         self.open_from: Path | GLib.Error = DISMISSED
         self.filters: list[object] = []
-        self.played: list[str | None] = []
-        self.stopped: list[str | None] = []
+        # The tracks of each player made, and of each one stopped.
+        self.played: list[tuple[str, ...]] = []
+        self.stopped: list[tuple[str, ...]] = []
+        self.players: list[FakePlayer] = []
+        # What the players were told after they were made.
+        self.told: list[object] = []
+        # Where a player is and how long it lasts, in seconds.
+        self.position = (0.0, 0.0)
+        # The tracks of each mix being saved, where it goes and what to tell when it is done.
+        self.mixing: list[tuple[tuple[str, ...], Path, player.Ended]] = []
 
     def launch(
         self,
@@ -556,11 +614,11 @@ class Desktop:
         dialog: Gtk.FileDialog,
         _parent: Gtk.Window,
         _cancellable: None,
-        done: Callable[[GObject.Object, Gio.AsyncResult, str], None],
-        track: str,
+        done: Callable[..., None],
+        *arguments: object,
     ) -> None:
         self.suggested.append(dialog.get_initial_name())
-        done(dialog, Gio.Task.new(None, None, None), track)
+        done(dialog, Gio.Task.new(None, None, None), *arguments)
 
     def save_finish(self, _dialog: Gtk.FileDialog, _result: Gio.AsyncResult) -> Gio.File:
         if isinstance(self.save_as, GLib.Error):
@@ -585,12 +643,8 @@ class Desktop:
             raise self.open_from
         return Gio.File.new_for_path(str(self.open_from))
 
-    def play(self, stream: Gtk.MediaFile) -> None:
-        self.played.append(path_of(stream.get_file()))
-
-    def set_playing(self, stream: Gtk.MediaFile, playing: bool) -> None:  # noqa: FBT001
-        assert playing is False
-        self.stopped.append(path_of(stream.get_file()))
+    def save_mix(self, tracks: list[Path], into: Path, saved: player.Ended) -> None:
+        self.mixing.append((tuple(str(track) for track in tracks), into, saved))
 
     def trash(self, file: Gio.File, _cancellable: None) -> bool:
         self.trashed.append((path_of(file), store_lock_held()))
@@ -632,11 +686,15 @@ def desktop_calls(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Desktop:
         (Gtk.FileDialog, "save_finish"),
         (Gtk.FileDialog, "open"),
         (Gtk.FileDialog, "open_finish"),
-        (Gtk.MediaStream, "play"),
-        (Gtk.MediaStream, "set_playing"),
         (Gio.File, "trash"),
     ):
         monkeypatch.setattr(gtk_class, name, handed_to(fake, name))
+
+    class PlayingHere(FakePlayer):
+        desktop = fake
+
+    monkeypatch.setattr(player, "Player", PlayingHere)
+    monkeypatch.setattr(player, "save_mix", fake.save_mix)
     return fake
 
 
@@ -746,6 +804,7 @@ def test_a_row_has_its_menu_on_the_line_it_shows_collapsed_and_expands_to_the_re
         ("Meeting", SUBTITLE),
         ("Microphone", ""),
         ("Call", ""),
+        ("Microphone and call", ""),
         ("Audio files", ""),
         ("Transcribe", "Not run yet"),
         ("Summarize", "Not summarized"),
@@ -842,7 +901,7 @@ def test_the_speakers_sit_between_the_transcription_and_the_summary(
 
     row = expand(shown)
 
-    assert lines(row)[4:] == [
+    assert lines(row)[5:] == [
         ("Transcribe", "Succeeded"),
         ("Speaker 1", "Ana Díaz"),
         ("Speaker 2", ""),
@@ -953,7 +1012,7 @@ def test_the_speakers_follow_each_transcription(
     recording()
     shown = history()
     row = expand(shown)
-    assert lines(row)[4:] == [
+    assert lines(row)[5:] == [
         ("Transcribe", "Not run yet"),
         ("Summarize", "Not summarized"),
         ("Publish to Agaric", "Not published"),
@@ -964,7 +1023,7 @@ def test_the_speakers_follow_each_transcription(
     transcribe(SAID)
 
     wait_until(lambda: ("Speaker 2", "") in lines(row))
-    assert lines(row)[4:] == [
+    assert lines(row)[5:] == [
         ("Transcribe", "Succeeded"),
         ("Speaker 1", ""),
         ("Speaker 2", ""),
@@ -978,7 +1037,7 @@ def test_the_speakers_follow_each_transcription(
     transcribe(SAID[:2])
 
     wait_until(lambda: ("Speaker 2", "") not in lines(row))
-    assert lines(row)[4:] == [
+    assert lines(row)[5:] == [
         ("Transcribe", "Succeeded"),
         ("Speaker 1", ""),
         ("Summarize", "Not summarized"),
@@ -1154,33 +1213,187 @@ def test_a_link_that_does_not_open_says_why_unless_the_person_gave_up(
     assert "Dismissed by user" not in texts(shown)
 
 
+def by_tooltip(root: Gtk.Widget, tooltip: str) -> Gtk.Widget:
+    """The one widget on offer under root that says so when pointed at, as an icon button does."""
+    [found] = [
+        widget
+        for widget in descendants(root)
+        if widget.get_tooltip_text() == tooltip and widget.is_visible()
+    ]
+    return found
+
+
 def test_play_puts_a_player_for_the_track_in_its_row(
     history: Callable[[], window.HistoryWindow], desktop_calls: Desktop
 ) -> None:
     recording()
+    desktop_calls.position = (65.0, 3723.0)
     shown = history()
     row = expand(shown)
     call = shown.details[FIRST].tracks["call.opus"]
 
     buttons(call.row)["Play"].emit("clicked")
 
-    assert desktop_calls.played == [str(store.recording_dir(FIRST) / "call.opus")]
+    assert desktop_calls.played == [(str(store.recording_dir(FIRST) / "call.opus"),)]
+    assert desktop_calls.told == ["play"]
     assert desktop_calls.stopped == []
-    players = [widget for widget in descendants(row) if isinstance(widget, Gtk.MediaControls)]
-    assert [player.is_ancestor(call.row) for player in players] == [True]
+    players = [controls.player.is_visible() for controls in shown.details[FIRST].tracks.values()]
+    assert players == [False, True, False]
     assert list(buttons(call.row)) == ["Save a copy"]
     assert "Play" in buttons(shown.details[FIRST].tracks["mic.opus"].row)
+    # Where it is, how long it lasts and how fast it goes, which starts at normal speed.
+    assert call.time.get_label() == "1:05 / 1:02:03"
+    assert (call.position.get_value(), call.position.get_adjustment().get_upper()) == (65.0, 3723.0)
+    assert call.speed.get_selected() == 0
+    assert by_tooltip(call.row, "Pause").get_sensitive() is True
 
     # Collapsing the row stops it and drops the player, and its decoder with it.
     expanded_to = lines(row)
     row.set_expanded(False)
 
-    assert desktop_calls.stopped == [str(store.recording_dir(FIRST) / "call.opus")]
-    assert [widget for widget in descendants(row) if isinstance(widget, Gtk.MediaControls)] == []
+    assert desktop_calls.stopped == [(str(store.recording_dir(FIRST) / "call.opus"),)]
+    assert call.player.get_visible() is False
     assert list(buttons(call.row)) == ["Play", "Save a copy"]
     # Expanded again it is the same lines, not a second set.
     expand(shown)
     assert lines(row) == expanded_to
+
+
+def test_the_player_pauses_seeks_and_changes_speed_where_it_is(
+    history: Callable[[], window.HistoryWindow], desktop_calls: Desktop
+) -> None:
+    recording()
+    desktop_calls.position = (5.0, 600.0)
+    shown = history()
+    expand(shown)
+    mic = shown.details[FIRST].tracks["mic.opus"]
+    buttons(mic.row)["Play"].emit("clicked")
+
+    by_tooltip(mic.row, "Pause").emit("clicked")
+    assert desktop_calls.told == ["play", "pause"]
+    by_tooltip(mic.row, "Play").emit("clicked")
+    assert desktop_calls.told == ["play", "pause", "play"]
+    assert by_tooltip(mic.row, "Pause").get_sensitive() is True
+
+    # Dragged, or moved with the arrow keys.
+    assert mic.position.emit("change-value", Gtk.ScrollType.JUMP, 300.0) is False
+    mic.speed.set_selected(window_view.SPEED_LABELS.index("1.5×"))  # noqa: RUF001 - the sign
+
+    assert desktop_calls.told[3:] == [("seek", 300.0), ("speed", 1.5)]
+    # The clock follows the player as it goes.
+    desktop_calls.position = (301.0, 600.0)
+    wait_until(lambda: mic.time.get_label() == "5:01 / 10:00")
+    assert mic.position.get_value() == 301.0
+    # The arrow keys go back and on a few seconds, Page Up and Page Down a minute.
+    mic.position.emit("move-slider", Gtk.ScrollType.STEP_BACKWARD)
+    mic.position.emit("move-slider", Gtk.ScrollType.PAGE_FORWARD)
+    assert desktop_calls.told[5:] == [("seek", 296.0), ("seek", 356.0)]
+    del desktop_calls.told[5:]
+
+    # The next player starts at normal speed, and says so.
+    press(shown.details[FIRST].tracks["call.opus"].row, "Play")
+    press(mic.row, "Play")
+    assert mic.speed.get_selected() == 0
+    assert desktop_calls.told[5:] == ["play", "play"]
+
+
+def test_one_player_plays_at_a_time(
+    history: Callable[[], window.HistoryWindow], desktop_calls: Desktop
+) -> None:
+    recording()
+    later = recording(started=START + timedelta(hours=1))
+    store.write_status()
+    shown = history()
+    expand(shown)
+    expand(shown, later)
+    buttons(shown.details[FIRST].tracks["mic.opus"].row)["Play"].emit("clicked")
+
+    buttons(shown.details[later].tracks["call.opus"].row)["Play"].emit("clicked")
+
+    first_mic = (str(store.recording_dir(FIRST) / "mic.opus"),)
+    later_call = (str(store.recording_dir(later) / "call.opus"),)
+    assert desktop_calls.played == [first_mic, later_call]
+    assert desktop_calls.stopped == [first_mic]
+    assert shown.details[FIRST].tracks["mic.opus"].player.get_visible() is False
+    assert "Play" in buttons(shown.details[FIRST].tracks["mic.opus"].row)
+
+
+def test_the_mix_plays_both_tracks_together(
+    history: Callable[[], window.HistoryWindow], desktop_calls: Desktop
+) -> None:
+    recording()
+    folder = store.recording_dir(FIRST)
+    shown = history()
+    expand(shown)
+    mixed = shown.details[FIRST].tracks[window_view.MIXED]
+
+    press(mixed.row, "Play")
+
+    assert desktop_calls.played == [(str(folder / "mic.opus"), str(folder / "call.opus"))]
+    assert mixed.player.get_visible() is True
+
+
+def test_the_mix_of_a_single_track_is_that_track(
+    history: Callable[[], window.HistoryWindow], desktop_calls: Desktop
+) -> None:
+    recording()
+    folder = store.recording_dir(FIRST)
+    # Created and never written, as by a recorder that died before the call made a sound.
+    (folder / "call.opus").write_bytes(b"")
+    shown = history()
+    expand(shown)
+
+    press(shown.details[FIRST].tracks[window_view.MIXED].row, "Play")
+
+    assert desktop_calls.played == [(str(folder / "mic.opus"),)]
+
+
+def test_a_track_played_to_its_end_offers_play_again(
+    history: Callable[[], window.HistoryWindow], desktop_calls: Desktop
+) -> None:
+    recording()
+    shown = history()
+    expand(shown)
+    call = shown.details[FIRST].tracks["call.opus"]
+    press(call.row, "Play")
+
+    desktop_calls.players[0].ended(None)
+
+    assert desktop_calls.stopped == desktop_calls.played
+    assert call.player.get_visible() is False
+    assert list(buttons(call.row)) == ["Play", "Save a copy"]
+    assert [text for text in texts(shown) if text.startswith("Can't play")] == []
+
+
+def test_a_track_that_cannot_be_played_says_why(
+    history: Callable[[], window.HistoryWindow], desktop_calls: Desktop
+) -> None:
+    recording()
+    shown = history()
+    expand(shown)
+    mic = shown.details[FIRST].tracks["mic.opus"]
+    press(mic.row, "Play")
+
+    desktop_calls.players[0].ended("Could not open audio device for playback.")
+
+    assert "Can't play it: Could not open audio device for playback." in texts(shown)
+    assert mic.player.get_visible() is False
+    assert desktop_calls.stopped == desktop_calls.played
+
+
+def test_closing_the_window_stops_what_plays(
+    history: Callable[[], window.HistoryWindow], desktop_calls: Desktop
+) -> None:
+    recording()
+    shown = history()
+    expand(shown)
+    press(shown.details[FIRST].tracks[window_view.MIXED].row, "Play")
+
+    shown.close()
+    settle()
+
+    assert desktop_calls.stopped == desktop_calls.played
+    assert len(desktop_calls.stopped) == 1
 
 
 def test_save_a_copy_writes_the_track_where_the_person_chose(
@@ -1229,6 +1442,95 @@ def test_a_copy_that_cannot_be_written_says_why(
     assert ["No such file or directory" in text for text in said] == [True]
 
 
+def test_save_a_copy_of_the_mix_writes_both_tracks_mixed_where_the_person_chose(
+    history: Callable[[], window.HistoryWindow], desktop_calls: Desktop, tmp_path: Path
+) -> None:
+    recording()
+    folder = store.recording_dir(FIRST)
+    desktop_calls.save_as = tmp_path / "mix.opus"
+    desktop_calls.save_as.write_bytes(b"what the dialog asked to replace")
+    shown = history()
+    expand(shown)
+
+    press(shown.details[FIRST].tracks[window_view.MIXED].row, "Save a copy")
+
+    # Named as Publish to Agaric names it.
+    assert desktop_calls.suggested == [f"{FIRST}.opus"]
+    [(tracks, into, saved)] = desktop_calls.mixing
+    assert tracks == (str(folder / "mic.opus"), str(folder / "call.opus"))
+    # Into a file of its own, never the one chosen, until it is whole.
+    assert into.name == f"{FIRST}.opus"
+    assert into.parent.parent == Path(tempfile.gettempdir())
+    assert (tmp_path / "mix.opus").read_bytes() == b"what the dialog asked to replace"
+    assert window.MIXING in texts(shown)
+
+    into.write_bytes(b"OggS mixed")
+    saved(None)
+    settle()
+
+    assert (tmp_path / "mix.opus").read_bytes() == b"OggS mixed"
+    assert into.parent.exists() is False
+    assert window.MIXING not in texts(shown)
+    assert sorted(path.name for path in folder.iterdir()) == [
+        "call.opus",
+        "mic.opus",
+        "recording.json",
+        "runs.json",
+    ]
+
+
+def test_a_mix_that_fails_says_why_and_leaves_nothing(
+    history: Callable[[], window.HistoryWindow], desktop_calls: Desktop, tmp_path: Path
+) -> None:
+    recording()
+    desktop_calls.save_as = tmp_path / "mix.opus"
+    shown = history()
+    expand(shown)
+    press(shown.details[FIRST].tracks[window_view.MIXED].row, "Save a copy")
+    [(_, into, saved)] = desktop_calls.mixing
+
+    saved("Could not open file for writing.")
+    settle()
+
+    assert "Can't save the mix: Could not open file for writing." in texts(shown)
+    assert window.MIXING not in texts(shown)
+    assert (tmp_path / "mix.opus").exists() is False
+    assert into.parent.exists() is False
+
+
+def test_a_mix_that_cannot_be_copied_says_why(
+    history: Callable[[], window.HistoryWindow], desktop_calls: Desktop, tmp_path: Path
+) -> None:
+    recording()
+    desktop_calls.save_as = tmp_path / "missing" / "mix.opus"
+    shown = history()
+    expand(shown)
+    press(shown.details[FIRST].tracks[window_view.MIXED].row, "Save a copy")
+    [(_, into, saved)] = desktop_calls.mixing
+    into.write_bytes(b"OggS mixed")
+
+    saved(None)
+    settle()
+
+    said = [text for text in texts(shown) if "mix.opus" in text]
+    assert ["No such file or directory" in text for text in said] == [True]
+    assert into.parent.exists() is False
+
+
+def test_the_mix_is_not_made_when_the_dialog_is_closed(
+    history: Callable[[], window.HistoryWindow], desktop_calls: Desktop
+) -> None:
+    recording()
+    shown = history()
+    expand(shown)
+
+    press(shown.details[FIRST].tracks[window_view.MIXED].row, "Save a copy")
+
+    assert desktop_calls.suggested == [f"{FIRST}.opus"]
+    assert desktop_calls.mixing == []
+    assert "Dismissed by user" not in texts(shown)
+
+
 def test_delete_now_removes_the_audio_once_confirmed(
     history: Callable[[], window.HistoryWindow], desktop_calls: Desktop
 ) -> None:
@@ -1253,22 +1555,31 @@ def test_delete_now_removes_the_audio_once_confirmed(
         "transcript.md",
     ]
     # The entry and its output stay; what needs the audio is off, and says why.
-    assert lines(row)[1:5] == [
+    assert lines(row)[1:6] == [
         ("Microphone", "Deleted"),
         ("Call", "Deleted"),
+        ("Microphone and call", "Deleted"),
         ("Audio files", ""),
         ("Transcribe", "Succeeded"),
     ]
     offered = buttons(row)
     assert [offered[label].get_sensitive() for label in ("Play", "Save a copy")] == [False, False]
+    assert [
+        control.get_sensitive()
+        for controls in shown.details[FIRST].tracks.values()
+        for control in (controls.play, controls.save)
+    ] == [False] * 6
     assert offered["Run again"].get_sensitive() is False
     assert offered["Run again"].get_tooltip_text() == "The audio was deleted"
     assert offered["Delete now"].get_sensitive() is False
     assert offered["Open transcript"].get_sensitive() is True
     assert offered["Publish"].get_sensitive() is True
     # What was playing stopped with it.
-    assert [widget for widget in descendants(row) if isinstance(widget, Gtk.MediaControls)] == []
-    assert desktop_calls.played == [str(folder / "mic.opus")]
+    assert [controls.player.get_visible() for controls in shown.details[FIRST].tracks.values()] == [
+        False
+    ] * 3
+    assert desktop_calls.played == [(str(folder / "mic.opus"),)]
+    assert desktop_calls.stopped == [(str(folder / "mic.opus"),)]
 
 
 def test_delete_now_keeps_the_audio_when_not_confirmed(
@@ -1315,7 +1626,7 @@ def test_move_to_trash_sends_the_whole_recording_there_once_confirmed(
     assert folder.exists() is False
     assert sorted(path.name for path in (tmp_path / "Trash" / FIRST).iterdir()) == held
     # What was playing stopped first.
-    assert desktop_calls.stopped == [str(folder / "mic.opus")]
+    assert desktop_calls.stopped == [(str(folder / "mic.opus"),)]
     assert list(shown.rows) == [later]
     assert shown.details == {}
     # The top-bar menu drops it too.
@@ -3367,14 +3678,15 @@ def test_opening_the_window_deletes_the_audio_over_the_limits(
 
     assert [store.holds_audio(one) for one in (old, FIRST, untranscribed)] == [False, True, True]
     # As after Delete now; and the age limit says when it takes what is left.
-    assert lines(expand(shown, old))[1:5] == [
+    assert lines(expand(shown, old))[1:6] == [
         ("Microphone", "Deleted"),
         ("Call", "Deleted"),
+        ("Microphone and call", "Deleted"),
         ("Audio files", ""),
         ("Transcribe", "Succeeded"),
     ]
-    assert lines(expand(shown))[3] == ("Audio files", "Kept until 2026-12-18 13:05")
-    assert lines(expand(shown, untranscribed))[3] == ("Audio files", "")
+    assert lines(expand(shown))[4] == ("Audio files", "Kept until 2026-12-18 13:05")
+    assert lines(expand(shown, untranscribed))[4] == ("Audio files", "")
 
 
 @pytest.mark.parametrize(
@@ -3458,7 +3770,7 @@ def test_saving_audio_limits_says_what_goes_and_takes_it_once_accepted(
     assert (buttons(dialog.audio)["Save"].get_sensitive(), dialog.get_can_close()) == (False, True)
     dialog.close()
     assert lines(expand(shown, ten_days_old))[1] == ("Microphone", "Deleted")
-    assert lines(expand(shown))[3] == ("Audio files", "Kept until 2026-11-25 13:05")
+    assert lines(expand(shown))[4] == ("Audio files", "Kept until 2026-11-25 13:05")
 
 
 @pytest.mark.usefixtures("agaric_settings")
@@ -3937,7 +4249,9 @@ def test_a_row_that_goes_takes_everything_it_showed_with_it(
 
     assert listed(shown) == []
     assert shown.details == {}
-    assert desktop_calls.played == [str(store.recording_dir(FIRST) / "mic.opus")]
+    assert desktop_calls.played == [(str(store.recording_dir(FIRST) / "mic.opus"),)]
+    # It stopped with its row: nothing plays a recording the window no longer shows.
+    assert desktop_calls.stopped == desktop_calls.played
     assert freed == [True] * expected
 
 

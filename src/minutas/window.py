@@ -10,7 +10,9 @@ everything in it, for good.
 """
 
 import contextlib
+import shutil
 import sys
+import tempfile
 from collections.abc import Callable, Collection, Mapping, Sequence
 from datetime import UTC, datetime
 from functools import partial
@@ -25,8 +27,18 @@ gi.require_version("Adw", "1")
 gi.require_version("Gtk", "4.0")
 from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402 - after the versions are chosen
 
-from minutas import github, gitlab, settings, store, summarizer, window_view, worker  # noqa: E402
+from minutas import (  # noqa: E402
+    github,
+    gitlab,
+    player,
+    settings,
+    store,
+    summarizer,
+    window_view,
+    worker,
+)
 from minutas.window_view import (  # noqa: E402
+    MIXED,
     PUBLISH,
     PUBLISH_GITHUB,
     PUBLISH_GITLAB,
@@ -117,6 +129,10 @@ CONTEXT_TRASH_WARNING = (
 PROJECT = metadata("minutas")
 ABOUT, UPDATE = "about", "update"
 UPDATING = "Updating Minutas…"
+PLAY_ICON, PAUSE_ICON = "media-playback-start-symbolic", "media-playback-pause-symbolic"
+# The clock moves by whole seconds; four looks at the player's place in each keep the slider smooth.
+POSITION_EVERY_MS = 250
+MIXING = "Mixing the tracks into a copy…"
 
 
 def now() -> datetime:
@@ -465,32 +481,91 @@ def settings_of(widget: Gtk.Widget) -> SettingsDialog:
 
 
 class TrackControls:
-    """A track's row: Play, which becomes the player, and Save a copy."""
+    """A track's row, or the mix's: Play, which becomes the player, and Save a copy."""
 
-    def __init__(self, title: str, file: str, recording_id: str, window: "HistoryWindow") -> None:
+    def __init__(self, title: str, key: str, recording_id: str, window: "HistoryWindow") -> None:
         self.row = text_row(title)
-        self.play = button("Play", window.play, recording_id, file)
-        self.save = button("Save a copy", window.save_copy, recording_id, file)
-        self.row.add_suffix(self.play)
-        self.row.add_suffix(self.save)
-        self.playing: tuple[Gtk.MediaStream, Gtk.MediaControls] | None = None
+        self.play = button("Play", window.play, recording_id, key)
+        self.pause = Gtk.Button(valign=Gtk.Align.CENTER, css_classes=["flat"])
+        self.pause.connect("clicked", window.toggle_pause, recording_id, key)
+        self.position = Gtk.Scale(
+            draw_value=False, hexpand=True, width_request=120, valign=Gtk.Align.CENTER
+        )
+        self.position.update_property([Gtk.AccessibleProperty.LABEL], ["Position"])
+        # The arrow keys, and Page Up and Page Down, in seconds.
+        self.position.set_increments(5, 60)
+        self.position.connect("change-value", window.seek, recording_id, key)
+        self.time = Gtk.Label(css_classes=["numeric"])
+        self.speed = Gtk.DropDown(
+            model=Gtk.StringList.new(list(window_view.SPEED_LABELS)),
+            tooltip_text="Speed",
+            valign=Gtk.Align.CENTER,
+        )
+        self.speed_handler = self.speed.connect(
+            "notify::selected", window.speed_chosen, recording_id, key
+        )
+        self.player = Gtk.Box(spacing=6, visible=False)
+        for control in (self.pause, self.position, self.time, self.speed):
+            self.player.append(control)
+        self.save = button("Save a copy", window.save_copy, recording_id, key)
+        for control in (self.play, self.player, self.save):
+            self.row.add_suffix(control)
+        self.playing: player.Player | None = None
+        self.paused = False
+        self.ticking = 0
 
-    def start(self, media: Gtk.MediaStream) -> None:
-        player = Gtk.MediaControls(media_stream=media, valign=Gtk.Align.CENTER, width_request=280)
-        self.playing = (media, player)
-        self.row.add_suffix(player)
+    def start(self, playing: player.Player) -> None:
+        self.playing = playing
+        self.show_paused(paused=False)
+        playing.play()
+        self.show_position()
+        self.ticking = GLib.timeout_add(POSITION_EVERY_MS, self.show_position)
         self.play.set_visible(False)
-        media.play()
+        self.player.set_visible(True)
+
+    def now_playing(self) -> player.Player:
+        # Its controls show only while it plays.
+        return cast("player.Player", self.playing)
+
+    def show_paused(self, *, paused: bool) -> None:
+        self.paused = paused
+        self.pause.set_icon_name(PLAY_ICON if paused else PAUSE_ICON)
+        self.pause.set_tooltip_text("Play" if paused else "Pause")
+
+    def toggle_pause(self) -> None:
+        playing = self.now_playing()
+        if self.paused:
+            playing.play()
+        else:
+            playing.pause()
+        self.show_paused(paused=not self.paused)
+
+    def show_position(self) -> bool:
+        at, length = self.now_playing().position()
+        self.position.set_range(0, length)
+        self.position.set_value(at)
+        self.time.set_label(f"{window_view.clock(at)} / {window_view.clock(length)}")
+        return GLib.SOURCE_CONTINUE
 
     def stop(self) -> None:
         """Drops the player, and its decoder with it."""
         if self.playing is None:
             return
-        media, player = self.playing
-        media.set_playing(False)
-        self.row.remove(player)
+        self.playing.stop()
         self.playing = None
+        GLib.source_remove(self.ticking)
+        self.player.set_visible(False)
         self.play.set_visible(True)
+        # The next player starts at normal speed.
+        with self.speed.handler_block(self.speed_handler):
+            self.speed.set_selected(0)
+
+
+def audio_of(recording_id: str, key: str) -> list[Path]:
+    """What a row plays and saves: its track, or for the mix the tracks that hold audio."""
+    folder = store.recording_dir(recording_id)
+    names = store.TRACKS if key == MIXED else (key,)
+    return [folder / name for name in names if store.has_audio(folder / name)]
 
 
 def name_menu(recording_id: str, speaker: str, attendees: Sequence[str]) -> Gio.Menu:
@@ -578,7 +653,7 @@ class Details:
         self.expander = expander
         self.speakers: dict[str, SpeakerControls] = {}
         self.tracks = {
-            track.file: TrackControls(track.title, track.file, recording_id, window)
+            track.key: TrackControls(track.title, track.key, recording_id, window)
             for track in view.tracks
         }
         self.files = text_row("Audio files")
@@ -636,7 +711,7 @@ class Details:
 
     def display(self, view: RowView) -> None:
         for track in view.tracks:
-            controls = self.tracks[track.file]
+            controls = self.tracks[track.key]
             controls.row.set_subtitle(track.subtitle)
             controls.play.set_sensitive(track.available)
             controls.save.set_sensitive(track.available)
@@ -839,7 +914,9 @@ class HistoryWindow(Adw.ApplicationWindow):
         views = load_views(self.running)
         for recording_id in self.rows.keys() - {view.recording_id for view in views}:
             self.list.remove(self.rows.pop(recording_id))
-            self.details.pop(recording_id, None)
+            gone = self.details.pop(recording_id, None)
+            if gone is not None:
+                gone.stop_playing()
             self.searched.pop(recording_id, None)
         for position, view in enumerate(views):
             row = self.rows.get(view.recording_id)
@@ -1015,23 +1092,96 @@ class HistoryWindow(Adw.ApplicationWindow):
         store.set_typed_name(recording_id, name)
         store.write_status()
 
-    def play(self, _button: Gtk.Button, recording_id: str, track: str) -> None:
+    def play(self, _button: Gtk.Button, recording_id: str, key: str) -> None:
+        # One at a time: two would talk over each other.
+        self.stop_playing()
         # Made on Play and dropped when it stops: no decoder waits behind a row nobody plays.
-        media = Gtk.MediaFile.new_for_filename(str(store.recording_dir(recording_id) / track))
-        self.details[recording_id].tracks[track].start(media)
+        playing = player.Player(
+            audio_of(recording_id, key), partial(self.play_ended, recording_id, key)
+        )
+        self.details[recording_id].tracks[key].start(playing)
 
-    def save_copy(self, _button: Gtk.Button, recording_id: str, track: str) -> None:
-        dialog = Gtk.FileDialog(initial_name=f"{recording_id}-{track}")
-        dialog.save(self, None, self.copy_chosen, str(store.recording_dir(recording_id) / track))
+    def stop_playing(self) -> None:
+        for details in self.details.values():
+            details.stop_playing()
 
-    def copy_chosen(self, dialog: Gtk.FileDialog, result: Gio.AsyncResult, track: str) -> None:
+    def play_ended(self, recording_id: str, key: str, problem: str | None) -> None:
+        self.details[recording_id].tracks[key].stop()
+        if problem is not None:
+            self.say(f"Can't play it: {problem}")
+
+    def toggle_pause(self, _button: Gtk.Button, recording_id: str, key: str) -> None:
+        self.details[recording_id].tracks[key].toggle_pause()
+
+    def seek(
+        self,
+        _scale: Gtk.Scale,
+        _scroll: Gtk.ScrollType,
+        seconds: float,
+        recording_id: str,
+        key: str,
+    ) -> bool:
+        self.details[recording_id].tracks[key].now_playing().seek(seconds)
+        # The slider moves to where it was dragged.
+        return False
+
+    def speed_chosen(
+        self, speed: Gtk.DropDown, _property: object, recording_id: str, key: str
+    ) -> None:
+        playing = self.details[recording_id].tracks[key].now_playing()
+        playing.set_speed(window_view.SPEEDS[speed.get_selected()])
+
+    @override
+    def do_close_request(self) -> bool:
+        self.stop_playing()
+        # Then it closes.
+        return False
+
+    def save_copy(self, _button: Gtk.Button, recording_id: str, key: str) -> None:
+        # The mix has the name Publish to Agaric gives it.
+        name = f"{recording_id}.opus" if key == MIXED else f"{recording_id}-{key}"
+        dialog = Gtk.FileDialog(initial_name=name)
+        dialog.save(self, None, self.copy_chosen, recording_id, key)
+
+    def copy_chosen(
+        self, dialog: Gtk.FileDialog, result: Gio.AsyncResult, recording_id: str, key: str
+    ) -> None:
         try:
-            # The dialog has already asked before choosing a file that exists.
-            Gio.File.new_for_path(track).copy(
-                dialog.save_finish(result), Gio.FileCopyFlags.OVERWRITE, None, None
-            )
+            chosen = dialog.save_finish(result)
+            if key == MIXED:
+                self.save_mix(recording_id, chosen)
+            else:
+                # The dialog has already asked before choosing a file that exists.
+                track = Gio.File.new_for_path(str(store.recording_dir(recording_id) / key))
+                track.copy(chosen, Gio.FileCopyFlags.OVERWRITE, None, None)
         except GLib.Error as error:
             self.report(error)
+
+    def save_mix(self, recording_id: str, chosen: Gio.File) -> None:
+        """Mixes the tracks into a file of its own, then copies it where the person chose, as a
+        track is copied: a mix that fails midway leaves nothing there."""
+        mixed = Path(tempfile.mkdtemp(prefix="minutas-mix-")) / f"{recording_id}.opus"
+        # An hour takes a while to mix: it says so until it is done.
+        mixing = Adw.Toast(title=MIXING, timeout=0)
+        self.toasts.add_toast(mixing)
+        saved = partial(self.mix_saved, mixed, chosen, mixing)
+        player.save_mix(audio_of(recording_id, MIXED), mixed, saved)
+
+    def mix_saved(
+        self, mixed: Path, chosen: Gio.File, mixing: Adw.Toast, problem: str | None
+    ) -> None:
+        mixing.dismiss()
+        try:
+            if problem is None:
+                Gio.File.new_for_path(str(mixed)).copy(
+                    chosen, Gio.FileCopyFlags.OVERWRITE, None, None
+                )
+            else:
+                self.say(f"Can't save the mix: {problem}")
+        except GLib.Error as error:
+            self.report(error)
+        finally:
+            shutil.rmtree(mixed.parent)
 
     def open_folder(self, _button: Gtk.Button, recording_id: str) -> None:
         self.open(Gio.File.new_for_path(str(store.recording_dir(recording_id))))

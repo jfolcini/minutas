@@ -5,7 +5,7 @@ Minutas records your work meetings on GNOME, transcribes them with who said what
 **Status:** young. Minutas works end to end, from Record in the top bar to a published summary, but expect rough edges, and please [report what you hit](https://github.com/jfolcini/minutas/issues).
 
 <p>
-  <img src="docs/screenshots/recordings.png" width="49%" alt="The Recordings window: a meeting expanded, with its two audio tracks, its named speakers, and Transcribe, Summarize, Publish to Agaric and Publish to GitLab done, each with a button that opens what it made">
+  <img src="docs/screenshots/recordings.png" width="49%" alt="The Recordings window: a meeting expanded, with its two audio tracks and their mix, its named speakers, and Transcribe, Summarize, Publish to Agaric and Publish to GitLab done, each with a button that opens what it made">
   <img src="docs/screenshots/search.png" width="49%" alt="A search for a word two transcripts hold, and one of the two recordings expanded: its Publish to Agaric failed, saying that Agaric isn't running and how to fix it, with Details and Retry">
 </p>
 
@@ -85,7 +85,7 @@ Then it checks for the optional tools, installs none of them, and says what each
 4. **Summarize.** Pick a preset from the Summarize menu, or Custom… to type what the summary should cover.
 5. **Publish.** Publish to Agaric, Publish to GitLab or Publish to GitHub. GitLab and GitHub ask for a link: an issue link gets a comment, a project or repository link a new issue. Each run keeps its result and a button that opens it.
 
-A recording's ⋮ menu renames it or moves it to the Trash; its audio files can be played, saved elsewhere or deleted now. The search button, or Ctrl+F, finds the recordings that hold every word you type in their name, date or transcript, speakers' names included.
+A recording's ⋮ menu renames it or moves it to the Trash; its tracks can be played, alone or mixed and at up to twice the speed without the voices going up in pitch, saved elsewhere or deleted now. The search button, or Ctrl+F, finds the recordings that hold every word you type in their name, date or transcript, speakers' names included.
 
 ### Settings
 
