@@ -1,6 +1,11 @@
 # Minutas
 
-[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/17100/badge)](https://www.bestpractices.dev/projects/17100)
+<p>
+  <a href="https://github.com/jfolcini/minutas/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/jfolcini/minutas/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="LICENSE"><img alt="License: GPL-3.0-or-later" src="https://img.shields.io/badge/license-GPL--3.0--or--later-blue"></a>
+  <a href="https://securityscorecards.dev/viewer/?uri=github.com/jfolcini/minutas"><img alt="OpenSSF Scorecard" src="https://api.securityscorecards.dev/projects/github.com/jfolcini/minutas/badge"></a>
+  <a href="https://www.bestpractices.dev/projects/17100"><img alt="OpenSSF Best Practices" src="https://www.bestpractices.dev/projects/17100/badge"></a>
+</p>
 
 Minutas records your work meetings on GNOME, transcribes them with who said what, and publishes them where your team keeps its notes: an [Agaric](https://github.com/jfolcini/agaric) meeting page, a GitLab or GitHub issue or comment. It is for someone who spends the day in calls on an Ubuntu laptop and would rather not take notes during them. The recording and the transcription stay on your computer; nothing leaves it until you press a button.
 
