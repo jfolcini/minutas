@@ -10,7 +10,6 @@ everything in it, for good.
 """
 
 import contextlib
-import shutil
 import sys
 from collections.abc import Callable, Collection, Mapping, Sequence
 from datetime import UTC, datetime
@@ -127,11 +126,9 @@ def now() -> datetime:
 def load_views(running: Mapping[str, Collection[str]]) -> list[RowView]:
     """Every recording's row, newest first; running holds the recordings of each action whose
     command the window is running."""
-    # Looked for at each refresh: one installed while the window is open is found.
-    tool = summarizer.chosen()
-    found = shutil.which(tool.command) is not None
+    # Looked for at each refresh: one installed or updated while the window is open is found.
     missing_tools = {
-        SUMMARIZE: "" if found else tool.missing,
+        SUMMARIZE: summarizer.problem(),
         PUBLISH_GITLAB: gitlab.glab_problem(),
         PUBLISH_GITHUB: github.gh_problem(),
     }
@@ -427,8 +424,7 @@ class SettingsDialog(Adw.PreferencesDialog):
         self.found = []
         offer(self.model, self.model_handler, summarizer.CLAUDE_MODELS, settings.claude_model())
         offer(self.effort, self.effort_handler, summarizer.CLAUDE_EFFORTS, settings.claude_effort())
-        found = shutil.which(summarizer.CLAUDE) is not None
-        self.model.set_subtitle("" if found else summarizer.CLAUDE_MISSING)
+        self.model.set_subtitle(summarizer.claude_problem())
         self.model.set_sensitive(True)
         self.effort.set_visible(True)
 

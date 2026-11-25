@@ -18,7 +18,9 @@ managed-mcp.json, Claude Code refuses --strict-mcp-config and the run fails.
 
 import json
 import os
+import re
 import shlex
+import shutil
 import signal
 import subprocess
 import tempfile
@@ -107,7 +109,7 @@ DEVIN_FLAGS = (
 
 # Claude Code's flags for the call, in place of the person's own settings. Read from its
 # documentation and `claude --help`, and seen to hold in what it sends the API, for Claude Code
-# 2.1.166 or newer, which the deny rule needs.
+# CLAUDE_MINIMUM or newer.
 CLAUDE_FLAGS = (
     # The prompt arrives on its input, out of `ps` and of the limit on a command's length.
     "-p",
@@ -130,6 +132,8 @@ CLAUDE_FLAGS = (
     # The meeting is not kept among the person's Claude Code sessions.
     "--no-session-persistence",
 )
+# The deny rule "*" came in 2.1.166; CLAUDE_ENVIRONMENT's variables were all there by then.
+CLAUDE_MINIMUM = (2, 1, 166)
 CLAUDE_ENVIRONMENT = {
     # An @ before a path in the prompt, in a speaker's name say, stays text: without this Claude
     # Code reads that file into the prompt, with no tool and no approval, whatever the flags say.
@@ -173,6 +177,10 @@ CLAUDE_MISSING = (
     "claude not found: install Claude Code with "
     "`curl -fsSL https://claude.ai/install.sh | bash`, then log in with `claude auth login`"
 )
+CLAUDE_OLDER = (
+    "The claude at {path} is version {version}; Summarize needs "
+    f"{'.'.join(map(str, CLAUDE_MINIMUM))} or newer: update it with `claude update`"
+)
 EMPTY = "{name} answered with an empty summary: see Details"
 SKILL_UNREADABLE = "Can't read the summary skill {path}: choose another in Settings"
 # The person's own notes, so trusted, unlike the transcript that follows them. No size limit of
@@ -187,6 +195,8 @@ CONTEXT_UNREADABLE = (
 # Every model the account can use, for Settings to offer; in-process, as Summarize runs Devin.
 LIST_MODELS = [DEVIN, "models", "list", "--format", "json", "--process-model", "in-process"]
 MODELS_UNREADABLE = "Devin listed its models in a form Minutas can't read"
+VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)")
+VERSION_TIMEOUT_SECONDS = 10
 TIMED_OUT = f"{{name}} gave no answer in {TIMEOUT_SECONDS // 60} minutes: see Details, then Retry"
 
 
@@ -215,6 +225,40 @@ TOOLS = (
 def chosen() -> Tool:
     """The summarizer the Settings choose."""
     return next((tool for tool in TOOLS if tool.command == settings.summarizer()), TOOLS[0])
+
+
+def claude_problem() -> str:
+    """Why the claude on PATH can't summarize, and how to put one that can in its place; empty
+    when it can."""
+    path = shutil.which(CLAUDE)
+    if path is None:
+        return CLAUDE_MISSING
+    try:
+        # The path just found, never a shell string. Every refresh of the window asks, so a claude
+        # that never answers must not hold it.
+        said = subprocess.run(  # noqa: S603
+            [path, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=VERSION_TIMEOUT_SECONDS,
+            check=False,
+        ).stdout
+    except subprocess.TimeoutExpired:
+        said = ""
+    version = VERSION.search(said)
+    if version is None or tuple(map(int, version.groups())) < CLAUDE_MINIMUM:
+        found = "unknown" if version is None else version[0]
+        return CLAUDE_OLDER.format(path=path, version=found)
+    return ""
+
+
+def problem() -> str:
+    """Why the summarizer the Settings choose can't run, and how to put one that can in its
+    place; empty when it can."""
+    tool = chosen()
+    if tool.command == CLAUDE:
+        return claude_problem()
+    return "" if shutil.which(tool.command) is not None else tool.missing
 
 
 @dataclass(frozen=True)
@@ -373,6 +417,8 @@ def ask(prompt: str, log: Path) -> tuple[str | None, str]:
     """The name the summarizer's answer proposes, and its summary; the log gets everything it
     said."""
     tool = chosen()
+    if tool.command == CLAUDE and (reason := claude_problem()):
+        raise SummarizerError(reason)
     with tempfile.TemporaryDirectory(prefix="minutas-summarize-") as work:
         if tool.command == CLAUDE:
             # Nothing in the folder: Claude Code reads the prompt from its input.
