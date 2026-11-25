@@ -714,6 +714,18 @@ def test_recordings_are_listed_newest_first(history: Callable[[], window.History
     ]
 
 
+def test_a_recording_that_does_not_read_leaves_the_others_listed(
+    history: Callable[[], window.HistoryWindow],
+) -> None:
+    recording()
+    bad = recording(started=START + timedelta(hours=1))
+    (store.recording_dir(bad) / "recording.json").write_text("{}")
+
+    shown = history()
+
+    assert listed(shown) == [f"Meeting | {SUBTITLE}"]
+
+
 def test_an_empty_history_says_so_with_the_whole_window(
     history: Callable[[], window.HistoryWindow],
 ) -> None:

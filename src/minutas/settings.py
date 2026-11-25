@@ -1,14 +1,15 @@
 """The settings file, and the Agaric agent token, which lives in the keyring instead."""
 
-import json
 import os
 from pathlib import Path
 from typing import cast
 
 import keyring
+from pydantic import TypeAdapter
 
 from minutas.atomic import write_json
 
+JSON_OBJECT = TypeAdapter(dict[str, object])
 KEYRING_SERVICE = "minutas"
 AGARIC_KEYRING_USERNAME = "agaric"
 # Kept audio is bounded until a limit is turned off, which saves it as None.
@@ -33,7 +34,7 @@ def settings_path() -> Path:
 
 def load() -> dict[str, object]:
     path = settings_path()
-    return cast("dict[str, object]", json.loads(path.read_text())) if path.is_file() else {}
+    return JSON_OBJECT.validate_json(path.read_text()) if path.is_file() else {}
 
 
 def save(changes: dict[str, object]) -> None:

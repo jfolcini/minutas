@@ -9,7 +9,6 @@ after has to start a new worker.
 """
 
 import fcntl
-import json
 import os
 import signal
 import subprocess
@@ -20,6 +19,8 @@ from datetime import datetime
 from pathlib import Path
 from types import FrameType
 from typing import IO, TypedDict, cast
+
+from pydantic import ConfigDict, TypeAdapter, with_config
 
 from minutas import settings, store, transcriber
 
@@ -197,10 +198,8 @@ def queue(recording_id: str, queued: datetime) -> None:
 
 def runs_by_recording() -> dict[str, list[store.Run]]:
     # By runs.json, which a recording gets only after its recording.json.
-    return {
-        path.parent.name: store.load_runs(path.parent.name)
-        for path in store.recordings_dir().glob("*/runs.json")
-    }
+    folders = store.recordings_dir().glob("*/runs.json")
+    return store.readable((path.parent.name for path in folders), store.load_runs)
 
 
 def fail_interrupted() -> None:
@@ -266,18 +265,28 @@ def cancel(recording_id: str, index: int) -> None:
     store.write_status()
 
 
+# Strict, so a bool, which is an int too, is no count.
+@with_config(ConfigDict(strict=True))
+class TranscriberSaid(TypedDict):
+    """A progress line of the transcriber's stdout."""
+
+    phase: str
+    done: int
+    total: int
+
+
+TRANSCRIBER_SAID = TypeAdapter(TranscriberSaid)
+
+
 def read_progress(line: str) -> store.Progress | None:
     """The phase and whole percent done a line of the transcriber's stdout says; None for any
     other line, such as one a library printed."""
     try:
-        said = json.loads(line)
+        said = TRANSCRIBER_SAID.validate_json(line)
     except ValueError:
         return None
-    if not isinstance(said, dict):
-        return None
-    phase, done, total = said.get("phase"), said.get("done"), said.get("total")
-    # Not bool, which is an int too.
-    counted = type(done) is int and type(total) is int and 0 <= done <= total and total > 0
+    phase, done, total = said["phase"], said["done"], said["total"]
+    counted = 0 <= done <= total and total > 0
     if phase not in transcriber.PHASES or not counted:
         return None
     return store.Progress(phase=phase, percent=done * 100 // total)

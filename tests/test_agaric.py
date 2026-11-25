@@ -725,6 +725,23 @@ def test_the_log_holds_each_call_and_its_output_but_not_the_token(system: FakeSy
 
 
 @pytest.mark.usefixtures("configured")
+@pytest.mark.parametrize("stdout", ["[]\n", '[{"name": "taken", "page_id": null}]\n'])
+def test_a_taken_name_agaric_resolves_to_no_page_fails_the_run(
+    system: FakeSystem, stdout: str
+) -> None:
+    recording_id = recording()
+    system.answers["add_meeting"] = [Answer(1, stderr=TAKEN_NEW)]
+    system.answers["resolve"] = [Answer(stdout=stdout)]
+
+    assert agaric.publish(recording_id, PUBLISHED) is False
+
+    assert (runs(recording_id)[0]["error"], runs(recording_id)[0].get("choice")) == (
+        agaric.UNEXPECTED,
+        None,
+    )
+
+
+@pytest.mark.usefixtures("configured")
 @pytest.mark.parametrize(
     "stdout",
     ["not json\n", '{"recording_block_id": "01JREC"}\n', '{"page_id": "01JPAGE"}\n', "[]\n"],

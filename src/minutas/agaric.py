@@ -19,9 +19,10 @@ from contextlib import contextmanager
 from datetime import date, datetime
 from pathlib import Path
 from types import FrameType
-from typing import NamedTuple, NotRequired, cast
+from typing import Annotated, NamedTuple, NotRequired, TypedDict, cast
 
 from keyring.errors import KeyringError
+from pydantic import ConfigDict, Field, TypeAdapter, with_config
 
 from minutas import settings, store
 
@@ -143,6 +144,38 @@ def token_in(pasted: str) -> str | None:
     return None if found is None else found.group()
 
 
+@with_config(ConfigDict(strict=True))
+class Space(TypedDict):
+    id: str
+    name: str
+
+
+@with_config(ConfigDict(strict=True))
+class Meeting(TypedDict):
+    page_id: str
+    recording_block_id: str
+
+
+@with_config(ConfigDict(strict=True))
+class Resolved(TypedDict):
+    page_id: str
+
+
+# What the calls whose answer is used answer with.
+SPACES = TypeAdapter(list[Space])
+MEETING = TypeAdapter(Meeting)
+RESOLVED = TypeAdapter(Annotated[list[Resolved], Field(min_length=1)])
+
+
+@contextmanager
+def unexpected() -> Generator[None]:
+    """An answer in a form its call doesn't answer with fails the run, saying so."""
+    try:
+        yield
+    except ValueError:
+        raise AgaricError(UNEXPECTED) from None
+
+
 def call(token: str, tool: str, arguments: Mapping[str, object], log: Path) -> object:
     """Runs one tool and returns its result; the log gets the call, never the token."""
     request = json.dumps(arguments)
@@ -162,20 +195,8 @@ def call(token: str, tool: str, arguments: Mapping[str, object], log: Path) -> o
         out.write(f"{result.stdout}{result.stderr}exit status {result.returncode}\n")
     if result.returncode != 0:
         raise failure(result.stderr, result.returncode)
-    try:
+    with unexpected():
         return json.loads(result.stdout)
-    except ValueError:
-        raise AgaricError(UNEXPECTED) from None
-
-
-def id_in(answer: object, key: str) -> str:
-    try:
-        found = cast("dict[str, object]", answer)[key]
-    except (KeyError, TypeError):
-        found = None
-    if not isinstance(found, str):
-        raise AgaricError(UNEXPECTED)
-    return found
 
 
 def mixed(tracks: Sequence[str], into: Sequence[str]) -> list[str]:
@@ -295,16 +316,17 @@ def send(recording_id: str, runs: list[store.Run], page: str | None, log: Path) 
     call(token, "list_spaces", {}, log)
     try:
         with meeting_files(store.recording_dir(recording_id), log) as files:
-            answer = call(
-                token, "add_meeting", {"space_id": space_id, **target, **files, **summary}, log
-            )
+            meeting = {"space_id": space_id, **target, **files, **summary}
+            answer = call(token, "add_meeting", meeting, log)
     except NameTakenError:
         found = call(token, "resolve", {"space_id": space_id, "names": [title]}, log)
-        holder = id_in(cast("list[object]", found)[0], "page_id")
+        with unexpected():
+            holder = RESOLVED.validate_python(found)[0]["page_id"]
         raise AgaricError(taken, store.Choice(kind="name_taken", page_id=holder)) from None
+    with unexpected():
+        made = MEETING.validate_python(answer)
     note = None if "audio_path" in files else AUDIO_LEFT_OUT
-    page_id, block = id_in(answer, "page_id"), id_in(answer, "recording_block_id")
-    return Published(page_id, title, block, summary_run, note)
+    return Published(made["page_id"], title, made["recording_block_id"], summary_run, note)
 
 
 def interrupt(_signal: int, _frame: FrameType | None) -> None:
@@ -361,5 +383,7 @@ def publish(recording_id: str, published: datetime, *, page: str | None = None) 
 
 def list_spaces() -> list[tuple[str, str]]:
     """Every space the agent token may use, as its id and name."""
-    spaces = cast("list[dict[str, str]]", call(agent_token(), "list_spaces", {}, Path(os.devnull)))
+    answer = call(agent_token(), "list_spaces", {}, Path(os.devnull))
+    with unexpected():
+        spaces = SPACES.validate_python(answer)
     return [(space["id"], space["name"]) for space in spaces]

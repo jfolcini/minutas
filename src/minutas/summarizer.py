@@ -30,6 +30,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from types import FrameType
+from typing import TypedDict
+
+from pydantic import ConfigDict, TypeAdapter, with_config
 
 from minutas import settings, store
 
@@ -278,6 +281,28 @@ class Model:
     efforts: tuple[tuple[str, str], ...]
 
 
+@with_config(ConfigDict(strict=True))
+class DevinVariant(TypedDict):
+    label: str
+    model_uid: str
+
+
+@with_config(ConfigDict(strict=True))
+class DevinFamily(TypedDict):
+    family_label: str
+    variants: list[DevinVariant]
+
+
+@with_config(ConfigDict(strict=True))
+class DevinModels(TypedDict):
+    """What `devin models list --format json` says, as much of it as Settings shows."""
+
+    families: list[DevinFamily]
+
+
+DEVIN_MODELS = TypeAdapter(DevinModels)
+
+
 def models(listed: str, saved: str | None) -> list[Model]:
     """The families `devin models list --format json` lists, in its order, and the saved model
     after them when it is none of theirs: one Devin stopped offering still shows while it is set.
@@ -296,10 +321,10 @@ def models(listed: str, saved: str | None) -> list[Model]:
                     for variant in family["variants"]
                 ),
             )
-            for family in json.loads(listed)["families"]
+            for family in DEVIN_MODELS.validate_json(listed)["families"]
             if family["variants"]
         ]
-    except (ValueError, KeyError, TypeError, AttributeError) as error:
+    except ValueError as error:
         raise SummarizerError(MODELS_UNREADABLE) from error
     if saved is not None and find(found, saved) is None:
         found.append(Model(saved, (("", saved),)))

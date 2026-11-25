@@ -564,6 +564,17 @@ def test_work_fails_each_run_at_once_naming_a_vocabulary_it_cant_read_and_goes_o
         assert [(run["status"], run["error"]) for run in runs] == [("failed", said)]
 
 
+def test_runs_that_do_not_read_stop_no_list_and_are_named(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    good = recording()
+    bad = recording(START + timedelta(hours=1))
+    (store.recording_dir(bad) / "runs.json").write_text('[{"action": "transcribe"}]')
+
+    assert list(worker.runs_by_recording()) == [good]
+    assert f"skipped {store.recording_dir(bad)}" in capsys.readouterr().err
+
+
 def test_a_vocabulary_deleted_before_it_is_read_adds_no_words(tmp_path: Path) -> None:
     assert worker.vocabulary_words(tmp_path / "Acme.txt") == []
 

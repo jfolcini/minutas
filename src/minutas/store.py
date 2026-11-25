@@ -6,13 +6,15 @@ changes: whatever reads it, publishing included, reads the current names.
 """
 
 import fcntl
-import json
 import os
-from collections.abc import Generator, Iterable, Mapping, Sequence
+import sys
+from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import NotRequired, TypedDict, cast
+
+from pydantic import ConfigDict, TypeAdapter, with_config
 
 from minutas import settings
 from minutas.atomic import write_json, write_text
@@ -38,6 +40,13 @@ INTERRUPTED = "interrupted"
 NAME_ORDER = ("default", "summary", "calendar", "typed")
 
 
+# What the store reads back is checked against these types: JSON of the wrong type fails as
+# a ValueError where it is read. A key these types don't know, which a newer Minutas may have
+# written, is kept, so writing a recording back never drops it.
+STORED = ConfigDict(extra="allow", strict=True)
+
+
+@with_config(STORED)
 class Recording(TypedDict):
     id: str
     started_at: str
@@ -67,6 +76,7 @@ class Recording(TypedDict):
     echo_cancelled: NotRequired[bool]
 
 
+@with_config(STORED)
 class Segment(TypedDict):
     """What one speaker said in one turn, as the transcriber leaves it."""
 
@@ -78,6 +88,7 @@ class Segment(TypedDict):
     text: str
 
 
+@with_config(STORED)
 class Choice(TypedDict):
     """What a failed run asks before it can go on.
 
@@ -89,6 +100,7 @@ class Choice(TypedDict):
     page_id: NotRequired[str]
 
 
+@with_config(STORED)
 class Progress(TypedDict):
     """How far a running transcription has got."""
 
@@ -98,6 +110,7 @@ class Progress(TypedDict):
     percent: int
 
 
+@with_config(STORED)
 class Run(TypedDict):
     action: str
     status: str
@@ -118,6 +131,12 @@ class Run(TypedDict):
     link: NotRequired[str]
     # How far a Transcribe run has got, while it runs.
     progress: NotRequired[Progress]
+
+
+JSON_OBJECT = TypeAdapter(dict[str, object])
+RECORDING = TypeAdapter(Recording)
+RUNS = TypeAdapter(list[Run])
+SEGMENT_LIST = TypeAdapter(list[Segment])
 
 
 def data_dir() -> Path:
@@ -157,31 +176,45 @@ def create_recording(started: datetime) -> Recording:
         name_source="default",
     )
     folder = recording_dir(recording["id"])
-    folder.parent.mkdir(parents=True, exist_ok=True)
-    folder.mkdir()
-    write_json(folder / "recording.json", recording)
-    write_json(folder / "runs.json", [])
+    # A status rewrite in another process reads both files, so it must not find one alone.
+    with lock():
+        folder.parent.mkdir(parents=True, exist_ok=True)
+        folder.mkdir()
+        write_json(folder / "recording.json", recording)
+        write_json(folder / "runs.json", [])
     return recording
 
 
 def load_recording(recording_id: str) -> Recording:
-    saved = json.loads((recording_dir(recording_id) / "recording.json").read_text())
+    saved = JSON_OBJECT.validate_json((recording_dir(recording_id) / "recording.json").read_text())
     # A recording made before names had a source holds the default name.
-    return {"name_source": "default", **saved}
+    return RECORDING.validate_python({"name_source": "default", **saved})
 
 
 def load_runs(recording_id: str) -> list[Run]:
-    return cast("list[Run]", json.loads((recording_dir(recording_id) / "runs.json").read_text()))
+    return RUNS.validate_json((recording_dir(recording_id) / "runs.json").read_text())
 
 
 def save_runs(recording_id: str, runs: list[Run]) -> None:
     write_json(recording_dir(recording_id) / "runs.json", runs)
 
 
+def readable[T](recording_ids: Iterable[str], read: Callable[[str], T]) -> dict[str, T]:
+    """What read gives of each recording, in their order, but of one whose files aren't in the
+    form Minutas writes, which is named on stderr: a damaged file stops no list."""
+    found: dict[str, T] = {}
+    for recording_id in recording_ids:
+        try:
+            found[recording_id] = read(recording_id)
+        except ValueError as error:
+            sys.stderr.write(f"minutas: skipped {recording_dir(recording_id)}: {error}\n")
+    return found
+
+
 def load_recordings() -> list[Recording]:
     """Newest first."""
     folders = sorted(recordings_dir().glob("*/recording.json"), reverse=True)
-    return [load_recording(path.parent.name) for path in folders]
+    return list(readable((path.parent.name for path in folders), load_recording).values())
 
 
 def has_audio(track: Path) -> bool:
@@ -389,8 +422,9 @@ def format_transcript(segments: Iterable[Segment], names: Mapping[str, str]) -> 
 
 
 def load_segments(recording_id: str) -> list[Segment]:
-    segments = (recording_dir(recording_id) / SEGMENTS).read_text(encoding="utf-8")
-    return cast("list[Segment]", json.loads(segments))
+    return SEGMENT_LIST.validate_json(
+        (recording_dir(recording_id) / SEGMENTS).read_text(encoding="utf-8")
+    )
 
 
 def save_speakers(recording: Recording, segments: list[Segment], speakers: dict[str, str]) -> None:
@@ -509,9 +543,9 @@ def recordings_over_limits(
 ) -> list[str]:
     """The recordings whose tracks the limits would delete now."""
     # By runs.json, which a recording gets only after its recording.json.
-    ids = [path.parent.name for path in recordings_dir().glob("*/runs.json")]
-    recordings = [(load_recording(i), load_runs(i), audio_size(i)) for i in ids]
-    return audio_over_limits(recordings, now, age_limit_days, size_limit_gb)
+    ids = (path.parent.name for path in recordings_dir().glob("*/runs.json"))
+    recordings = readable(ids, lambda i: (load_recording(i), load_runs(i), audio_size(i)))
+    return audio_over_limits(list(recordings.values()), now, age_limit_days, size_limit_gb)
 
 
 def delete_audio_over_limits(
@@ -545,9 +579,8 @@ def close_abandoned() -> None:
     mark_stopped(recording["id"], stopped, incomplete=True)
 
 
-def recent_entry(recording: Recording, *, idle: bool) -> dict[str, object]:
+def recent_entry(recording: Recording, runs: list[Run], *, idle: bool) -> dict[str, object]:
     """What status.json says of a stopped recording; idle: nothing is being recorded."""
-    runs = load_runs(recording["id"])
     latest = {run["action"]: run["status"] for run in runs}
     transcriptions = [run for run in runs if run["action"] == "transcribe"]
     return {
@@ -567,16 +600,20 @@ def recent_entry(recording: Recording, *, idle: bool) -> dict[str, object]:
 def write_status() -> None:
     # Read and written under one lock, so the last process to write wrote the newest state.
     with lock():
-        recordings = load_recordings()
-        active = next((r for r in recordings if r["stopped_at"] is None), None)
-        stopped = [r for r in recordings if r["stopped_at"] is not None]
+        # Both its files read, as status.json says of both: one that doesn't read is skipped.
+        folders = sorted(recordings_dir().glob("*/recording.json"), reverse=True)
+        ids = (path.parent.name for path in folders)
+        read = readable(ids, lambda i: (load_recording(i), load_runs(i))).values()
+        active = next((r for r, _ in read if r["stopped_at"] is None), None)
+        stopped = [(r, runs) for r, runs in read if r["stopped_at"] is not None]
         status = {
             "version": 1,
             "recording": None
             if active is None
             else {key: active[key] for key in ACTIVE_IN_STATUS if key in active},
             "recent": [
-                recent_entry(r, idle=active is None) for r in stopped[: settings.recent_in_menu()]
+                recent_entry(r, runs, idle=active is None)
+                for r, runs in stopped[: settings.recent_in_menu()]
             ],
         }
         write_json(data_dir() / "status.json", status)
