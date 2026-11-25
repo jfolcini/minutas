@@ -18,10 +18,11 @@ COMMAND_TITLES = {
     PUBLISH_GITLAB: "Publish to GitLab",
 }
 TRACK_TITLES = dict(zip(store.TRACKS, ("Microphone", "Call"), strict=True))
+# Each starts the Rename dialog's body, a sentence of its own.
 NAME_SOURCES = {
     "default": "Default name",
     "summary": "Proposed by the summary",
-    "calendar": "Calendar event",
+    "calendar": "From the calendar event",
     "typed": "Typed name",
 }
 RESULTS = {
@@ -34,6 +35,7 @@ IN_PROGRESS = {"queued": "Waiting to transcribe", "running": "Transcribing"}
 # The questions a failed publish run can ask that Rename answers.
 NAME_TAKEN = {"name_taken", "rename_taken"}
 STILL_RECORDING = "Still recording"
+CANCEL_TRANSCRIPTION = "Cancel the transcription first"
 NO_AUDIO = "The audio was deleted"
 NO_TRANSCRIPT = "Transcribe first"
 NO_SUMMARY = "Summarize first"
@@ -103,6 +105,8 @@ class RowView:
     publish_gitlab: ActionView
     # When the age limit deletes the tracks; empty when it never will.
     kept_until: str = ""
+    # Why Move to Trash refuses; empty when the recording can go.
+    trash_disabled: str = ""
 
 
 @dataclass(frozen=True)
@@ -189,6 +193,24 @@ def last_result(
     return ActionView(
         result=" · ".join(part for part in said if part is not None), label=label, output=output
     )
+
+
+def trash_refusal(
+    recording: store.Recording, runs: Sequence[store.Run], running: Collection[str]
+) -> str:
+    """Why the recording can't go to the Trash now; empty when it can.
+
+    running: the actions whose command the window is running for it. The log's running runs are
+    not asked: a command stopped with Ctrl-C or killed leaves its run running until the next run
+    of its action, and would keep the recording from the Trash for good.
+    """
+    if recording["stopped_at"] is None:
+        return STILL_RECORDING
+    # Any, not only the newest: the worker takes every queued run from the folder.
+    if any(run["action"] == TRANSCRIBE and run["status"] in IN_PROGRESS for run in runs):
+        return CANCEL_TRANSCRIPTION
+    busy = (title for action, title in COMMAND_TITLES.items() if action in running)
+    return next((f"{title} is still running" for title in busy), "")
 
 
 def subtitle(recording: store.Recording, transcribing: str | None) -> str:
@@ -321,8 +343,7 @@ def row(  # noqa: PLR0913 - each is a separate input to the row; all after track
             )
             for name, title in TRACK_TITLES.items()
         ),
-        delete_disabled=no_audio
-        or ("" if transcribing is None else "Cancel the transcription first"),
+        delete_disabled=no_audio or ("" if transcribing is None else CANCEL_TRANSCRIPTION),
         transcribe=transcribe,
         speakers=tuple(
             SpeakerView(key=key, name="" if name == key else name)
@@ -333,6 +354,7 @@ def row(  # noqa: PLR0913 - each is a separate input to the row; all after track
         publish=publish,
         publish_gitlab=publish_gitlab,
         kept_until=kept_until,
+        trash_disabled=trash_refusal(recording, runs, running),
     )
 
 
