@@ -6,7 +6,13 @@ Minutas records a work meeting on GNOME, transcribes it with who said what, and 
 
 ## Install
 
-On Ubuntu 24.04 or later: clone the repository, run `./install.sh`, then log out and back in once so GNOME loads the top-bar extension. To update to the latest release, run `minutas update`.
+On Ubuntu 24.04 or later:
+
+```bash
+git clone https://github.com/jfolcini/minutas && cd minutas && ./install.sh
+```
+
+Then log out and back in once so GNOME loads the top-bar extension. To update to the latest release, run `minutas update`.
 
 ## Documentation
 
