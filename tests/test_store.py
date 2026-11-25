@@ -795,6 +795,23 @@ def test_status_is_written_inside_the_store_lock(monkeypatch: pytest.MonkeyPatch
     assert held == [True]
 
 
+def test_a_recording_is_made_inside_the_store_lock(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A status rewrite in another process reads both files, so it must not find one alone.
+    store.data_dir().mkdir(parents=True)
+    held: list[bool] = []
+    write_json = store.write_json
+
+    def spy(path: Path, value: object) -> None:
+        held.append(store_lock_held())
+        write_json(path, value)
+
+    monkeypatch.setattr(store, "write_json", spy)
+
+    store.create_recording(START)
+
+    assert held == [True, True]
+
+
 def test_discard_if_silent_removes_the_folder_inside_the_store_lock(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -176,10 +176,12 @@ def create_recording(started: datetime) -> Recording:
         name_source="default",
     )
     folder = recording_dir(recording["id"])
-    folder.parent.mkdir(parents=True, exist_ok=True)
-    folder.mkdir()
-    write_json(folder / "recording.json", recording)
-    write_json(folder / "runs.json", [])
+    # A status rewrite in another process reads both files, so it must not find one alone.
+    with lock():
+        folder.parent.mkdir(parents=True, exist_ok=True)
+        folder.mkdir()
+        write_json(folder / "recording.json", recording)
+        write_json(folder / "runs.json", [])
     return recording
 
 
