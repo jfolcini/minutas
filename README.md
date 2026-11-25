@@ -4,7 +4,15 @@ Minutas records a work meeting on GNOME, transcribes it with who said what, and 
 
 **Status:** early development. Nothing is usable yet; the build order is in [docs/design.md § Milestones](docs/design.md#milestones).
 
-**Install** on Ubuntu 24.04 or later: clone the repository and run `./install.sh`; to update to the latest release, run `minutas update`.
+## Install
+
+On Ubuntu 24.04 or later:
+
+```bash
+git clone https://github.com/jfolcini/minutas && cd minutas && ./install.sh
+```
+
+Then log out and back in once so GNOME loads the top-bar extension. To update to the latest release, run `minutas update`.
 
 ## Documentation
 

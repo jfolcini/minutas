@@ -1,7 +1,7 @@
 {
   "uuid": "minutas@jfolcini.github.io",
   "name": "Minutas",
-  "description": "Record work meetings from the top bar and follow their transcripts.",
+  "description": "Record work meetings from the top bar and follow their transcripts. Needs the Minutas app: clone https://github.com/jfolcini/minutas and run ./install.sh.",
   "shell-version": ["46", "47", "48", "49", "50", "51"],
   "url": "https://github.com/jfolcini/minutas"
 }
