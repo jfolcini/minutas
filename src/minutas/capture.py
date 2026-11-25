@@ -28,6 +28,9 @@ def run(pipeline: Gst.Pipeline) -> int:
         return GLib.SOURCE_CONTINUE
 
     def finish() -> bool:
+        # A buffer that reached a sink as the pipeline paused waits there, holding the stream lock
+        # end-of-stream takes, until the sink plays; the sources stay paused.
+        pipeline.iterate_sinks().foreach(lambda sink: sink.set_state(Gst.State.PLAYING))
         # End-of-stream closes both files properly.
         pipeline.send_event(Gst.Event.new_eos())
         # A paused pipeline passes it on only once it plays; its sources end before they capture.

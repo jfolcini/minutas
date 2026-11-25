@@ -2,6 +2,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 from collections.abc import Callable, Generator, Iterator
 from pathlib import Path
 from typing import cast
@@ -19,6 +20,10 @@ from gi.repository import (  # noqa: E402
 )
 
 from minutas import capture, recorder, store  # noqa: E402
+
+# A deadlock inside GStreamer holds the main thread, where neither the watchdog below nor the
+# default timeout's signal runs: a timer thread ends the suite instead, with every thread's stack.
+pytestmark = pytest.mark.timeout(method="thread")
 
 # A source that captures in real time, as pulsesrc does, a buffer at a time.
 LIVE = ["audiotestsrc", "is-live=true"]
@@ -137,6 +142,9 @@ def test_a_pause_leaves_no_gap_in_the_tracks_and_keeps_them_aligned(folder: Path
         yield from recording.waiting()
         resumed_after.append(int(recording.clock.get_next_entry_time()) - held_for)
         yield from recording.capture(8)
+        # End-of-stream ends a source's wait for the clock; one still making its buffer would
+        # wait after it, on a clock that nothing moves while the program ends.
+        yield from recording.waiting()
         os.kill(os.getpid(), signal.SIGINT)
 
     assert recording.run(script()) == 0
@@ -158,6 +166,54 @@ def test_a_paused_recording_ends_with_what_it_captured_before_the_pause(folder: 
     assert recording.run(script()) == 0
 
     assert recorded(folder) == [(8 * BUFFER, True), (8 * BUFFER, True)]
+
+
+def test_a_recording_paused_with_a_page_on_its_way_to_its_file_still_ends_properly(
+    folder: Path,
+) -> None:
+    recording = Recording()
+    sinks: list[Gst.Element] = []
+    recording.pipeline.iterate_sinks().foreach(sinks.append)
+    paused = threading.Event()
+    held: list[bool] = []
+
+    def hold(_pad: Gst.Pad, _info: Gst.PadProbeInfo) -> Gst.PadProbeReturn:
+        """Holds the next page on its way to one track's file until the pipeline has paused."""
+        held.append(True)
+        paused.wait()
+        return Gst.PadProbeReturn.REMOVE
+
+    captured = 0
+
+    def script() -> Generator[None]:
+        nonlocal captured
+        # Both files have begun, as they have once the recorder has started, and no page is
+        # on its way.
+        yield from recording.capture(1)
+        yield from recording.waiting()
+        yield from recording.until(
+            lambda: all(sink.get_state(0)[1] == Gst.State.PLAYING for sink in sinks)
+        )
+        sinks[0].sinkpads[0].add_probe(Gst.PadProbeType.BUFFER, hold)
+        captured = 1
+        while not held:
+            yield from recording.capture(1)
+            captured += 1
+            yield from recording.until(lambda: bool(held) or recording.clock.peek_id_count() == 2)
+        # The source whose page is held waits for the clock no more; the other one waits again.
+        yield from recording.until(lambda: recording.clock.peek_id_count() == 1)
+        os.kill(os.getpid(), recorder.PAUSE_SIGNAL)
+        # The sinks pause before the sources, and a paused source waits for no time.
+        yield from recording.until(lambda: recording.clock.peek_id_count() == 0)
+        paused.set()
+        # The paused file holds the page, and the thread that brought it.
+        prerolled = Gst.StateChangeReturn.SUCCESS
+        yield from recording.until(lambda: sinks[0].get_state(0)[0] == prerolled)
+        os.kill(os.getpid(), signal.SIGINT)
+
+    assert recording.run(script()) == 0
+
+    assert recorded(folder) == [(captured * BUFFER, True)] * len(store.TRACKS)
 
 
 def test_the_units_program_ends_both_tracks_properly_on_sigint(folder: Path) -> None:

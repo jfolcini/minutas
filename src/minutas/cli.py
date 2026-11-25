@@ -198,8 +198,8 @@ def queue_transcription(recording_id: str) -> int:
 
 
 def record_stopped(args: argparse.Namespace) -> int:
-    # systemd reports success for a clean exit, which closes both files: after Stop, or when the
-    # session ends. Anything else means the recorder died: what it wrote is kept.
+    # systemd reports success for a clean exit, which closes both files: after Finish or Discard,
+    # or when the session ends. Anything else means the recorder died: what it wrote is kept.
     incomplete = os.environ.get("SERVICE_RESULT") != "success"
     stopped = now()
     store.mark_stopped(args.recording_id, stopped, incomplete=incomplete)
