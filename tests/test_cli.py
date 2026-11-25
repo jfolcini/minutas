@@ -590,7 +590,11 @@ def test_record_discard_keeps_a_recording_the_trash_refused_and_says_why(
 
 
 def test_record_discard_reports_a_failed_stop_and_trashes_nothing(
-    fake_recorder: FakeRecorder, fake_trash: FakeTrash, capsys: pytest.CaptureFixture[str]
+    fake_recorder: FakeRecorder,
+    fake_worker: FakeWorker,
+    fake_calendar: FakeCalendar,
+    fake_trash: FakeTrash,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     recording_id = with_audio(recording_in_progress(fake_recorder))
     fake_recorder.error = recorder.RecorderError("Job failed")
@@ -599,7 +603,13 @@ def test_record_discard_reports_a_failed_stop_and_trashes_nothing(
 
     assert capsys.readouterr().err == "Could not stop the recorder: Job failed\n"
     assert fake_trash.trashed == []
-    assert store.is_recording(recording_id)
+    # The recorder goes on, and Finish ends it as any recording.
+    fake_recorder.error = None
+    fake_recorder.on_stop = lambda: main(["record", "stopped", recording_id])
+    assert main(["record", "stop"]) == 0
+    assert len(fake_calendar.asked) == 1
+    assert [run["status"] for run in store.load_runs(recording_id)] == ["queued"]
+    assert fake_worker.starts == 1
 
 
 @pytest.mark.parametrize("service_result", ["success", "signal"])

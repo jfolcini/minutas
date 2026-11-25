@@ -1285,3 +1285,31 @@ def test_work_runs_no_joiner_for_parts_that_hold_no_audio(system: FakeSystem) ->
     worker.work()
 
     assert [command[1:3] for command in system.commands()] == [["-P", TRANSCRIBER]]
+
+
+@pytest.mark.usefixtures("speech", "sigterm")
+def test_work_leaves_alone_what_continue_records_after_it_took_the_run(
+    system: FakeSystem, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recording_id = recording()
+    put_runs(recording_id, [queued_run(START + timedelta(seconds=60))])
+    folder = store.recording_dir(recording_id)
+    words = worker.word_list
+
+    def continued_meanwhile(continued_id: str) -> list[str]:
+        # Continue lands while the worker sets the run up: it cancels the run, then its recorder
+        # writes the parts again.
+        worker.cancel(continued_id, 0)
+        store.mark_continued(continued_id, START + timedelta(minutes=5))
+        for name in store.PARTS:
+            (folder / name).write_bytes(b"OggS")
+        return words(continued_id)
+
+    monkeypatch.setattr(worker, "word_list", continued_meanwhile)
+
+    worker.work()
+
+    # Only the cancel's own kill: no joiner deletes the parts being written, no transcriber runs.
+    assert system.commands() == [worker.STOP_TRANSCRIBER]
+    assert store.audio_kept(recording_id) == [*store.TRACKS, *store.PARTS]
+    assert store.load_runs(recording_id)[0]["status"] == "cancelled"

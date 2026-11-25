@@ -139,6 +139,8 @@ def record_discard(_: argparse.Namespace) -> int:
     try:
         recorder.stop()
     except recorder.RecorderError as error:
+        # It goes on recording, and its Finish must look up its event and transcribe it.
+        store.mark_discarded(recording["id"], discarded=False)
         return fail(f"Could not stop the recorder: {error}")
     refused = move_to_trash(store.recording_dir(recording["id"]))
     store.write_status()

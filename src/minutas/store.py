@@ -249,10 +249,10 @@ def mark_continued(recording_id: str, continued: datetime) -> None:
         write_json(recording_dir(recording_id) / "recording.json", recording)
 
 
-def mark_discarded(recording_id: str) -> None:
+def mark_discarded(recording_id: str, *, discarded: bool = True) -> None:
     with lock():
         recording = load_recording(recording_id)
-        recording["discarded"] = True
+        recording["discarded"] = discarded
         write_json(recording_dir(recording_id) / "recording.json", recording)
 
 

@@ -305,9 +305,7 @@ def follow(recording_id: str, index: int, printed: Iterable[str]) -> None:
 
 def join_parts(folder: Path, log: IO[str]) -> int:
     """Joins what the recording recorded after Continue onto its tracks; the joiner's exit
-    status, 0 with nothing to join."""
-    if not any(store.has_audio(folder / part) for part in store.PARTS):
-        return 0
+    status."""
     joiner = subprocess.run(  # noqa: S603 - this module's own argument list
         JOINER, cwd=folder, stdin=subprocess.DEVNULL, stderr=log, check=False
     )
@@ -346,10 +344,17 @@ def transcribe(recording_id: str, index: int) -> Outcome:
     if words:
         (folder / WORDS).write_text("".join(f"{word}\n" for word in words), encoding="utf-8")
         command += ["--words", str(folder / WORDS)]
+    with store.lock():
+        # Continue cancels the run before its recorder writes the parts again: read after that,
+        # they would be joined, and deleted, while still being written.
+        if store.load_runs(recording_id)[index]["status"] == "cancelled":
+            # set_outcome keeps the outcome Cancel wrote.
+            return Outcome(status="cancelled", error=None, details=None, output=None)
+        joining = any(store.has_audio(folder / part) for part in store.PARTS)
     log = store.run_log(recording_id, index)
     # stderr is the log, whose last line is the reason either program failed.
     with log.open("w") as stderr:
-        returncode = join_parts(folder, stderr)
+        returncode = join_parts(folder, stderr) if joining else 0
         if returncode != 0:
             return why_it_failed("joiner", returncode, log)
         with subprocess.Popen(  # noqa: S603 - this module's own argument list

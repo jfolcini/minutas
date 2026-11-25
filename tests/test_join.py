@@ -2,6 +2,7 @@ import os
 import subprocess
 import sys
 from array import array
+from collections.abc import Callable
 from pathlib import Path
 from typing import cast
 
@@ -125,28 +126,83 @@ def test_a_part_cut_short_is_joined_as_far_as_it_decodes() -> None:
     assert audio_in("call.opus") == ((BEFORE + AFTER) * OPUS_BUFFER, 1, True)
 
 
-def test_a_part_that_does_not_decode_fails_the_join_and_every_file_is_kept(
-    capfd: pytest.CaptureFixture[str],
+def headers_alone(data: bytes) -> bytes:
+    """What a recorder killed before it wrote a page of audio leaves."""
+    return data[: data.index(b"OggS", data.index(b"OpusTags"))]
+
+
+@pytest.mark.parametrize(
+    "spoil", [headers_alone, lambda _: os.urandom(5000)], ids=["headers alone", "garbage"]
+)
+def test_a_part_none_of_which_decodes_is_kept_and_its_track_transcribed_without_it(
+    capfd: pytest.CaptureFixture[str], spoil: Callable[[bytes], bytes]
 ) -> None:
     recorded = stopped_and_continued()
-    recorded["call.continued.opus"] = os.urandom(5000)
-    Path("call.continued.opus").write_bytes(recorded["call.continued.opus"])
+    spoilt = spoil(recorded["call.continued.opus"])
+    Path("call.continued.opus").write_bytes(spoilt)
+
+    assert join.main() == 0
+
+    assert files() == ["call.continued.opus", "call.opus", "mic.opus"]
+    assert Path("call.opus").read_bytes() == recorded["call.opus"]
+    assert Path("call.continued.opus").read_bytes() == spoilt
+    assert audio_in("mic.opus") == ((BEFORE + AFTER) * OPUS_BUFFER, 1, True)
+    assert capfd.readouterr().err.splitlines()[-1] == (
+        "None of call.continued.opus decodes: call.opus is transcribed without it, "
+        "and it is kept in the recording's folder."
+    )
+
+
+def test_no_track_is_replaced_until_the_joins_of_both_check_out(
+    monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str]
+) -> None:
+    recorded = stopped_and_continued()
+    decodes = join.length
+    # The mic's join goes well, and the call's writes a file that does not decode.
+    monkeypatch.setattr(
+        join, "length", lambda name: 0 if name == "call.joined.opus" else decodes(name)
+    )
 
     assert join.main() == 1
 
-    # The mic's join went well, and still its track is as it was: both or neither.
     assert {name: Path(name).read_bytes() for name in files()} == recorded
     assert capfd.readouterr().err.splitlines()[-1] == (
         "Could not join what was recorded after Continue onto call.opus: "
-        "Could not demultiplex stream. Both are kept in the recording's folder."
+        "the joined file plays for 0.0 s, its parts for 7.7 s. "
+        "Both are kept in the recording's folder."
     )
+
+
+def test_a_track_that_ended_first_is_made_up_with_silence_so_the_parts_line_up() -> None:
+    # A recorder that died wrote neither track's last page; the call's ended a page earlier.
+    record("mic.opus", BEFORE, SILENCE)
+    record("call.opus", BEFORE - 10, SILENCE)
+    for name in store.PARTS:
+        record(name, AFTER, TONE)
+
+    assert join.main() == 0
+
+    for track in store.TRACKS:
+        assert audio_in(track) == ((BEFORE + AFTER) * OPUS_BUFFER, 1, True)
+        assert first_loud_buffer(track) == BEFORE
+
+
+def test_a_track_none_of_which_decodes_becomes_silence_and_then_its_part() -> None:
+    recorded = stopped_and_continued()
+    Path("call.opus").write_bytes(headers_alone(recorded["call.opus"]))
+
+    assert join.main() == 0
+
+    assert files() == ["call.opus", "mic.opus"]
+    assert audio_in("call.opus") == ((BEFORE + AFTER) * OPUS_BUFFER, 1, True)
+    assert first_loud_buffer("call.opus") == BEFORE
 
 
 def test_a_joined_file_that_is_not_as_long_as_its_parts_replaces_nothing(
     monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str]
 ) -> None:
     recorded = stopped_and_continued()
-    # Without its identity, the encoder drops the part: the join ends well, and short.
+    # Without its identity, the Ogg muxer drops the part: the join ends well, and short.
     monkeypatch.setattr(join, "END_TO_END", ["concat", "name=joined"])
 
     assert join.main() == 1
