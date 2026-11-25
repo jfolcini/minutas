@@ -234,30 +234,31 @@ def claude_problem() -> str:
     path = shutil.which(CLAUDE)
     if path is None:
         return CLAUDE_MISSING
-    # Every refresh of the window asks: the claude found is run again only once it changes.
-    return claude_version_problem(path, Path(path).stat().st_mtime_ns)
-
-
-@functools.cache
-def claude_version_problem(path: str, _changed: int) -> str:
-    """claude_problem's answer for the claude at path as it was at that change."""
     try:
-        # The path just found, never a shell string. A claude that never answers must not hold
-        # the window.
-        said = subprocess.run(  # noqa: S603
-            [path, "--version"],
-            capture_output=True,
-            text=True,
-            timeout=VERSION_TIMEOUT_SECONDS,
-            check=False,
-        ).stdout
+        # Every refresh of the window asks: the claude found is run again only once it changes.
+        said = claude_version(path, Path(path).stat().st_mtime_ns)
     except subprocess.TimeoutExpired:
+        # Not kept, as an exception never is: a slow start is asked again at the next refresh.
         said = ""
     version = VERSION.search(said)
     if version is None or tuple(map(int, version.groups())) < CLAUDE_MINIMUM:
         found = "unknown" if version is None else version[0]
         return CLAUDE_OLDER.format(path=path, version=found)
     return ""
+
+
+@functools.cache
+def claude_version(path: str, _changed: int) -> str:
+    """What the claude at path, as it was at that change, says its version is."""
+    # The path just found, never a shell string. A claude that never answers must not hold the
+    # window.
+    return subprocess.run(  # noqa: S603
+        [path, "--version"],
+        capture_output=True,
+        text=True,
+        timeout=VERSION_TIMEOUT_SECONDS,
+        check=False,
+    ).stdout
 
 
 def problem() -> str:

@@ -771,6 +771,16 @@ def test_claude_is_asked_its_version_once_until_it_is_updated(claude: FakeClaude
     assert claude.versions_asked == 2
 
 
+def test_a_claude_that_timed_out_giving_its_version_is_asked_again(claude: FakeClaude) -> None:
+    # A slow cold start is no old claude: the window asks again at its next refresh.
+    claude.version_hangs = True
+    summarizer.problem()
+    claude.version_hangs = False
+
+    assert summarizer.problem() == ""
+    assert claude.versions_asked == 2
+
+
 def test_a_missing_claude_is_the_problem_while_it_is_chosen(claude: FakeClaude) -> None:
     claude.missing = True
 
