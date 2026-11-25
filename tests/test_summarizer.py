@@ -491,7 +491,6 @@ CLAUDE_COMMAND = [
     "",
     "--disallowedTools",
     "*",
-    "Read",
     "--permission-mode",
     "dontAsk",
     "--disable-slash-commands",
@@ -505,9 +504,11 @@ def test_claude_runs_with_no_tool_and_none_of_the_persons_settings_in_an_empty_f
     recording_id = recording()
     # Devin's model is not Claude's.
     settings.set_summary_model("swe-2-high")
-    # What the desktop sets can't let a mention or a CLAUDE.md back in.
+    # What the desktop sets can't let a mention, a CLAUDE.md, a memory folder or a connector in.
     monkeypatch.setenv("CLAUDE_CODE_DISABLE_ATTACHMENTS", "0")
     monkeypatch.delenv("CLAUDE_CODE_DISABLE_CLAUDE_MDS", raising=False)
+    monkeypatch.setenv("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "0")
+    monkeypatch.setenv("ENABLE_CLAUDEAI_MCP_SERVERS", "true")
 
     assert summarizer.summarize(recording_id, SUMMARIZED, PROMPT) is True
 
@@ -524,12 +525,14 @@ def test_claude_runs_with_no_tool_and_none_of_the_persons_settings_in_an_empty_f
     assert not call.cwd.is_relative_to(store.data_dir())
     assert not call.cwd.exists()
     assert call.timeout == 15 * 60
-    # A file the transcript mentions stays unread, and no CLAUDE.md is loaded; its home, where it
-    # keeps its login, and the rest of the person's environment stay.
+    # A file the transcript mentions stays unread; no CLAUDE.md, memory or claude.ai connector is
+    # loaded; its home, where it keeps its login, and the rest of the person's environment stay.
     assert {**os.environ, **call.env} == call.env
     assert {name: value for name, value in call.env.items() if os.environ.get(name) != value} == {
         "CLAUDE_CODE_DISABLE_ATTACHMENTS": "1",
         "CLAUDE_CODE_DISABLE_CLAUDE_MDS": "1",
+        "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
+        "ENABLE_CLAUDEAI_MCP_SERVERS": "false",
     }
     assert summary(recording_id) == "## Decisions\n\n- Ship on Friday.\n"
     assert name_of(recording_id) == ("Release plan", "summary")
@@ -630,7 +633,7 @@ def test_the_log_holds_claudes_command_and_everything_it_said_but_not_the_prompt
     log = (store.recording_dir(recording_id) / "run-0.log").read_text()
     assert log == (
         "$ claude -p --tools '' --strict-mcp-config --setting-sources '' --disallowedTools '*' "
-        "Read --permission-mode dontAsk --disable-slash-commands --no-session-persistence\n"
+        "--permission-mode dontAsk --disable-slash-commands --no-session-persistence\n"
         "partial\nError: boom\nexit status 1\n"
     )
 

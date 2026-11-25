@@ -106,36 +106,42 @@ DEVIN_FLAGS = (
 )
 
 # Claude Code's flags for the call, in place of the person's own settings. Read from its
-# documentation and `claude --help`, for Claude Code 2.1.166 or newer, which the deny rule needs:
-# only a real call proves them.
+# documentation and `claude --help`, and seen to hold in what it sends the API, for Claude Code
+# 2.1.166 or newer, which the deny rule needs.
 CLAUDE_FLAGS = (
     # The prompt arrives on its input, out of `ps` and of the limit on a command's length.
     "-p",
     # None of its built-in tools: nothing to read a file, run a command or fetch a page with.
     *("--tools", ""),
-    # No MCP server: none is passed, and the person's, their plugins' and their claude.ai
-    # account's are skipped.
+    # None of the MCP servers a folder's .mcp.json, ~/.claude.json or a plugin names; for the
+    # person's claude.ai connectors, see CLAUDE_ENVIRONMENT.
     "--strict-mcp-config",
     # None of the person's settings files, nor a folder's: their hooks, permission rules, plugins
     # and CLAUDE.md stay out.
     *("--setting-sources", ""),
-    # The second wall. A tool a later Claude Code adds in spite of the above is denied, an MCP
-    # tool too, and Read by name: a file the prompt mentions with an @ is read without a tool,
-    # under Read's rules. A deny rule wins over any permission mode.
-    *("--disallowedTools", "*", "Read"),
+    # The second wall: every tool is taken out of Claude's reach, one a later Claude Code adds in
+    # spite of the above and an MCP server's that loads all the same included. A deny rule wins
+    # over any permission mode. It does nothing for an @ mention, which needs no tool.
+    *("--disallowedTools", "*"),
     # What would ask for approval is denied; the desktop's settings can't choose another mode.
     *("--permission-mode", "dontAsk"),
-    # A line of the prompt that starts with a slash runs no command or skill of the person's.
+    # A prompt that starts with a slash, a Custom one say, runs no skill or command.
     "--disable-slash-commands",
     # The meeting is not kept among the person's Claude Code sessions.
     "--no-session-persistence",
 )
 CLAUDE_ENVIRONMENT = {
     # An @ before a path in the prompt, in a speaker's name say, stays text: without this Claude
-    # Code reads that file into the prompt, with no tool and no approval.
+    # Code reads that file into the prompt, with no tool and no approval, whatever the flags say.
     "CLAUDE_CODE_DISABLE_ATTACHMENTS": "1",
-    # No CLAUDE.md, the organization's included, and none of the memory Claude Code keeps.
+    # No CLAUDE.md: the flags keep out the person's and a folder's, this the organization's.
     "CLAUDE_CODE_DISABLE_CLAUDE_MDS": "1",
+    # No memory folder for each run's temporary folder left in ~/.claude/projects, and no word
+    # to Claude of one to write to.
+    "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
+    # None of the connectors of the person's claude.ai account, which a login fetches and
+    # --strict-mcp-config is not documented to skip.
+    "ENABLE_CLAUDEAI_MCP_SERVERS": "false",
 }
 # Claude Code has no command that lists its models: its aliases for the newest of each, and the
 # efforts its --effort takes, each under its label in Settings. None is Claude Code's own choice.
