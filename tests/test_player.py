@@ -1,7 +1,7 @@
 import array
 import itertools
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import cast
 
@@ -54,6 +54,23 @@ def sine(file: Path, frequency: int) -> Path:
         ]
     )
     return file
+
+
+@pytest.fixture(autouse=True)
+def stopped(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Stops every pipeline a test leaves going: its bus watch would hear it end, or go on
+    holding the files, in a later test's main loop."""
+    made: list[player.Pipeline] = []
+    make = player.Pipeline.__init__
+
+    def making(pipeline: player.Pipeline, description: list[str], ended: player.Ended) -> None:
+        make(pipeline, description, ended)
+        made.append(pipeline)
+
+    monkeypatch.setattr(player.Pipeline, "__init__", making)
+    yield
+    for pipeline in made:
+        pipeline.stop()
 
 
 @pytest.fixture
@@ -207,6 +224,24 @@ def test_a_seek_goes_to_the_place_at_the_speed_chosen(tracks: tuple[Path, Path])
     buffers = heard(playing)
     assert buffers[0][0] == pytest.approx(1.5, abs=SLACK_SECONDS)
     assert len(joined(buffers)) / RATE == pytest.approx(0.25, abs=SLACK_SECONDS)
+
+
+def test_a_seek_back_past_the_start_plays_from_the_start(tracks: tuple[Path, Path]) -> None:
+    mic, _ = tracks
+    playing = player.Player([mic], [].append)
+    playing.pause()
+    prerolled(playing)
+    playing.seek(1.0)
+    prerolled(playing)
+
+    # What the slider hands on for the left arrow a second in: four seconds before the start.
+    playing.seek(-4.0)
+    prerolled(playing)
+
+    playing.play()
+    buffers = heard(playing)
+    assert len(joined(buffers)) / RATE == pytest.approx(SECONDS, abs=SLACK_SECONDS)
+    assert buffers[0][0] == pytest.approx(0, abs=SLACK_SECONDS)
 
 
 def test_both_tracks_play_mixed_together(tracks: tuple[Path, Path]) -> None:

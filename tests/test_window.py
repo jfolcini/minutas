@@ -1365,6 +1365,30 @@ def test_a_track_played_to_its_end_offers_play_again(
     assert [text for text in texts(shown) if text.startswith("Can't play")] == []
 
 
+def test_the_keyboard_stays_on_the_player_it_works(
+    history: Callable[[], window.HistoryWindow], desktop_calls: Desktop
+) -> None:
+    recording()
+    shown = history()
+    expand(shown)
+    call = shown.details[FIRST].tracks["call.opus"]
+    assert call.play.grab_focus() is True
+
+    press(call.row, "Play")
+
+    # Not thrown back to the top of the window when the button it pressed makes way.
+    assert shown.get_focus() is call.pause
+    desktop_calls.players[0].ended(None)
+    settle()
+    assert shown.get_focus() is call.play
+    # Nor taken from where it went meanwhile.
+    press(call.row, "Play")
+    assert call.save.grab_focus() is True
+    desktop_calls.players[1].ended(None)
+    settle()
+    assert shown.get_focus() is call.save
+
+
 def test_a_track_that_cannot_be_played_says_why(
     history: Callable[[], window.HistoryWindow], desktop_calls: Desktop
 ) -> None:

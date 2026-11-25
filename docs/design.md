@@ -183,7 +183,7 @@ Minutas lives in a GitHub repository. `install.sh` installs and updates it: it c
 
 | Step | What it puts in place | Skipped when |
 | --- | --- | --- |
-| System packages | `python3-gi`, `gir1.2-gtk-4.0`, `gir1.2-adw-1`, GTK's GStreamer media backend for Play, `gir1.2-ecal-2.0`, `gir1.2-edataserver-1.2`, `gir1.2-gstreamer-1.0` for the recorder and the player, GStreamer's base and good plugins and `gst-launch-1.0` (Opus, Ogg, mixing, playing at a speed, and capture through PipeWire's PulseAudio server), `gio`, `secret-tool` and `curl`, through `apt` | All are installed |
+| System packages | `python3-gi`, `gir1.2-gtk-4.0`, `gir1.2-adw-1`, `gir1.2-ecal-2.0`, `gir1.2-edataserver-1.2`, `gir1.2-gstreamer-1.0` for the recorder and the player, GStreamer's base and good plugins and `gst-launch-1.0` (Opus, Ogg, mixing, playing at a speed, and capture through PipeWire's PulseAudio server), `gio`, `secret-tool` and `curl`, through `apt` | All are installed |
 | uv | `uv` and `uvx` at the version pinned in the repository, in `~/.local/bin`, from uv's release archive on GitHub, unpacked only once it matches the sha256 pinned beside the version | That version is there |
 | Speech environment | Parakeet through NeMo, pyannote.audio, Silero VAD and CPU-only PyTorch, synced from `uv.lock` into `~/.local/share/minutas/speech` with a uv-managed Python | `uv.lock` didn't change |
 | App | The program in `~/.local/share/minutas/app`, a virtual environment on Ubuntu's Python with its system packages, holding the package and its dependencies from `uv.lock`; the `minutas` command in `~/.local/bin`; a desktop file for the Recordings window | Files are identical |

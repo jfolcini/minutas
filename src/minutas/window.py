@@ -522,6 +522,8 @@ class TrackControls:
         self.ticking = GLib.timeout_add(POSITION_EVERY_MS, self.show_position)
         self.play.set_visible(False)
         self.player.set_visible(True)
+        # The keyboard stays where it was working, not thrown to the top of the window.
+        self.pause.grab_focus()
 
     def now_playing(self) -> player.Player:
         # Its controls show only while it plays.
@@ -554,8 +556,11 @@ class TrackControls:
         self.playing.stop()
         self.playing = None
         GLib.source_remove(self.ticking)
+        working = self.player.get_focus_child() is not None
         self.player.set_visible(False)
         self.play.set_visible(True)
+        if working:
+            self.play.grab_focus()
         # The next player starts at normal speed.
         with self.speed.handler_block(self.speed_handler):
             self.speed.set_selected(0)

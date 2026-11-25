@@ -72,6 +72,8 @@ class Player(Pipeline):
         return max(at, 0) / Gst.SECOND, max(length, 0) / Gst.SECOND
 
     def seek(self, seconds: float) -> None:
+        # The slider's keys step past the start, and GStreamer reads a time before it as the end.
+        seconds = max(seconds, 0)
         self.pipeline.seek(
             self.speed,
             Gst.Format.TIME,
