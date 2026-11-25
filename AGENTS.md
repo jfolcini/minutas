@@ -1,6 +1,6 @@
 # Minutas
 
-Minutas is a GNOME tool that records work meetings, transcribes them with who said what, and publishes them to Agaric and GitLab.
+Minutas is a GNOME tool that records work meetings, transcribes them with who said what, and publishes them to Agaric, GitLab and GitHub.
 
 - Read `docs/design.md` before any work.
 - Build in the order of its Milestones, starting at M0.
@@ -39,7 +39,7 @@ Read this section first. It outranks everything below it.
 | `src/minutas/` | The package (src layout; `minutas` console script in `cli.py`) |
 | `tests/` | pytest suite, one `test_<module>.py` per module |
 | `extension/` | The GNOME Shell extension; its pure logic in `status.js`, tested by `gjs -m extension/tests/status.test.js`; its checks in `extension/justfile` (`just ext`) |
-| `scripts/` | Shell helpers the hooks call |
+| `scripts/` | Shell helpers the hooks call, and `screenshots.py`, which `just screenshots` runs to redraw the README's screenshots |
 | `install.sh` | Installs and updates Minutas on the desktop, step by step, each skipped when already done (design § Installing and updating) |
 | `pyproject.toml` | Metadata, dependencies, and the ruff, ty, pytest and coverage config |
 | `prek.toml` | The git hooks, which CI also runs |

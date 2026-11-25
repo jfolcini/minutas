@@ -42,7 +42,8 @@ APP_ID = "io.github.jfolcini.Minutas"
 MINUTAS = [sys.executable, "-m", "minutas"]
 TRASH_WARNING = (
     "Its folder goes to the Trash, with the audio, the transcript, the summary and the history "
-    "of its runs, and can be restored from there. What was published stays in Agaric and GitLab."
+    "of its runs, and can be restored from there. What was published stays in Agaric, GitLab "
+    "and GitHub."
 )
 DELETE_WARNING = (
     "Both tracks are deleted for good. The transcript and everything published stay. "
@@ -1663,12 +1664,12 @@ class HistoryWindow(Adw.ApplicationWindow):
         command.wait_finish(result)
         self.update_action.set_enabled(True)
         self.updating.set_revealed(False)
-        outcome = window_view.update(
-            log.read_text(errors="replace"), exited_ok=command.get_successful()
-        )
+        exited_ok = command.get_successful()
+        outcome = window_view.update(log.read_text(errors="replace"), exited_ok=exited_ok)
         dialog = Adw.AlertDialog(heading=outcome.heading, body=outcome.body, close_response="close")
         dialog.add_response("close", "Close")
-        if outcome.failed:
+        # What a failed update printed is worth reading.
+        if not exited_ok:
             dialog.add_response("details", "Details")
         dialog.choose(self, None, self.update_answered, log)
 

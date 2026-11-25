@@ -254,9 +254,10 @@ def set_progress(recording_id: str, index: int, progress: store.Progress) -> Non
     with store.lock():
         runs = store.load_runs(recording_id)
         # Cancel may have ended the run while the line was on its way.
-        if runs[index]["status"] == "running":
-            runs[index]["progress"] = progress
-            store.save_runs(recording_id, runs)
+        if runs[index]["status"] != "running":
+            return
+        runs[index]["progress"] = progress
+        store.save_runs(recording_id, runs)
     store.write_status()
 
 

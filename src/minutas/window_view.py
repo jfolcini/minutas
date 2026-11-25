@@ -138,8 +138,6 @@ class UpdateView:
 
     heading: str
     body: str
-    # What it printed is worth reading: Details shows it.
-    failed: bool = False
 
 
 def limits_warning(over: int, size: str) -> str:
@@ -451,7 +449,7 @@ def update(said: str, *, exited_ok: bool) -> UpdateView:
     release it moved to, or that it was already on the latest, then what install.sh did."""
     lines = [line.strip() for line in said.splitlines() if line.strip()]
     if not exited_ok:
-        return UpdateView("Update failed", lines[-1] if lines else UPDATE_SILENT, failed=True)
+        return UpdateView("Update failed", lines[-1] if lines else UPDATE_SILENT)
     first = lines[0] if lines else ""
     if first.startswith("Updating to "):
         release = first.removeprefix("Updating to ").removesuffix(".")

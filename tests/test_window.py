@@ -2284,7 +2284,8 @@ def test_about_shows_the_version_the_license_and_where_to_report_an_issue(
     )
     assert dialog.get_version() == version("minutas")
     assert dialog.get_comments() == (
-        "Records work meetings on GNOME, transcribes them and publishes them to Agaric and GitLab."
+        "Records work meetings on GNOME, transcribes them and publishes them to Agaric, GitLab and "
+        "GitHub."
     )
     assert dialog.get_license_type() == Gtk.License.GPL_3_0
     assert (dialog.get_website(), dialog.get_issue_url()) == (
