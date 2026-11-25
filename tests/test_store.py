@@ -249,6 +249,7 @@ def test_set_typed_name_fails_for_a_recording_that_is_gone() -> None:
         lambda: store.mark_paused("2026-11-18T13-05-42", START),
         lambda: store.mark_resumed("2026-11-18T13-05-42", START),
         lambda: store.mark_discarded("2026-11-18T13-05-42"),
+        lambda: store.mark_echo_cancelled("2026-11-18T13-05-42", echo_cancelled=True),
     ],
 )
 def test_a_recording_is_read_and_rewritten_inside_the_store_lock(
@@ -474,6 +475,17 @@ def test_mark_discarded_says_so_and_changes_nothing_else() -> None:
     store.mark_discarded(created["id"])
 
     assert store.load_recording(created["id"]) == {**created, "discarded": True}
+
+
+@pytest.mark.parametrize("echo_cancelled", [True, False])
+def test_mark_echo_cancelled_says_which_mic_was_recorded_and_changes_nothing_else(
+    *, echo_cancelled: bool
+) -> None:
+    created = store.create_recording(START)
+
+    store.mark_echo_cancelled(created["id"], echo_cancelled=echo_cancelled)
+
+    assert store.load_recording(created["id"]) == {**created, "echo_cancelled": echo_cancelled}
 
 
 def test_close_abandoned_on_a_paused_recording_stops_at_the_last_audio_written() -> None:

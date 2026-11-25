@@ -5,30 +5,55 @@ from pathlib import Path
 
 import pytest
 
-from minutas import recorder
+from minutas import recorder, store
 
 IS_ACTIVE = ["systemctl", "--user", "is-active", "--quiet", "minutas-recorder.service"]
 STOP = ["systemctl", "--user", "stop", "minutas-recorder.service"]
+CANCELLER_IS_ACTIVE = ["systemctl", "--user", "is-active", "--quiet", "minutas-echo-cancel.service"]
+STOP_CANCELLER = ["systemctl", "--user", "stop", "minutas-echo-cancel.service"]
+OUTPUT_PORTS = ["pw-link", "--output"]
+# What pw-link lists once the echo canceller has added its source.
+WITH_CANCELLED_SOURCE = (
+    "alsa_input.pci-0000_00_1f.3.analog-stereo:capture_FL\n"
+    "echo-cancel-capture:monitor_FL\n"
+    "minutas-echo-cancelled:capture_FL\n"
+    "minutas-echo-cancelled:capture_FR\n"
+)
+
+
+def answer[Answer](answers: list[Answer]) -> Answer:
+    return answers.pop(0) if len(answers) > 1 else answers[0]
 
 
 class FakeRun:
     """Stands in for subprocess.run: records each command and answers with a set result.
 
-    is-active answers from is_active, one code per call, then keeps giving the last one.
+    is-active answers from is_active, or canceller_is_active for the echo canceller's unit, and
+    pw-link from output_ports: one answer per call, then the last one again. A command holding
+    one of failing exits 1.
     """
 
     def __init__(self) -> None:
         self.returncode = 0
         self.stderr = ""
         self.is_active = [0]
+        self.canceller_is_active = [0]
+        self.output_ports = ["alsa_input.pci-0000_00_1f.3.analog-stereo:capture_FL\n"]
+        self.failing: list[str] = []
         self.calls: list[tuple[list[str], dict[str, object]]] = []
 
     def __call__(self, args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         self.calls.append((args, kwargs))
-        returncode = self.returncode
+        returncode, stdout = self.returncode, ""
         if args == IS_ACTIVE:
-            returncode = self.is_active.pop(0) if len(self.is_active) > 1 else self.is_active[0]
-        return subprocess.CompletedProcess(args, returncode, "", self.stderr)
+            returncode = answer(self.is_active)
+        elif args == CANCELLER_IS_ACTIVE:
+            returncode = answer(self.canceller_is_active)
+        elif args == OUTPUT_PORTS:
+            stdout = answer(self.output_ports)
+        elif any(part in args for part in self.failing):
+            returncode = 1
+        return subprocess.CompletedProcess(args, returncode, stdout, self.stderr)
 
     def commands(self) -> list[list[str]]:
         return [args for args, _ in self.calls]
@@ -82,6 +107,25 @@ def start(folder: Path, fake_clock: FakeClock, on_exit: list[str] | None = None)
     recorder.start(
         folder, on_exit=on_exit or ["python"], clock=fake_clock.clock, wait=fake_clock.wait
     )
+
+
+def start_echo_cancelled(folder: Path, fake_clock: FakeClock) -> bool:
+    """Starts a recording with echo cancellation on, its tracks filling at once."""
+    fill_tracks(folder)
+    # A recording's folder is in the data folder, which holds the canceller's conf.
+    store.data_dir().mkdir(parents=True)
+    return recorder.start(
+        folder, on_exit=["python"], echo_cancel=True, clock=fake_clock.clock, wait=fake_clock.wait
+    )
+
+
+def mic_source(command: list[str]) -> list[str]:
+    """The recorder's mic branch up to its first link."""
+    return command[command.index("pulsesrc") : command.index("!")]
+
+
+def exit_commands(command: list[str]) -> list[str]:
+    return [arg for arg in command if arg.startswith("--property=ExecStopPost=")]
 
 
 CAPTURE = "audio/x-raw,rate=16000,channels=1"
@@ -295,3 +339,138 @@ def test_start_records_into_the_files_it_is_given_and_waits_for_those(
         "location=call.continued.opus",
     ]
     assert fake_clock.waits == 2
+
+
+def test_start_without_echo_cancellation_says_the_mic_is_the_plain_one(
+    fake_run: FakeRun, folder: Path, fake_clock: FakeClock
+) -> None:
+    fill_tracks(folder)
+
+    echo_cancelled = recorder.start(
+        folder, on_exit=["python"], clock=fake_clock.clock, wait=fake_clock.wait
+    )
+
+    assert echo_cancelled is False
+    assert len(fake_run.calls) == 1
+
+
+def test_start_with_echo_cancellation_records_the_mic_from_the_cancellers_source_once_it_is_there(
+    fake_run: FakeRun, xdg_dirs: Path, folder: Path, fake_clock: FakeClock
+) -> None:
+    fake_run.output_ports = ["", "echo-cancel-capture:monitor_FL\n", WITH_CANCELLED_SOURCE]
+
+    echo_cancelled = start_echo_cancelled(folder, fake_clock)
+
+    assert echo_cancelled is True
+    conf = xdg_dirs / "data" / "minutas" / "echo-cancel.conf"
+    *before, recording = fake_run.commands()
+    assert before == [
+        [
+            "systemd-run",
+            "--user",
+            "--unit=minutas-echo-cancel.service",
+            "--collect",
+            "--quiet",
+            "--",
+            "pipewire",
+            "-c",
+            str(conf),
+        ],
+        OUTPUT_PORTS,
+        CANCELLER_IS_ACTIVE,
+        OUTPUT_PORTS,
+        CANCELLER_IS_ACTIVE,
+        OUTPUT_PORTS,
+    ]
+    assert fake_clock.waits == 2
+    assert mic_source(recording) == ["pulsesrc", "device=minutas-echo-cancelled"]
+    # The call is recorded as ever.
+    assert recording.count("pulsesrc") == 2
+    assert recording.count("device=@DEFAULT_MONITOR@") == 1
+    # The canceller stops with the recorder, however that ends, and first: a failed exit command
+    # would keep systemd from running what follows it, and a canceller that will not stop must
+    # not keep the exit command from running.
+    assert exit_commands(recording) == [
+        "--property=ExecStopPost=-systemctl --user stop minutas-echo-cancel.service",
+        "--property=ExecStopPost=python",
+    ]
+
+
+def test_the_cancellers_conf_loads_pipewires_webrtc_echo_canceller_against_the_speakers(
+    fake_run: FakeRun, xdg_dirs: Path, folder: Path, fake_clock: FakeClock
+) -> None:
+    fake_run.output_ports = [WITH_CANCELLED_SOURCE]
+
+    start_echo_cancelled(folder, fake_clock)
+
+    conf = (xdg_dirs / "data" / "minutas" / "echo-cancel.conf").read_text().splitlines()
+    module = conf.index("    { name = libpipewire-module-echo-cancel")
+    assert [line.strip() for line in conf[module + 1 : module + 9]] == [
+        "args = {",
+        "library.name = aec/libspa-aec-webrtc",
+        # The reference is what the default sink plays, and no sink of its own is added.
+        "monitor.mode = true",
+        "source.props = {",
+        'node.name = "minutas-echo-cancelled"',
+        'node.description = "Minutas echo-cancelled microphone"',
+        "}",
+        "}",
+    ]
+
+
+def test_start_records_the_plain_mic_when_the_cancellers_source_never_shows(
+    fake_run: FakeRun, folder: Path, fake_clock: FakeClock
+) -> None:
+    echo_cancelled = start_echo_cancelled(folder, fake_clock)
+
+    assert echo_cancelled is False
+    # Polled every 0.05 s for 2 s.
+    assert fake_clock.waits == 40
+    *_, last_poll, stopped, recording = fake_run.commands()
+    assert (last_poll, stopped) == (OUTPUT_PORTS, STOP_CANCELLER)
+    assert mic_source(recording) == ["pulsesrc"]
+    assert exit_commands(recording) == ["--property=ExecStopPost=python"]
+
+
+def test_start_records_the_plain_mic_at_once_when_the_canceller_will_not_run(
+    fake_run: FakeRun, folder: Path, fake_clock: FakeClock
+) -> None:
+    fake_run.failing = ["--unit=minutas-echo-cancel.service"]
+    fake_run.canceller_is_active = [3]
+
+    echo_cancelled = start_echo_cancelled(folder, fake_clock)
+
+    assert echo_cancelled is False
+    assert fake_clock.waits == 0
+    assert fake_run.commands()[1:4] == [OUTPUT_PORTS, CANCELLER_IS_ACTIVE, STOP_CANCELLER]
+    assert mic_source(fake_run.commands()[4]) == ["pulsesrc"]
+    assert len(fake_run.calls) == 5
+
+
+def test_start_records_from_a_canceller_that_was_left_running(
+    fake_run: FakeRun, folder: Path, fake_clock: FakeClock
+) -> None:
+    # systemd-run refuses a unit that exists; the recorder stops it when it ends, as its own.
+    fake_run.failing = ["--unit=minutas-echo-cancel.service"]
+    fake_run.output_ports = [WITH_CANCELLED_SOURCE]
+
+    echo_cancelled = start_echo_cancelled(folder, fake_clock)
+
+    assert echo_cancelled is True
+    assert mic_source(fake_run.commands()[-1]) == ["pulsesrc", "device=minutas-echo-cancelled"]
+
+
+def test_a_recorder_that_will_not_start_leaves_no_canceller_behind(
+    fake_run: FakeRun, folder: Path, fake_clock: FakeClock
+) -> None:
+    fake_run.failing = ["--unit=minutas-recorder.service"]
+    fake_run.stderr = "Failed to start transient service unit: Unit already exists.\n"
+    fake_run.output_ports = [WITH_CANCELLED_SOURCE]
+
+    with pytest.raises(
+        recorder.RecorderError, match=r"^Failed to start transient service unit: Unit already"
+    ):
+        start_echo_cancelled(folder, fake_clock)
+
+    assert fake_run.commands()[-1] == STOP_CANCELLER
+    assert "--unit=minutas-recorder.service" in fake_run.commands()[-2]

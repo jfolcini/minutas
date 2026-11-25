@@ -25,7 +25,7 @@ Minutas records your work meetings on GNOME, transcribes them with who said what
 - An x86_64 or ARM64 computer. No graphics card is needed: everything runs on the CPU.
 - A free [Hugging Face](https://huggingface.co/join) account, for the speaker model (see [Before you start](#before-you-start)).
 - For each optional part, its own tool: Agaric, `glab`, `gh`, and the Devin CLI or Claude Code. [What install.sh does](#what-installsh-does) lists them, with the versions; install.sh tells you which are missing and how to get them.
-- Headphones on calls, so the microphone track holds only your voice.
+- Headphones on calls, so the microphone track holds only your voice; on speakers, turn on Echo cancellation in the [Settings](#settings).
 
 ## Install
 
@@ -92,9 +92,10 @@ A recording's ⋮ menu renames it or moves it to the Trash; its audio files can 
 Open them from the window's main menu or the top-bar menu. Every change is saved as you make it, except the audio limits, which wait for Save because they delete audio.
 
 <p>
-  <img src="docs/screenshots/settings.png" width="49%" alt="The Settings dialog: Transcription, Summary, Summary context, Agaric, GitLab, GitHub, Audio limits and Top-bar menu">
+  <img src="docs/screenshots/settings.png" width="49%" alt="The Settings dialog: Recording, Transcription, Summary, Summary context, Agaric, GitLab, GitHub, Audio limits and Top-bar menu">
 </p>
 
+- **Recording:** Echo cancellation, for calls on speakers: the microphone is recorded with the computer's sound taken out, so the people on the call aren't transcribed twice. It applies from the next recording.
 - **Transcription:** the vocabulary, one word or phrase a line, opened in your text editor. Most people need only this one; New… makes another, say for one client, and each one switched on is used from the next transcription.
 - **Summary:** the summarizer, the Devin CLI or Claude Code, with its model and effort, and the skill file the summary follows, a built-in meeting-notes one unless you choose another. Log in to the summarizer once in a terminal: `devin auth login` or `claude auth login`.
 - **Agaric:** paste the config Agaric shows when you add an agent in its Settings → Agent access, with read-write access to the Work space. The token goes to the GNOME keyring and is never shown back.

@@ -57,6 +57,39 @@ The README's screenshots are the real Recordings window and its Settings, drawn 
 
 Coverage is measured with branches, and `pytest` fails under the floor set in `pyproject.toml` (`[tool.coverage.report] fail_under`); on a pull request every changed line must be covered. The tests run in random order (pytest-randomly; rerun a failure with the `--randomly-seed=…` it prints), with a per-test timeout, with every annotation checked at run time by beartype, and with warnings as errors.
 
+### Echo cancellation on speakers
+
+The suite has no PipeWire, microphone or speakers, so whether the echo-cancelled mic keeps the call out of the mic track is checked by hand, after a change to the recorder's echo canceller. It needs only what install.sh installs. First make the speakers the output, unmuted and at the volume of a call, in GNOME's Settings › Sound or with `wpctl status`, `wpctl set-default <sink id>` and `wpctl set-mute <sink id> 0`: the canceller takes out what the default output plays, so headphones left as the output prove nothing. Then, with Echo cancellation on in Minutas's Settings:
+
+```bash
+# The far side: any speech, here the oldest recording's call track, picked before this one starts.
+speech=$(ls ~/.local/share/minutas/recordings/*/call.opus | head -n 1)
+minutas record start
+systemctl --user is-active minutas-echo-cancel.service   # active
+pw-link --output | grep minutas-echo-cancelled           # the source the mic track records
+cd "$(mktemp -d)"
+wav="audioconvert ! audioresample ! audio/x-raw,rate=16000,channels=1,format=S16LE ! wavenc ! filesink"
+# The plain mic and the echo-cancelled one, over the same 20 seconds.
+timeout --signal=INT 20 gst-launch-1.0 -e \
+  pulsesrc ! $wav location=plain.wav \
+  pulsesrc device=minutas-echo-cancelled ! $wav location=cancelled.wav &
+# Say nothing while the far side plays.
+sleep 2; timeout 15 pw-play "$speech"; wait
+minutas record stop
+systemctl --user is-active minutas-echo-cancel.service   # inactive: it stopped with the recorder
+python3 - plain.wav cancelled.wav <<'LEVELS'
+import array, math, sys, wave
+
+for name in sys.argv[1:]:
+    with wave.open(name) as audio:
+        samples = array.array("h", audio.readframes(audio.getnframes()))
+    rms = math.sqrt(sum(sample * sample for sample in samples) / len(samples))
+    print(f"{name}: {20 * math.log10(max(rms, 1) / 32768):.1f} dBFS")
+LEVELS
+```
+
+It cancels when `cancelled.wav` is at least 15 dB below `plain.wav` and, played, holds the speech faintly or not at all; the recording's own Microphone track, played from the Recordings window, then sounds as `cancelled.wav` does, and its line doesn't say No echo cancellation. Run it once more talking over the speech: your voice must stay in `cancelled.wav`, about as loud as in `plain.wav`.
+
 ## Patch submission
 
 - Open a pull request against `main`.

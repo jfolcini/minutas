@@ -93,6 +93,16 @@ def set_recent_in_menu(count: int) -> None:
     save({"recent_in_menu": count})
 
 
+def echo_cancel() -> bool:
+    """Whether the next recording takes its mic track from PipeWire's echo-cancelled mic."""
+    # Only a hand edit saves anything but a switch's state, and only on starts a process.
+    return load().get("echo_cancel") is True
+
+
+def set_echo_cancel(*, on: bool) -> None:
+    save({"echo_cancel": on})
+
+
 def summary_model() -> str | None:
     """The model, with its effort, Summarize asks Devin for; None for Devin's own default."""
     return cast("str | None", load().get("summary_model"))

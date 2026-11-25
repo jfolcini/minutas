@@ -185,6 +185,19 @@ def test_a_recording_in_progress_offers_nothing_but_its_name() -> None:
             "2026-11-18 13:05 · Recording · Paused",
         ),
         ({"stopped_at": None, "paused_seconds": 600}, [], "2026-11-18 13:05 · Recording"),
+        # Echo cancellation that was asked for and did not start shows, during and after: the
+        # mic track then holds the call too. One that did, as one never asked for, needs no word.
+        (
+            {"stopped_at": None, "echo_cancelled": False},
+            [],
+            "2026-11-18 13:05 · Recording · No echo cancellation",
+        ),
+        (
+            {"incomplete": True, "echo_cancelled": False},
+            [run("transcribe", "queued")],
+            "2026-11-18 13:05 · 30 min · No echo cancellation · Incomplete · Waiting to transcribe",
+        ),
+        ({"echo_cancelled": True}, [], "2026-11-18 13:05 · 30 min"),
     ],
 )
 def test_the_subtitle_says_when_how_long_and_what_is_going_on(
