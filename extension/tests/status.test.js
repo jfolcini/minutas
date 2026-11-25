@@ -39,9 +39,12 @@ const entry = (fields = {}) => ({
     duration_seconds: 1834,
     incomplete: false,
     transcribe: 'succeeded',
+    progress: null,
     failed: [],
     ...fields,
 });
+
+const SPEAKERS = {phase: 'identifying speakers', percent: 40};
 
 const ACTIVE = {id: '2026-11-18T13-05-42', started_at: '2026-11-18T13:05:42+01:00'};
 /** @type {(recording: Recording | null, recent: Recent[]) => import('../status.js').Status} */
@@ -50,6 +53,36 @@ const status = (recording, recent) => ({recording, recent});
 test('parseStatus reads the contract example', () => {
     const text = JSON.stringify({version: 1, recording: ACTIVE, recent: [entry()]});
     assertEqual(parseStatus(text), status(ACTIVE, [entry()]));
+});
+
+test('parseStatus reads a running transcription\'s progress', () => {
+    const running = entry({transcribe: 'running', progress: SPEAKERS});
+    const text = JSON.stringify({version: 1, recording: null, recent: [running]});
+    assertEqual(parseStatus(text), status(null, [running]));
+});
+
+test('parseStatus reads a status.json written before progress was in it', () => {
+    const older = entry();
+    delete older.progress;
+    const text = JSON.stringify({version: 1, recording: null, recent: [older]});
+    assertEqual(parseStatus(text), status(null, [older]));
+});
+
+test('parseStatus rejects a progress that is not a phase and a whole percent', () => {
+    const rejected = [
+        {phase: 'transcribing', percent: 101},
+        {phase: 'transcribing', percent: -1},
+        {phase: 'transcribing', percent: 40.5},
+        {phase: 'transcribing', percent: '40'},
+        {phase: 7, percent: 40},
+        {percent: 40},
+        40,
+    ].map(progress => {
+        // @ts-expect-error: the invalid entries this test is about
+        const text = JSON.stringify({version: 1, recording: null, recent: [entry({progress})]});
+        return parseStatus(text);
+    });
+    assertEqual(rejected, [null, null, null, null, null, null, null]);
 });
 
 test('parseStatus rejects a half-written file', () => {
@@ -145,6 +178,13 @@ test('recentLabel hints while the transcript is queued or running', () => {
     assertEqual(
         [recentLabel(entry({transcribe: 'queued'})), recentLabel(entry({transcribe: 'running'}))],
         ['Meeting · 2026-11-18 12:00 · 30:34 · transcribing…', 'Meeting · 2026-11-18 12:00 · 30:34 · transcribing…']
+    );
+});
+
+test('recentLabel says how far a running transcription has got', () => {
+    assertEqual(
+        recentLabel(entry({transcribe: 'running', progress: SPEAKERS})),
+        'Meeting · 2026-11-18 12:00 · 30:34 · identifying speakers… 40%'
     );
 });
 

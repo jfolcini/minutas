@@ -116,7 +116,7 @@ One Python program does the work and draws the Recordings window; the GNOME exte
 
 | Component | Job | Main library |
 | --- | --- | --- |
-| GNOME extension | Top-bar menu: record and stop with a timer, the last few recordings with a warning mark on any failed run, Recordings and Settings; notifications on Record ("Tell participants you're recording"), when a transcript is ready, and when a run fails. While no `minutas` command is on the PATH or in `~/.local/bin`, checked each time the menu opens, the menu holds only Install Minutas…, which opens the README's install section, as does the "Minutas isn't installed" notification | GJS, GNOME Shell 46+ |
+| GNOME extension | Top-bar menu: record and stop with a timer, the last few recordings with a warning mark on any failed run and how far a running transcription has got, Recordings and Settings; notifications on Record ("Tell participants you're recording"), when a transcript is ready, and when a run fails. While no `minutas` command is on the PATH or in `~/.local/bin`, checked each time the menu opens, the menu holds only Install Minutas…, which opens the README's install section, as does the "Minutas isn't installed" notification | GJS, GNOME Shell 46+ |
 | Recordings window | Every recording with its name, speakers, actions and their runs (status, error, Retry, Cancel, output link) and its audio files, and Rename and Move to Trash; the Settings, a dialog over it | GTK 4 and libadwaita through PyGObject |
 | Player and file buttons | Play, Save a copy, Open folder and Delete now for the recording's two tracks | GTK 4 `MediaFile` and `MediaControls`, `FileDialog`, `FileLauncher` |
 | Recorder | Mic and computer audio as two Opus tracks; survives the lock screen and a Shell restart; if it dies, what was captured is kept; a setting records the echo-cancelled mic instead | `systemd-run --user`, GStreamer or `pw-record`, PipeWire |
@@ -124,7 +124,7 @@ One Python program does the work and draws the Recordings window; the GNOME exte
 | Calendar lookup | The event overlapping the recording: name, date, attendee names | PyGObject `ECal` and `EDataServer` |
 | Page name | Picks the name: one typed in the Recordings window, else the calendar event's, else the summary's proposal, else "Meeting" | Python standard library |
 | Turn finder | Who spoke when: Silero VAD finds the speech on both tracks; the mic's is mine, and pyannote says whose each stretch of the call's is. pyannote runs in a process of its own, which ends before Parakeet loads, from the model on disk and with its usage reporting off | Silero VAD; pyannote.audio 4 with community-1 |
-| Transcriber | Runs on stop, and again on Retry or Run again: one pass per turn, same-speaker turns merged up to about 30 s, with the meeting's word list. Writes `transcript.json`: each turn's start, end and text under its speaker's key, `Me` or `Speaker 1`, `Speaker 2`… in the order they first speak. Parakeet loads from its archive unpacked once, beside it in the model cache, not unpacked to disk again on every run | NeMo, Parakeet TDT 0.6B v3, phrase boosting |
+| Transcriber | Runs on stop, and again on Retry or Run again: one pass per turn, same-speaker turns merged up to about 30 s, with the meeting's word list. Writes `transcript.json`: each turn's start, end and text under its speaker's key, `Me` or `Speaker 1`, `Speaker 2`… in the order they first speak. Says on stdout how far it has got, a line each time: its phase (finding speech on each track, identifying speakers, transcribing) and how much of the phase is done; the worker keeps it on the run while it runs. Parakeet loads from its archive unpacked once, beside it in the model cache, not unpacked to disk again on every run | NeMo, Parakeet TDT 0.6B v3, phrase boosting |
 | Speaker naming | Each speaker set to a calendar attendee or a custom name in the Recordings window, kept with the recording and through Run again; voice memory later | Calendar attendees; community-1 speaker embeddings later |
 | Formatter | Writes `transcript.md`, `[hh:mm:ss] **Name:** text`, from `transcript.json` and the current names, after every transcription and every naming | Python standard library |
 | Summarize | A built-in preset (General, Standup, 1:1, Stakeholder call) or a saved one, or Custom typed at run time and savable as a preset; always in English. Every prompt gets the skill the Settings choose, the built-in meeting-notes one by default, then one added instruction: start with a line `Title: <a few words, no date>`, which becomes the proposed page name and is cut from `summary.md`. The transcript is other people's speech, so Devin gets it inside the prompt, in an empty temporary folder with an empty home (none of the person's MCP servers, rules or skills), and a config of its own that takes away every tool that reaches a file, a command or the web, and denies any such tool it adds later: nothing said in a meeting can make it read a file, run a command or fetch a page | Devin CLI, `devin -p --prompt-file` |
@@ -152,14 +152,15 @@ The program rewrites `DATA/status.json` atomically after every change, and the e
   "recording": {"id": "2026-11-18T13-05-42", "started_at": "2026-11-18T13:05:42+01:00"},
   "recent": [
     {"id": "2026-11-18T12-00-03", "name": "Meeting", "started_at": "2026-11-18T12:00:03+01:00",
-     "duration_seconds": 1834, "incomplete": false, "transcribe": "succeeded", "failed": []}
+     "duration_seconds": 1834, "incomplete": false, "transcribe": "succeeded", "progress": null,
+     "failed": []}
   ]
 }
 ```
 
 - `recording` is the active recording, or `null`; `recent` holds the last five others, newest first.
 - `incomplete` means the recorder died before Stop; what it captured is kept.
-- `transcribe` is the latest Transcribe run's status, or `null`; `failed` lists the actions whose latest run failed: `transcribe`, `summarize`, `publish_agaric`, `publish_gitlab`.
+- `transcribe` is the latest Transcribe run's status, or `null`; `progress` is how far it has got while it runs, its phase and the whole percent of that phase done (`{"phase": "identifying speakers", "percent": 40}`), else `null`; `failed` lists the actions whose latest run failed: `transcribe`, `summarize`, `publish_agaric`, `publish_gitlab`.
 
 ## Installing and updating
 
@@ -207,7 +208,7 @@ Every recording is a row, newest first, with a menu on the line that shows its n
 
 - **Name:** Rename… asks for a name, starting from the current one, and says where that came from (calendar, summary, default or typed); a typed name is kept for good, and the next Publish to Agaric applies it.
 - **Speakers:** the call's speakers are listed under Transcribe once it has run, numbered in the order they first speak; each one is set to a calendar attendee or a custom name, and the transcript is written again with it; a transcript already published keeps the names it went with.
-- **Actions:** Transcribe (runs on stop; Run again re-transcribes, for example after the word list changes), Summarize, Publish to Agaric and Publish to GitLab. Every run is kept with its time, status and output link; Publish to Agaric run again adds what the page lacks, such as the summary or a newer one, and applies a changed name.
+- **Actions:** Transcribe (runs on stop; Run again re-transcribes, for example after the word list changes; while it runs, its phase and how much of it is done, with a progress bar, and the row says them collapsed too), Summarize, Publish to Agaric and Publish to GitLab. Every run is kept with its time, status and output link; Publish to Agaric run again adds what the page lacks, such as the summary or a newer one, and applies a changed name.
 - **Failed runs:** show the reason and the fix, with Retry and Details; see *When an action fails* below.
 - **Summarize:** the menu lists built-in presets, saved presets, then Custom; Custom opens a text box with Save as preset. Saved presets can be deleted from the menu's Delete a preset, built-in ones can't. Without the Devin CLI on the PATH, Summarize is disabled and says how to install it.
 - **Publish to GitLab:** enabled once a summary exists; its dialog asks for the link, starting from the last run's, else the default link the Settings hold, and says before posting whether it will get a comment or a new issue. Without `glab` 1.91 or newer on the PATH, it is disabled and recommends GitLab's own `.deb`: the snap can't read the recordings.

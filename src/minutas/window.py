@@ -391,6 +391,7 @@ class ActionControls:
         self, title: str, output_label: str, action: str, recording_id: str, window: "HistoryWindow"
     ) -> None:
         self.row = text_row(title)
+        self.progress = Gtk.ProgressBar(valign=Gtk.Align.CENTER)
         self.failed = warning_icon()
         self.details = button("Details", window.show_details, recording_id, action)
         self.output = button(output_label, window.open_output, recording_id, action)
@@ -398,6 +399,7 @@ class ActionControls:
         self.rename = button("Rename", window.rename_page, recording_id)
         self.next_step = button("", window.next_step, recording_id, action)
         for control in (
+            self.progress,
             self.failed,
             self.details,
             self.output,
@@ -409,6 +411,8 @@ class ActionControls:
 
     def display(self, view: ActionView) -> None:
         self.row.set_subtitle(view.result)
+        self.progress.set_visible(view.progress is not None)
+        self.progress.set_fraction(view.progress or 0.0)
         self.failed.set_visible(view.failed)
         self.details.set_visible(view.details is not None)
         self.output.set_visible(view.output is not None)
