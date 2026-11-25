@@ -40,6 +40,26 @@ def exit_command(recording_id: str) -> list[str]:
     return [sys.executable, "-m", "minutas", "record", "stopped", recording_id]
 
 
+def start_recorder(
+    recording_id: str, *, echo_cancel: bool, tracks: tuple[str, str] = store.TRACKS
+) -> None:
+    """Starts the recorder into the recording's folder; with echo_cancel, notes with the
+    recording whether its mic is the echo-cancelled one, and says so when it is not."""
+    echo_cancelled = recorder.start(
+        store.recording_dir(recording_id),
+        on_exit=exit_command(recording_id),
+        tracks=tracks,
+        echo_cancel=echo_cancel,
+    )
+    if echo_cancel:
+        store.mark_echo_cancelled(recording_id, echo_cancelled=echo_cancelled)
+    if echo_cancel and not echo_cancelled:
+        sys.stderr.write(
+            "Echo cancellation didn't start, so the microphone is recorded as it is; "
+            f"journalctl --user -u {recorder.ECHO_CANCEL_UNIT} says why.\n"
+        )
+
+
 def record_start(_: argparse.Namespace) -> int:
     if recorder.is_running():
         return fail("Already recording.")
@@ -49,9 +69,8 @@ def record_start(_: argparse.Namespace) -> int:
     except FileExistsError:
         # Recording ids are to the second; the existing recording stays as it is.
         return fail("A recording started this same second; try again.")
-    on_exit = exit_command(recording["id"])
     try:
-        recorder.start(store.recording_dir(recording["id"]), on_exit=on_exit)
+        start_recorder(recording["id"], echo_cancel=settings.echo_cancel())
     except recorder.RecorderError as error:
         store.discard_if_silent(recording["id"])
         store.write_status()
@@ -269,11 +288,9 @@ def record_continue(args: argparse.Namespace) -> int:
         worker.cancel(recording_id, transcribing)
     store.mark_continued(recording_id, now())
     try:
-        recorder.start(
-            store.recording_dir(recording_id),
-            on_exit=exit_command(recording_id),
-            tracks=store.PARTS,
-        )
+        # The mic it started with, whatever the setting is now, so its part matches its track.
+        echo_cancel = recording.get("echo_cancelled", False)
+        start_recorder(recording_id, echo_cancel=echo_cancel, tracks=store.PARTS)
     except recorder.RecorderError as error:
         # A unit that ran has stopped the recording again, as any stop does; one that never
         # started ran no exit command.

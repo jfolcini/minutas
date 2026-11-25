@@ -257,6 +257,8 @@ def subtitle(recording: store.Recording, transcribing: str | None) -> str:
         started.strftime("%Y-%m-%d %H:%M"),
         duration(store.duration_seconds(recording)) if stopped else "Recording",
         "Paused" if not stopped and "paused_at" in recording else None,
+        # Asked for, and it did not start: the mic track holds the call too.
+        "No echo cancellation" if recording.get("echo_cancelled") is False else None,
         "Incomplete" if recording["incomplete"] else None,
         transcribing,
     ]
