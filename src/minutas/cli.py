@@ -257,6 +257,27 @@ def settings_agaric(args: argparse.Namespace) -> int:
     return 0
 
 
+def settings_gitlab(args: argparse.Namespace) -> int:
+    problem = gitlab.glab_problem()
+    if problem:
+        return fail(problem)
+    host = gitlab.login_host()
+    try:
+        if args.token_from_stdin:
+            # From stdin, never from the arguments, which the shell's history keeps.
+            token = sys.stdin.read().strip()
+            if not token:
+                return fail(
+                    "No token in that: paste a GitLab personal access token with the api scope."
+                )
+            gitlab.log_in(host, token)
+        said = gitlab.login_status(host)
+    except gitlab.GitLabError as error:
+        return fail(str(error))
+    sys.stderr.write(f"{said}\n")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="minutas",
@@ -339,6 +360,18 @@ def build_parser() -> argparse.ArgumentParser:
         " token may use only one",
     )
     agaric_settings.set_defaults(handler=settings_agaric)
+    gitlab_settings = settings_commands.add_parser(
+        "gitlab",
+        help="say whether glab is logged in to the default GitLab link's server, gitlab.com"
+        " without one",
+    )
+    gitlab_settings.add_argument(
+        "--token-from-stdin",
+        action="store_true",
+        help="read an access token from stdin and hand it to glab, which keeps it in the keyring,"
+        " first",
+    )
+    gitlab_settings.set_defaults(handler=settings_gitlab)
     return parser
 
 

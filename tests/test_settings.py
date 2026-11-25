@@ -163,3 +163,20 @@ def test_a_refused_size_is_kept_per_host_with_the_other_settings_and_only_shrink
     assert settings.refused_audio_size("a.example.com") == 700
     assert settings.refused_audio_size("b.example.com") == 5000
     assert settings.agaric_space_id() == "01HZWORK"
+
+
+def test_no_gitlab_link_is_set_until_one_is() -> None:
+    assert settings.gitlab_link() is None
+
+
+def test_set_gitlab_link_keeps_it_with_the_other_settings_and_none_clears_it() -> None:
+    settings.set_summary_model("swe-2-high")
+    link = "https://gitlab.example.com/group/project"
+
+    settings.set_gitlab_link(link)
+
+    assert (settings.gitlab_link(), settings.summary_model()) == (link, "swe-2-high")
+
+    settings.set_gitlab_link(None)
+
+    assert settings.gitlab_link() is None
