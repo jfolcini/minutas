@@ -21,7 +21,7 @@ gi.require_version("Adw", "1")
 gi.require_version("Gtk", "4.0")
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Graphene, Gtk  # noqa: E402
 
-from minutas import gitlab, settings, store, summarizer, window, worker  # noqa: E402
+from minutas import github, gitlab, settings, store, summarizer, window, worker  # noqa: E402
 
 pytestmark = pytest.mark.usefixtures("no_handler_raised")
 
@@ -369,6 +369,12 @@ def glab_installed(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def gh_installed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A gh that can publish, never run: the window offers Publish to GitHub only then."""
+    monkeypatch.setattr(github, "gh_problem", lambda: "")
+
+
+@pytest.fixture(autouse=True)
 def window_clock(monkeypatch: pytest.MonkeyPatch) -> None:
     """A day after the recordings start: the age limit, on by default, deletes no test's audio
     whenever the tests run."""
@@ -657,6 +663,7 @@ def test_a_row_expands_to_its_name_its_tracks_and_its_actions(
         ("Summarize", "Not summarized"),
         ("Publish to Agaric", "Not published"),
         ("Publish to GitLab", "Not published"),
+        ("Publish to GitHub", "Not published"),
     ]
     assert list(buttons(row)) == [
         "Edit",
@@ -741,6 +748,7 @@ def test_the_speakers_sit_between_the_transcription_and_the_summary(
         ("Summarize", "Not summarized"),
         ("Publish to Agaric", "Not published"),
         ("Publish to GitLab", "Not published"),
+        ("Publish to GitHub", "Not published"),
     ]
     # An attendee's "_" is a letter of the name, not the mark of a shortcut key.
     assert {speaker: choices(shown, picker) for speaker, picker in pickers(row).items()} == {
@@ -849,6 +857,7 @@ def test_the_speakers_follow_each_transcription(
         ("Summarize", "Not summarized"),
         ("Publish to Agaric", "Not published"),
         ("Publish to GitLab", "Not published"),
+        ("Publish to GitHub", "Not published"),
     ]
 
     transcribe(SAID)
@@ -861,6 +870,7 @@ def test_the_speakers_follow_each_transcription(
         ("Summarize", "Not summarized"),
         ("Publish to Agaric", "Not published"),
         ("Publish to GitLab", "Not published"),
+        ("Publish to GitHub", "Not published"),
     ]
 
     # Run again hears one speaker fewer.
@@ -873,6 +883,7 @@ def test_the_speakers_follow_each_transcription(
         ("Summarize", "Not summarized"),
         ("Publish to Agaric", "Not published"),
         ("Publish to GitLab", "Not published"),
+        ("Publish to GitHub", "Not published"),
     ]
 
 
@@ -1402,10 +1413,11 @@ def test_publish_to_gitlab_waits_for_a_summary(
 ) -> None:
     recording([run("transcribe", "succeeded", output="transcript.md")])
     shown = history()
-    row = expand(shown)
+    expand(shown)
+    publish_button = buttons(shown.details[FIRST].publish_gitlab.row)["Publish…"]
 
-    assert buttons(row)["Publish…"].get_sensitive() is False
-    assert buttons(row)["Publish…"].get_tooltip_text() == "Summarize first"
+    assert publish_button.get_sensitive() is False
+    assert publish_button.get_tooltip_text() == "Summarize first"
 
 
 def test_without_glab_publish_to_gitlab_says_how_to_install_it(
@@ -1418,8 +1430,118 @@ def test_without_glab_publish_to_gitlab_says_how_to_install_it(
     row = expand(shown)
 
     assert ("Publish to GitLab", f"Not published · {install}") in lines(row)
-    assert buttons(row)["Publish…"].get_sensitive() is False
-    assert buttons(row)["Publish…"].get_tooltip_text() == install
+    publish_button = buttons(shown.details[FIRST].publish_gitlab.row)["Publish…"]
+    assert publish_button.get_sensitive() is False
+    assert publish_button.get_tooltip_text() == install
+
+
+GITHUB_ISSUE = "https://github.com/owner/repo/issues/7"
+GITHUB_REPOSITORY = "https://github.com/owner/repo"
+GIST_NOTE = (
+    "The transcript goes to a secret gist, which anyone with its link can read. GitHub takes no "
+    "audio, so it is left out."
+)
+
+
+def github_dialog(shown: window.HistoryWindow, label: str) -> tuple[Adw.AlertDialog, Gtk.Entry]:
+    press(shown.details[FIRST].publish_github.row, label)
+    dialog = open_dialog(shown)
+    assert isinstance(dialog, Adw.AlertDialog)
+    [entry] = [widget for widget in descendants(dialog) if isinstance(widget, Gtk.Entry)]
+    return dialog, entry
+
+
+def test_publish_to_github_says_what_the_link_will_get_and_posts_there(
+    history: Callable[[], window.HistoryWindow], publish: FakePublish, desktop_calls: Desktop
+) -> None:
+    recording(SUMMARIZED)
+    output = f"{GITHUB_ISSUE}#issuecomment-302"
+    publish.will(run("publish_github", "succeeded", output=output, link=GITHUB_ISSUE))
+    shown = history()
+    row = expand(shown)
+
+    dialog, entry = github_dialog(shown, "Publish…")
+
+    assert (dialog.get_heading(), entry.get_text()) == ("Publish to GitHub", "")
+    said: list[tuple[str, bool]] = []
+    for typed in ("", "https://github.com/owner", GITHUB_REPOSITORY, f" {GITHUB_ISSUE}#x "):
+        entry.set_text(typed)
+        said.append((dialog.get_body(), dialog.get_response_enabled("publish")))
+    assert said == [
+        (f"{window.ASK_GITHUB_LINK}\n\n{GIST_NOTE}", False),
+        (f"{window.NOT_A_GITHUB_LINK}\n\n{GIST_NOTE}", False),
+        (f"Opens a new issue in owner/repo\n\n{GIST_NOTE}", True),
+        (f"Comments on issue #7 of owner/repo\n\n{GIST_NOTE}", True),
+    ]
+
+    press(dialog, "Publish")
+    assert ("Publish to GitHub", "Running") in lines(row)
+    wait_until(lambda: not shown.running[window.PUBLISH_GITHUB])
+
+    assert publish.called() == ["publish", "github", FIRST, GITHUB_ISSUE]
+    assert ("Publish to GitHub", "Succeeded") in lines(row)
+    assert list(buttons(shown.details[FIRST].publish_github.row)) == [
+        "Open in GitHub",
+        "Publish again…",
+    ]
+
+    press(shown.details[FIRST].publish_github.row, "Open in GitHub")
+
+    assert desktop_calls.opened == [output]
+
+
+def test_publish_to_github_starts_from_the_last_runs_link_else_the_default_one(
+    history: Callable[[], window.HistoryWindow], publish: FakePublish
+) -> None:
+    settings.set_github_link(GITHUB_REPOSITORY)
+    recording(SUMMARIZED)
+    shown = history()
+    expand(shown)
+
+    dialog, entry = github_dialog(shown, "Publish…")
+    assert (entry.get_text(), dialog.get_body()) == (
+        GITHUB_REPOSITORY,
+        f"Opens a new issue in owner/repo\n\n{GIST_NOTE}",
+    )
+    press(dialog, "Cancel")
+    settle()
+    assert (shown.running[window.PUBLISH_GITHUB], publish.called()) == ({}, [])
+
+    store.save_runs(FIRST, [*SUMMARIZED, run("publish_github", "failed", link=GITHUB_ISSUE)])
+    shown.refresh()
+
+    dialog, entry = github_dialog(shown, "Retry…")
+    assert entry.get_text() == GITHUB_ISSUE
+    press(dialog, "Publish")
+    wait_until(lambda: not shown.running[window.PUBLISH_GITHUB])
+
+    assert publish.called() == ["publish", "github", FIRST, GITHUB_ISSUE]
+
+
+def test_without_gh_publish_to_github_says_how_to_install_it_and_waits_for_a_summary(
+    history: Callable[[], window.HistoryWindow], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    install = "gh not found: install gh 2.45.0 or newer"
+    monkeypatch.setattr(github, "gh_problem", lambda: install)
+    recording(SUMMARIZED)
+    recording([run("transcribe", "succeeded", output="transcript.md")], START + timedelta(hours=1))
+    shown = history()
+    row = expand(shown)
+    expand(shown, "2026-11-18T14-05-42")
+
+    assert ("Publish to GitHub", f"Not published · {install}") in lines(row)
+    without_gh = buttons(shown.details[FIRST].publish_github.row)["Publish…"]
+    assert (without_gh.get_sensitive(), without_gh.get_tooltip_text()) == (False, install)
+
+    monkeypatch.setattr(github, "gh_problem", lambda: "")
+    shown.refresh()
+
+    unsummarized = buttons(shown.details["2026-11-18T14-05-42"].publish_github.row)["Publish…"]
+    assert (unsummarized.get_sensitive(), unsummarized.get_tooltip_text()) == (
+        False,
+        "Summarize first",
+    )
+    assert without_gh.get_sensitive() is True
 
 
 def menu_entries(model: Gio.MenuModel, within: str = "") -> dict[str, tuple[str, GLib.Variant]]:
@@ -2102,6 +2224,35 @@ def test_names_paths_and_errors_in_the_settings_are_shown_as_written(
     dialog.close()
 
 
+@pytest.mark.usefixtures("agaric_settings")
+def test_the_default_github_link_is_saved_cleared_or_refused_as_typed(
+    history: Callable[[], window.HistoryWindow],
+) -> None:
+    settings.set_github_link(GITHUB_REPOSITORY)
+    shown = history()
+    dialog = open_settings(shown)
+    assert dialog.github_link.get_text() == GITHUB_REPOSITORY
+    assert dialog.github.get_description() == window.GITHUB_LINK_NOTE
+
+    dialog.github_link.set_text("https://github.com/owner")
+    dialog.github_link.emit("apply")
+
+    assert dialog.github.get_description() == "Not a GitHub issue or repository link"
+    assert settings.github_link() == GITHUB_REPOSITORY
+
+    dialog.github_link.set_text(f" {GITHUB_ISSUE}#issuecomment-1 ")
+    dialog.github_link.emit("apply")
+
+    assert dialog.github.get_description() == window.GITHUB_LINK_NOTE
+    assert settings.github_link() == GITHUB_ISSUE
+
+    dialog.github_link.set_text(" ")
+    dialog.github_link.emit("apply")
+
+    assert settings.github_link() is None
+    dialog.close()
+
+
 def limits(dialog: Adw.Dialog) -> dict[str, tuple[Adw.ExpanderRow, Adw.SpinRow]]:
     """Each limit's switch and value, by the limit's title."""
     return {
@@ -2343,10 +2494,14 @@ def test_a_row_that_goes_takes_everything_it_showed_with_it(
         ("Delete now", "Cancel"),
         ("Details", None),
         ("Custom name…", "Cancel"),
-        ("Publish…", "Cancel"),
+        # Each publisher's own Publish… asks for its own link.
+        ("publish_gitlab", "Cancel"),
+        ("publish_github", "Cancel"),
     ):
         if label == "Custom name…":
             choose(shown, pickers(row)["Speaker 2"], label)
+        elif label.startswith("publish_"):
+            press(getattr(shown.details[FIRST], label).row, "Publish…")
         else:
             press(row, label)
         dialog = open_dialog(shown)

@@ -10,12 +10,13 @@ from datetime import datetime
 from minutas import store
 
 TRANSCRIBE, SUMMARIZE, PUBLISH = "transcribe", "summarize", "publish_agaric"
-PUBLISH_GITLAB = "publish_gitlab"
+PUBLISH_GITLAB, PUBLISH_GITHUB = "publish_gitlab", "publish_github"
 # The actions the window runs as commands, by the title it gives them.
 COMMAND_TITLES = {
     SUMMARIZE: "Summarize",
     PUBLISH: "Publish to Agaric",
     PUBLISH_GITLAB: "Publish to GitLab",
+    PUBLISH_GITHUB: "Publish to GitHub",
 }
 TRACK_TITLES = dict(zip(store.TRACKS, ("Microphone", "Call"), strict=True))
 NAME_SOURCES = {
@@ -101,6 +102,7 @@ class RowView:
     summarize: ActionView
     publish: ActionView
     publish_gitlab: ActionView
+    publish_github: ActionView
     # When the age limit deletes the tracks; empty when it never will.
     kept_until: str = ""
 
@@ -225,6 +227,7 @@ def row(  # noqa: PLR0913 - each is a separate input to the row; all after track
     """
     summarizer_missing = missing_tools.get(SUMMARIZE, "")
     glab_problem = missing_tools.get(PUBLISH_GITLAB, "")
+    gh_problem = missing_tools.get(PUBLISH_GITHUB, "")
     publishing, summarizing = PUBLISH in running, SUMMARIZE in running
     stopped = recording["stopped_at"] is not None
     still_recording = "" if stopped else STILL_RECORDING
@@ -296,6 +299,27 @@ def row(  # noqa: PLR0913 - each is a separate input to the row; all after track
             or ("" if last_summary.output is not None else NO_SUMMARY),
         )
 
+    # As Publish to GitLab, with gh.
+    last_github = last_result(runs, PUBLISH_GITHUB, "Not published", "Publish", "Publish again")
+    last_github = replace(last_github, label=f"{last_github.label}…")
+    if PUBLISH_GITHUB in running:
+        publish_github = ActionView(
+            result="Running",
+            label=last_github.label,
+            disabled="Publishing",
+            output=last_github.output,
+        )
+    else:
+        github_run = latest(runs, PUBLISH_GITHUB)
+        publish_github = replace(
+            last_github,
+            result=" · ".join(filter(None, [last_github.result, gh_problem])),
+            link=None if github_run is None else github_run[1].get("link"),
+            disabled=still_recording
+            or gh_problem
+            or ("" if last_summary.output is not None else NO_SUMMARY),
+        )
+
     kept_until = ""
     if age_limit_days is not None and tracks and store.may_lose_audio(recording, runs):
         until = store.audio_kept_until(recording, age_limit_days)
@@ -309,7 +333,8 @@ def row(  # noqa: PLR0913 - each is a separate input to the row; all after track
         warning=transcribe.failed
         or last_summary.failed
         or last_publish.failed
-        or last_gitlab.failed,
+        or last_gitlab.failed
+        or last_github.failed,
         tracks=tuple(
             TrackView(
                 file=name,
@@ -332,6 +357,7 @@ def row(  # noqa: PLR0913 - each is a separate input to the row; all after track
         summarize=summarize,
         publish=publish,
         publish_gitlab=publish_gitlab,
+        publish_github=publish_github,
         kept_until=kept_until,
     )
 

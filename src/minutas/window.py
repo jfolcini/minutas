@@ -23,9 +23,10 @@ gi.require_version("Adw", "1")
 gi.require_version("Gtk", "4.0")
 from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402 - after the versions are chosen
 
-from minutas import gitlab, settings, store, summarizer, window_view, worker  # noqa: E402
+from minutas import github, gitlab, settings, store, summarizer, window_view, worker  # noqa: E402
 from minutas.window_view import (  # noqa: E402
     PUBLISH,
+    PUBLISH_GITHUB,
     PUBLISH_GITLAB,
     SUMMARIZE,
     TRANSCRIBE,
@@ -44,6 +45,16 @@ DELETE_WARNING = (
 CUSTOM_NAME = "Custom name…"
 ASK_LINK = "Paste an issue link to comment on it, or a project link to open a new issue"
 NOT_A_LINK = "Not a GitLab issue or project link"
+ASK_GITHUB_LINK = "Paste an issue link to comment on it, or a repository link to open a new issue"
+NOT_A_GITHUB_LINK = "Not a GitHub issue or repository link"
+GIST_NOTE = (
+    "The transcript goes to a secret gist, which anyone with its link can read. GitHub takes no "
+    "audio, so it is left out."
+)
+GITHUB_LINK_NOTE = (
+    "Where Publish to GitHub starts: an issue link to comment on it, or a repository link to open "
+    "a new issue. Empty for none."
+)
 AUDIO_LIMITS_NOTE = (
     "Audio over a limit is deleted, oldest first, once it has been transcribed: when you save, "
     "when a recording stops and when the Recordings window opens. The transcripts and everything "
@@ -82,6 +93,7 @@ def load_views(running: Mapping[str, Collection[str]]) -> list[RowView]:
     missing_tools = {
         SUMMARIZE: "" if found else summarizer.DEVIN_MISSING,
         PUBLISH_GITLAB: gitlab.glab_problem(),
+        PUBLISH_GITHUB: github.gh_problem(),
     }
     age_limit_days, _ = settings.audio_limits()
     # Inside the lock, so a recording being discarded is seen whole or not at all.
@@ -210,6 +222,13 @@ class SettingsDialog(Adw.PreferencesDialog):
         for row in (self.token, self.pasted, self.space):
             self.agaric.add(row)
 
+        self.github_link = Adw.EntryRow(
+            title="Default link", text=settings.github_link() or "", show_apply_button=True
+        )
+        self.github_link.connect("apply", window.github_link_set)
+        self.github = Adw.PreferencesGroup(title="GitHub", description=GITHUB_LINK_NOTE)
+        self.github.add(self.github_link)
+
         age_limit_days, size_limit_gb = settings.audio_limits()
         self.age = limit_row("Age limit", "Days", age_limit_days, settings.AUDIO_AGE_LIMIT_DAYS)
         self.size = limit_row("Size limit", "GB", size_limit_gb, settings.AUDIO_SIZE_LIMIT_GB)
@@ -220,7 +239,7 @@ class SettingsDialog(Adw.PreferencesDialog):
         self.audio.add(self.size[0])
 
         page = Adw.PreferencesPage()
-        for group in (transcription, summary, self.agaric, self.audio):
+        for group in (transcription, summary, self.agaric, self.github, self.audio):
             page.add(group)
         self.add(page)
 
@@ -404,6 +423,9 @@ class Details:
         self.publish_gitlab = ActionControls(
             "Publish to GitLab", "Open in GitLab", PUBLISH_GITLAB, recording_id, window
         )
+        self.publish_github = ActionControls(
+            "Publish to GitHub", "Open in GitHub", PUBLISH_GITHUB, recording_id, window
+        )
         for row in (
             self.name,
             *(controls.row for controls in self.tracks.values()),
@@ -412,6 +434,7 @@ class Details:
             self.summarize.row,
             self.publish.row,
             self.publish_gitlab.row,
+            self.publish_github.row,
         ):
             expander.add_row(row)
 
@@ -421,7 +444,12 @@ class Details:
         if speakers == list(self.speakers):
             return
         # An expander row only adds at its end: the rows below step out, and back in after them.
-        below = (self.summarize.row, self.publish.row, self.publish_gitlab.row)
+        below = (
+            self.summarize.row,
+            self.publish.row,
+            self.publish_gitlab.row,
+            self.publish_github.row,
+        )
         for row in [*(controls.row for controls in self.speakers.values()), *below]:
             self.expander.remove(row)
         self.speakers = {key: SpeakerControls(view.recording_id, key) for key in speakers}
@@ -453,6 +481,7 @@ class Details:
         self.presets.set_tooltip_text(view.summarize.disabled or None)
         self.publish.display(view.publish)
         self.publish_gitlab.display(view.publish_gitlab)
+        self.publish_github.display(view.publish_github)
 
     def stop_playing(self) -> None:
         for controls in self.tracks.values():
@@ -486,6 +515,7 @@ class HistoryWindow(Adw.ApplicationWindow):
         self.running: dict[str, dict[str, Gio.Subprocess]] = {
             PUBLISH: {},
             PUBLISH_GITLAB: {},
+            PUBLISH_GITHUB: {},
             SUMMARIZE: {},
         }
         # How many runs a recording had when the window started its command for an action
@@ -609,6 +639,7 @@ class HistoryWindow(Adw.ApplicationWindow):
             SUMMARIZE: view.summarize,
             PUBLISH: view.publish,
             PUBLISH_GITLAB: view.publish_gitlab,
+            PUBLISH_GITHUB: view.publish_github,
         }
         return actions[action]
 
@@ -881,6 +912,8 @@ class HistoryWindow(Adw.ApplicationWindow):
             self.publish(recording_id)
         elif action == PUBLISH_GITLAB:
             self.ask_link(recording_id, shown.link or "")
+        elif action == PUBLISH_GITHUB:
+            self.ask_github_link(recording_id, shown.link or settings.github_link() or "")
         elif action == SUMMARIZE:
             self.summarize(recording_id, str(shown.prompt))
         elif shown.cancels is not None:
@@ -966,6 +999,56 @@ class HistoryWindow(Adw.ApplicationWindow):
             self.start(
                 PUBLISH_GITLAB, recording_id, ["publish", "gitlab", recording_id, target.link]
             )
+
+    def ask_github_link(self, recording_id: str, link: str) -> None:
+        """Asks where to publish to GitHub, saying what the link typed will get, and where the
+        transcript goes."""
+        entry = Gtk.Entry(text=link, activates_default=True)
+        dialog = Adw.AlertDialog(
+            heading="Publish to GitHub",
+            extra_child=entry,
+            default_response="publish",
+            close_response="cancel",
+        )
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("publish", "Publish")
+        dialog.set_response_appearance("publish", Adw.ResponseAppearance.SUGGESTED)
+        entry.connect("changed", self.github_link_typed)
+        dialog.choose(self, None, self.github_link_chosen, entry, recording_id)
+        # Once presented: until then the entry is not inside the dialog.
+        self.github_link_typed(entry)
+
+    def github_link_typed(self, entry: Gtk.Entry) -> None:
+        # The dialog is found, not held: a handler that held it would keep it for good.
+        dialog = cast("Adw.AlertDialog", entry.get_ancestor(Adw.AlertDialog))
+        typed = entry.get_text().strip()
+        target = github.parse_link(typed)
+        if target is not None:
+            said = target.plan
+        else:
+            said = NOT_A_GITHUB_LINK if typed else ASK_GITHUB_LINK
+        dialog.set_body(f"{said}\n\n{GIST_NOTE}")
+        dialog.set_response_enabled("publish", target is not None)
+
+    def github_link_chosen(
+        self, dialog: Adw.AlertDialog, result: Gio.AsyncResult, entry: Gtk.Entry, recording_id: str
+    ) -> None:
+        target = github.parse_link(entry.get_text())
+        if dialog.choose_finish(result) == "publish" and target is not None:
+            self.start(
+                PUBLISH_GITHUB, recording_id, ["publish", "github", recording_id, target.link]
+            )
+
+    def github_link_set(self, entry: Adw.EntryRow) -> None:
+        """Saves the default GitHub link typed, or clears it when empty; refuses another."""
+        dialog = settings_of(entry)
+        typed = entry.get_text().strip()
+        target = github.parse_link(typed)
+        if typed and target is None:
+            dialog.github.set_description(NOT_A_GITHUB_LINK)
+            return
+        settings.set_github_link(None if target is None else target.link)
+        dialog.github.set_description(GITHUB_LINK_NOTE)
 
     def list_presets(self, presets: Gtk.MenuButton, recording_id: str) -> None:
         """The built-in and saved presets, Custom, and the saved ones to delete."""

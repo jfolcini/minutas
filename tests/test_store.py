@@ -456,6 +456,7 @@ def test_status_takes_transcribe_and_failed_from_the_latest_runs() -> None:
         recording_id,
         [
             {"action": "publish_gitlab", "status": "failed"},
+            {"action": "publish_github", "status": "failed"},
             {"action": "transcribe", "status": "failed"},
             {"action": "summarize", "status": "failed"},
             {"action": "transcribe", "status": "running"},
@@ -469,7 +470,7 @@ def test_status_takes_transcribe_and_failed_from_the_latest_runs() -> None:
     recent = read_status()["recent"]
     assert isinstance(recent, list)
     assert recent[0]["transcribe"] == "running"
-    assert recent[0]["failed"] == ["publish_agaric", "publish_gitlab"]
+    assert recent[0]["failed"] == ["publish_agaric", "publish_gitlab", "publish_github"]
 
 
 def test_status_replaces_the_file_without_leaving_temporary_files() -> None:

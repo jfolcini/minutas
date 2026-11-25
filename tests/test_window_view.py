@@ -86,6 +86,7 @@ def test_a_stopped_recording_shows_its_name_its_tracks_and_what_can_run() -> Non
         summarize=action("Not summarized", "", menu="Summarize", disabled="Transcribe first"),
         publish=action("Not published", "Publish"),
         publish_gitlab=action("Not published", "Publish…", disabled="Summarize first"),
+        publish_github=action("Not published", "Publish…", disabled="Summarize first"),
     )
 
 
@@ -149,6 +150,7 @@ def test_a_recording_in_progress_offers_nothing_but_its_name() -> None:
     )
     assert view.publish == action("Not published", "Publish", disabled="Still recording")
     assert view.publish_gitlab == action("Not published", "Publish…", disabled="Still recording")
+    assert view.publish_github == action("Not published", "Publish…", disabled="Still recording")
 
 
 @pytest.mark.parametrize(
@@ -628,6 +630,99 @@ def test_while_the_window_publishes_to_gitlab_nothing_else_can_be_pressed() -> N
     )
 
 
+GITHUB_ISSUE = "https://github.com/owner/repo/issues/7"
+COMMENT = f"{GITHUB_ISSUE}#issuecomment-302"
+GH_MISSING = "gh not found: install gh 2.45.0 or newer"
+
+
+@pytest.mark.parametrize(
+    ("runs", "expected"),
+    [
+        ([TRANSCRIBED, SUMMARIZED], action("Not published", "Publish…")),
+        (
+            [
+                TRANSCRIBED,
+                SUMMARIZED,
+                run(
+                    "publish_github",
+                    "succeeded",
+                    output=COMMENT,
+                    link=GITHUB_ISSUE,
+                    note="Published without the audio: GitHub takes no audio files",
+                ),
+            ],
+            action(
+                "Succeeded · Published without the audio: GitHub takes no audio files",
+                "Publish again…",
+                output=COMMENT,
+                link=GITHUB_ISSUE,
+            ),
+        ),
+        # Retry asks for the link again, starting from the failed run's.
+        (
+            [
+                TRANSCRIBED,
+                SUMMARIZED,
+                run(
+                    "publish_github",
+                    "failed",
+                    error="Could not comment on issue #7: boom",
+                    details="run-2.log",
+                    link=GITHUB_ISSUE,
+                ),
+            ],
+            action(
+                "Failed: Could not comment on issue #7: boom",
+                "Retry…",
+                failed=True,
+                details="run-2.log",
+                link=GITHUB_ISSUE,
+            ),
+        ),
+        # Another publisher's link is not GitHub's to start from.
+        (
+            [TRANSCRIBED, SUMMARIZED, run("publish_gitlab", "failed", link=ISSUE)],
+            action("Not published", "Publish…"),
+        ),
+        ([TRANSCRIBED], action("Not published", "Publish…", disabled="Summarize first")),
+    ],
+)
+def test_publish_to_github_waits_for_a_summary_and_asks_for_a_link(
+    runs: list[store.Run], expected: ActionView
+) -> None:
+    assert shown(runs).publish_github == expected
+
+
+def test_without_gh_publish_to_github_says_how_to_install_it() -> None:
+    view = shown([TRANSCRIBED, SUMMARIZED], missing_tools={"publish_github": GH_MISSING})
+
+    assert view.publish_github == action(
+        f"Not published · {GH_MISSING}", "Publish…", disabled=GH_MISSING
+    )
+    # Glab's absence is GitLab's alone.
+    assert shown(
+        [TRANSCRIBED, SUMMARIZED], missing_tools={"publish_gitlab": GLAB_MISSING}
+    ).publish_github == action("Not published", "Publish…")
+
+
+def test_while_the_window_publishes_to_github_nothing_else_can_be_pressed() -> None:
+    published = run("publish_github", "succeeded", output=COMMENT, link=GITHUB_ISSUE)
+
+    assert shown(
+        [TRANSCRIBED, SUMMARIZED, published], running=("publish_github",)
+    ).publish_github == action("Running", "Publish again…", disabled="Publishing", output=COMMENT)
+
+
+def test_a_publish_to_github_command_that_died_says_so() -> None:
+    assert unrecorded_failure(
+        [run("publish_github", "running")],
+        "publish_github",
+        "Traceback:\nRuntimeError: boom\n",
+        exited_ok=False,
+        known=0,
+    ) == ("Publish to GitHub stopped: RuntimeError: boom")
+
+
 @pytest.mark.parametrize(
     ("runs", "warning"),
     [
@@ -640,6 +735,7 @@ def test_while_the_window_publishes_to_gitlab_nothing_else_can_be_pressed() -> N
         ([run("summarize", "failed")], True),
         ([run("summarize", "failed"), run("summarize", "succeeded")], False),
         ([run("publish_gitlab", "failed")], True),
+        ([run("publish_github", "failed")], True),
     ],
 )
 def test_a_warning_marks_a_recording_whose_last_run_of_an_action_failed(
@@ -772,7 +868,9 @@ def a_run() -> st.SearchStrategy[store.Run]:
             ]
         ),
         st.sampled_from(["Summarize this meeting.", "Only the blockers."]),
-        st.sampled_from([ISSUE, "https://gitlab.example.com/group/project"]),
+        st.sampled_from(
+            [ISSUE, "https://gitlab.example.com/group/project", "https://github.com/owner/repo"]
+        ),
     )
 
 
@@ -790,11 +888,14 @@ def a_row() -> st.SearchStrategy[Row]:
         ),
         st.lists(a_run(), max_size=8),
         st.sets(st.sampled_from(store.TRACKS)).map(lambda names: tuple(sorted(names))),
-        st.sets(st.sampled_from(["publish_agaric", "publish_gitlab", "summarize"])).map(tuple),
+        st.sets(
+            st.sampled_from(["publish_agaric", "publish_gitlab", "publish_github", "summarize"])
+        ).map(tuple),
         st.fixed_dictionaries(
             {
                 "summarize": st.sampled_from(["", MISSING]),
                 "publish_gitlab": st.sampled_from(["", GLAB_MISSING]),
+                "publish_github": st.sampled_from(["", GH_MISSING]),
             }
         ),
     )
@@ -809,11 +910,14 @@ def latest(runs: list[store.Run], action: str) -> tuple[int, store.Run] | None:
 def test_every_row_keeps_the_rules(case: Row) -> None:
     a_recording, runs, tracks, running, missing_tools = case
     missing, no_glab = missing_tools["summarize"], missing_tools["publish_gitlab"]
+    no_gh = missing_tools["publish_github"]
     publishing, summarizing = "publish_agaric" in running, "summarize" in running
     publishing_gitlab = "publish_gitlab" in running
+    publishing_github = "publish_github" in running
     stopped = a_recording["stopped_at"] is not None
     transcription, publication = latest(runs, "transcribe"), latest(runs, "publish_agaric")
     summary, gitlab_publication = latest(runs, "summarize"), latest(runs, "publish_gitlab")
+    github_publication = latest(runs, "publish_github")
 
     view = row(
         a_recording,
@@ -831,6 +935,7 @@ def test_every_row_keeps_the_rules(case: Row) -> None:
     )
     assert view.publish.cancels is None
     assert view.publish_gitlab.cancels is None
+    assert view.publish_github.cancels is None
     # Nothing starts a transcription without audio, or during the recording; nothing deletes
     # audio that is missing, being recorded, or being transcribed.
     # Cancel can always be pressed.
@@ -845,6 +950,7 @@ def test_every_row_keeps_the_rules(case: Row) -> None:
         (view.summarize, summary, summarizing, missing),
         (view.publish, publication, publishing, ""),
         (view.publish_gitlab, gitlab_publication, publishing_gitlab, no_glab),
+        (view.publish_github, github_publication, publishing_github, no_gh),
     ):
         failed = last is not None and last[1]["status"] == "failed"
         if not running:
@@ -860,7 +966,7 @@ def test_every_row_keeps_the_rules(case: Row) -> None:
             assert shown_action.result.endswith(f" · {missing_tool}") is bool(missing_tool)
     assert view.warning is any(
         last is not None and last[1]["status"] == "failed"
-        for last in (transcription, summary, publication, gitlab_publication)
+        for last in (transcription, summary, publication, gitlab_publication, github_publication)
     )
     # The link is the newest output the action ever produced.
     for shown_action, name in (
@@ -868,6 +974,7 @@ def test_every_row_keeps_the_rules(case: Row) -> None:
         (view.summarize, "summarize"),
         (view.publish, "publish_agaric"),
         (view.publish_gitlab, "publish_gitlab"),
+        (view.publish_github, "publish_github"),
     ):
         outputs = [r["output"] for r in runs if r["action"] == name and r["status"] == "succeeded"]
         assert shown_action.output == (outputs[-1] if outputs else None)
@@ -902,7 +1009,34 @@ def test_every_row_keeps_the_rules(case: Row) -> None:
         assert view.publish_gitlab.link == (
             None if gitlab_publication is None else gitlab_publication[1].get("link")
         )
-    assert (view.transcribe.menu, view.publish.menu, view.publish_gitlab.menu) == (None,) * 3
+    assert (
+        view.transcribe.menu,
+        view.publish.menu,
+        view.publish_gitlab.menu,
+        view.publish_github.menu,
+    ) == (None,) * 4
+
+
+@given(a_row())
+def test_publish_to_github_keeps_gitlabs_rules_with_gh(case: Row) -> None:
+    a_recording, runs, tracks, running, missing_tools = case
+    publishing = "publish_github" in running
+    publication = latest(runs, "publish_github")
+
+    view = row(a_recording, runs, tracks, running=running, missing_tools=missing_tools)
+
+    summarized = view.summarize.output is not None
+    assert (view.publish_github.disabled == "") is (
+        a_recording["stopped_at"] is not None
+        and summarized
+        and not publishing
+        and not missing_tools["publish_github"]
+    )
+    assert view.publish_github.label.endswith("…")
+    if not publishing:
+        assert view.publish_github.link == (
+            None if publication is None else publication[1].get("link")
+        )
 
 
 def test_the_audio_files_say_until_when_the_age_limit_keeps_them() -> None:

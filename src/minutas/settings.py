@@ -94,6 +94,15 @@ def set_summary_skill(path: str | None) -> None:
     save({"summary_skill": path})
 
 
+def github_link() -> str | None:
+    """The issue or repository link Publish to GitHub starts from; None for none."""
+    return cast("str | None", load().get("github_link"))
+
+
+def set_github_link(link: str | None) -> None:
+    save({"github_link": link})
+
+
 def refused_audio_size(host: str) -> int | None:
     """The size in bytes of the smallest audio the GitLab server refused as too big; None until
     one has."""

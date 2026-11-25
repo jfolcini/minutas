@@ -11,7 +11,18 @@ from typing import TYPE_CHECKING, cast
 import pytest
 from keyring.errors import KeyringLocked
 
-from minutas import agaric, calendar, cli, gitlab, recorder, settings, store, summarizer, worker
+from minutas import (
+    agaric,
+    calendar,
+    cli,
+    github,
+    gitlab,
+    recorder,
+    settings,
+    store,
+    summarizer,
+    worker,
+)
 from minutas.cli import main
 
 if TYPE_CHECKING:
@@ -813,6 +824,71 @@ def test_publish_gitlab_refuses_what_it_cannot_post(
 
     assert capsys.readouterr().err == f"{error}\n"
     assert fake_gitlab.published == []
+
+
+class FakeGitHub:
+    """Stands in for the github module's publish: no gh."""
+
+    def __init__(self) -> None:
+        self.succeeds = True
+        self.published: list[tuple[str, datetime, github.Target]] = []
+
+    def publish(self, recording_id: str, published: datetime, target: github.Target) -> bool:
+        self.published.append((recording_id, published, target))
+        return self.succeeds
+
+
+@pytest.fixture
+def fake_github(monkeypatch: pytest.MonkeyPatch) -> FakeGitHub:
+    fake = FakeGitHub()
+    monkeypatch.setattr(github, "publish", fake.publish)
+    monkeypatch.setattr(cli, "now", lambda: START + timedelta(hours=1))
+    return fake
+
+
+GITHUB_ISSUE = "https://github.com/owner/repo/issues/7"
+
+
+@pytest.mark.parametrize(("succeeds", "code"), [(True, 0), (False, 1)])
+def test_publish_github_posts_the_summary_where_the_link_says(
+    fake_github: FakeGitHub, *, succeeds: bool, code: int
+) -> None:
+    recording_id = summarized()
+    fake_github.succeeds = succeeds
+
+    assert main(["publish", "github", recording_id, f"{GITHUB_ISSUE}#issuecomment-3"]) == code
+
+    assert fake_github.published == [
+        (
+            recording_id,
+            START + timedelta(hours=1),
+            github.Target(GITHUB_ISSUE, "github.com", "owner/repo", 7),
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    ("link", "error"),
+    [
+        ("https://github.com/owner", "Not a GitHub issue or repository link: "),
+        (GITHUB_ISSUE, "No recording 2026-11-18T13-05-42."),
+        (GITHUB_ISSUE, "2026-11-18T13-05-42 has no summary yet: summarize it first."),
+    ],
+    ids=["not github", "unknown recording", "no summary"],
+)
+def test_publish_github_refuses_what_it_cannot_post(
+    fake_github: FakeGitHub, capsys: pytest.CaptureFixture[str], link: str, error: str
+) -> None:
+    if error.startswith("Not"):
+        summarized()
+        error += link
+    elif error.endswith("summarize it first."):
+        store.create_recording(START)
+
+    assert main(["publish", "github", "2026-11-18T13-05-42", link]) == 1
+
+    assert capsys.readouterr().err == f"{error}\n"
+    assert fake_github.published == []
 
 
 class FakeSummarizer:

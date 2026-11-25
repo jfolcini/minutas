@@ -17,6 +17,7 @@ const ACTION_NAMES = {
     summarize: 'Summarize',
     publish_agaric: 'Publish to Agaric',
     publish_gitlab: 'Publish to GitLab',
+    publish_github: 'Publish to GitHub',
 };
 
 // What a missing status.json means: nothing has been recorded yet.
