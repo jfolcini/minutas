@@ -78,7 +78,7 @@ class Run(TypedDict):
     choice: NotRequired[Choice | None]
     # Something to know about a run that succeeded, such as what it left out.
     note: NotRequired[str | None]
-    # What a Summarize run asked Devin, so Retry asks the same.
+    # What a Summarize run asked the summarizer, so Retry asks the same.
     prompt: NotRequired[str]
     # The issue or project link a Publish to GitLab run posted to, which the next one offers.
     link: NotRequired[str]

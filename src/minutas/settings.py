@@ -77,12 +77,39 @@ def set_audio_limits(age_limit_days: int | None, size_limit_gb: int | None) -> N
 
 
 def summary_model() -> str | None:
-    """The model Summarize asks Devin for; None for Devin's own default."""
+    """The model, with its effort, Summarize asks Devin for; None for Devin's own default."""
     return cast("str | None", load().get("summary_model"))
 
 
 def set_summary_model(model: str | None) -> None:
     save({"summary_model": model})
+
+
+def summarizer() -> str | None:
+    """The command of the summarizer Summarize runs; None until one is chosen."""
+    return cast("str | None", load().get("summarizer"))
+
+
+def set_summarizer(command: str) -> None:
+    save({"summarizer": command})
+
+
+def claude_model() -> str | None:
+    """The model Summarize asks Claude Code for; None for Claude Code's own default."""
+    return cast("str | None", load().get("claude_model"))
+
+
+def set_claude_model(model: str | None) -> None:
+    save({"claude_model": model})
+
+
+def claude_effort() -> str | None:
+    """The effort Summarize asks Claude Code for; None for Claude Code's own default."""
+    return cast("str | None", load().get("claude_effort"))
+
+
+def set_claude_effort(effort: str | None) -> None:
+    save({"claude_effort": effort})
 
 
 def summary_skill() -> str | None:

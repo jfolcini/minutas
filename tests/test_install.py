@@ -402,20 +402,23 @@ def test_extension_without_gnome_shell_stops_the_script(sandbox: Sandbox) -> Non
     assert not extension_dir(sandbox).exists()
 
 
-# --- Devin CLI ---------------------------------------------------------------------------------
+# --- Summarizer --------------------------------------------------------------------------------
 
 
-def test_devin_on_the_path_is_ok(sandbox: Sandbox) -> None:
-    sandbox.fake("devin")
+@pytest.mark.parametrize("summarizer", ["devin", "claude"])
+def test_either_summarizer_on_the_path_is_ok(sandbox: Sandbox, summarizer: str) -> None:
+    sandbox.fake(summarizer)
 
-    assert sandbox.run("step_devin").stdout == "Devin CLI: ok\n"
+    assert sandbox.run("step_summarizer").stdout == "Summarizer: ok\n"
 
 
-def test_devin_missing_says_how_to_install_it(sandbox: Sandbox) -> None:
-    result = sandbox.run("step_devin")
+def test_no_summarizer_says_how_to_install_either(sandbox: Sandbox) -> None:
+    result = sandbox.run("step_summarizer")
 
     assert result.returncode == 0
     assert result.stdout == (
-        "Devin CLI: not installed; Summarize needs it. Install it with "
-        "`curl -fsSL https://cli.devin.ai/install.sh | bash`, then log in with `devin auth login`\n"
+        "Summarizer: not installed; Summarize needs the Devin CLI or Claude Code. Install the "
+        "Devin CLI with `curl -fsSL https://cli.devin.ai/install.sh | bash`, then log in with "
+        "`devin auth login`; or Claude Code with `curl -fsSL https://claude.ai/install.sh | bash`, "
+        "then log in with `claude auth login`\n"
     )

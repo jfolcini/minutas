@@ -60,7 +60,6 @@ GET_AGARIC_CONFIG = (
 )
 # The command line's word for opening the Settings; no recording id is a word.
 SETTINGS = "settings"
-DEVIN_CLI = "Devin CLI"
 DEVINS_DEFAULT = "Devin's default"
 ASKING_DEVIN = "Asking Devin for the models your account can use…"
 BUILT_IN_SKILL = "Built-in: meeting notes"
@@ -78,9 +77,10 @@ def load_views(running: Mapping[str, Collection[str]]) -> list[RowView]:
     """Every recording's row, newest first; running holds the recordings of each action whose
     command the window is running."""
     # Looked for at each refresh: one installed while the window is open is found.
-    found = shutil.which(summarizer.DEVIN) is not None
+    tool = summarizer.chosen()
+    found = shutil.which(tool.command) is not None
     missing_tools = {
-        SUMMARIZE: "" if found else summarizer.DEVIN_MISSING,
+        SUMMARIZE: "" if found else tool.missing,
         PUBLISH_GITLAB: gitlab.glab_problem(),
     }
     age_limit_days, _ = settings.audio_limits()
@@ -171,6 +171,16 @@ class SpaceRow(Adw.ComboRow):
         return self.ids[place] if place < len(self.ids) else None
 
 
+def offer(
+    row: Adw.ComboRow, handler: int, choices: Sequence[tuple[str, str | None]], saved: str | None
+) -> None:
+    """Each choice by its label, the saved one chosen, else the first, unheard by the handler."""
+    values = [value for _, value in choices]
+    with row.handler_block(handler):
+        row.set_model(Gtk.StringList.new([label for label, _ in choices]))
+        row.set_selected(values.index(saved) if saved in values else 0)
+
+
 class SettingsDialog(Adw.PreferencesDialog):
     """The settings: each change is saved as it is made, but the audio limits, which delete
     audio, wait for Save and a warning."""
@@ -178,8 +188,10 @@ class SettingsDialog(Adw.PreferencesDialog):
     def __init__(self, window: "HistoryWindow") -> None:
         super().__init__(title="Settings")
         self.found: list[summarizer.Model] = []
-        # One summarizer for now: shown, so the model and effort below say whose they are.
-        self.summarizer = Adw.ComboRow(title="Summarizer", model=Gtk.StringList.new([DEVIN_CLI]))
+        titles = [tool.title for tool in summarizer.TOOLS]
+        self.summarizer = Adw.ComboRow(title="Summarizer", model=Gtk.StringList.new(titles))
+        self.summarizer.set_selected(summarizer.TOOLS.index(summarizer.chosen()))
+        self.summarizer.connect("notify::selected", window.summarizer_chosen)
         self.model = Adw.ComboRow(title="Model", subtitle=ASKING_DEVIN, sensitive=False)
         self.model_handler = self.model.connect("notify::selected", window.model_chosen)
         self.effort = Adw.ComboRow(title="Effort", visible=False)
@@ -230,7 +242,23 @@ class SettingsDialog(Adw.PreferencesDialog):
         self.built_in.set_visible(chosen is not None)
 
     def models_unknown(self, problem: str) -> None:
+        """No model to choose, and why: Devin has yet to list its own, or can't."""
+        self.found = []
+        with self.model.handler_block(self.model_handler):
+            self.model.set_model(Gtk.StringList.new([]))
         self.model.set_subtitle(problem)
+        self.model.set_sensitive(False)
+        self.effort.set_visible(False)
+
+    def offer_claude(self) -> None:
+        """Claude Code's models and efforts, the saved ones chosen; it lists neither itself."""
+        self.found = []
+        offer(self.model, self.model_handler, summarizer.CLAUDE_MODELS, settings.claude_model())
+        offer(self.effort, self.effort_handler, summarizer.CLAUDE_EFFORTS, settings.claude_effort())
+        found = shutil.which(summarizer.CLAUDE) is not None
+        self.model.set_subtitle("" if found else summarizer.CLAUDE_MISSING)
+        self.model.set_sensitive(True)
+        self.effort.set_visible(True)
 
     def offer_models(self, found: list[summarizer.Model], saved: str | None) -> None:
         """Devin's models, the saved one chosen; models() lists every saved one."""
@@ -718,8 +746,17 @@ class HistoryWindow(Adw.ApplicationWindow):
         dialog = SettingsDialog(self)
         self.show_kept_audio(dialog)
         dialog.present(self)
+        self.offer_models(dialog)
+        self.ask_agaric(["--list-spaces"], None, self.spaces_listed, dialog)
+
+    def offer_models(self, dialog: SettingsDialog) -> None:
+        """Offers the chosen summarizer's models: Claude Code's own, or those Devin lists."""
+        if summarizer.chosen().command == summarizer.CLAUDE:
+            dialog.offer_claude()
+            return
+        dialog.models_unknown(ASKING_DEVIN)
         try:
-            # Devin is asked, and Agaric below, through commands: the window never waits on them.
+            # Devin is asked, and Agaric, through commands: the window never waits on them.
             command = Gio.Subprocess.new(
                 summarizer.LIST_MODELS,
                 Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE,
@@ -728,12 +765,20 @@ class HistoryWindow(Adw.ApplicationWindow):
             dialog.models_unknown(summarizer.DEVIN_MISSING)
         else:
             command.communicate_utf8_async(None, None, self.models_listed, dialog)
-        self.ask_agaric(["--list-spaces"], None, self.spaces_listed, dialog)
+
+    def summarizer_chosen(self, row: Adw.ComboRow, _property: object) -> None:
+        settings.set_summarizer(summarizer.TOOLS[row.get_selected()].command)
+        self.offer_models(settings_of(row))
+        # Summarize is off while the one chosen is missing.
+        self.refresh()
 
     def models_listed(
         self, command: Gio.Subprocess, result: Gio.AsyncResult, dialog: SettingsDialog
     ) -> None:
         _, listed, said = command.communicate_utf8_finish(result)
+        # Devin answers after Claude Code was chosen: its models are no longer the ones to offer.
+        if summarizer.chosen().command != summarizer.DEVIN:
+            return
         if not command.get_successful():
             status = command.get_exit_status()
             dialog.models_unknown(last_line(said or "") or f"devin exited with status {status}")
@@ -745,12 +790,18 @@ class HistoryWindow(Adw.ApplicationWindow):
             dialog.models_unknown(str(error))
 
     def model_chosen(self, row: Adw.ComboRow, _property: object) -> None:
+        if summarizer.chosen().command == summarizer.CLAUDE:
+            settings.set_claude_model(summarizer.CLAUDE_MODELS[row.get_selected()][1])
+            return
         dialog = settings_of(row)
         # The model's own first effort, as Devin lists it.
         dialog.offer_efforts(0)
         settings.set_summary_model(dialog.chosen_model())
 
     def effort_chosen(self, row: Adw.ComboRow, _property: object) -> None:
+        if summarizer.chosen().command == summarizer.CLAUDE:
+            settings.set_claude_effort(summarizer.CLAUDE_EFFORTS[row.get_selected()][1])
+            return
         settings.set_summary_model(settings_of(row).chosen_model())
 
     def choose_skill(self, chooser: Gtk.Button) -> None:

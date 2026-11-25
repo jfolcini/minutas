@@ -235,12 +235,12 @@ step_glab() {
   report glab "$found; Publish to GitLab stays off until glab 1.91 or newer is installed from GitLab's own .deb: https://gitlab.com/gitlab-org/cli/-/releases"
 }
 
-step_devin() {
-  if command -v devin >/dev/null; then
-    report "Devin CLI" ok
+step_summarizer() {
+  if command -v devin >/dev/null || command -v claude >/dev/null; then
+    report Summarizer ok
     return
   fi
-  report "Devin CLI" "not installed; Summarize needs it. Install it with \`curl -fsSL https://cli.devin.ai/install.sh | bash\`, then log in with \`devin auth login\`"
+  report Summarizer "not installed; Summarize needs the Devin CLI or Claude Code. Install the Devin CLI with \`curl -fsSL https://cli.devin.ai/install.sh | bash\`, then log in with \`devin auth login\`; or Claude Code with \`curl -fsSL https://claude.ai/install.sh | bash\`, then log in with \`claude auth login\`"
 }
 
 main() {
@@ -259,7 +259,7 @@ main() {
   fi
   step_agaric_mcp
   step_glab
-  step_devin
+  step_summarizer
 }
 
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
