@@ -1287,7 +1287,7 @@ def test_a_failed_update_says_the_fix_it_was_given_last() -> None:
     )
 
     assert update(said, exited_ok=False) == UpdateView(
-        "Update failed", "Hugging Face token: failed: none in the GNOME keyring", failed=True
+        "Update failed", "Hugging Face token: failed: none in the GNOME keyring"
     )
 
 

@@ -303,6 +303,9 @@ def test_an_answer_without_a_title_is_the_summary_whole_and_proposes_no_name(
     assert name_of(recording_id) == ("Meeting", "default")
 
 
+DEVIN_EMPTY = "Devin answered with an empty summary: see Details"
+
+
 @pytest.mark.parametrize(
     ("answer", "error"),
     [
@@ -312,9 +315,9 @@ def test_an_answer_without_a_title_is_the_summary_whole_and_proposes_no_name(
             "devin exited with status 1: see Details",
         ),
         (Answer(2, stdout="partial", stderr=""), "devin exited with status 2: see Details"),
-        (Answer(0, stdout=""), summarizer.EMPTY),
-        (Answer(0, stdout="  \n\n"), summarizer.EMPTY),
-        (Answer(0, stdout="Title: Release plan\n\n"), summarizer.EMPTY),
+        (Answer(0, stdout=""), DEVIN_EMPTY),
+        (Answer(0, stdout="  \n\n"), DEVIN_EMPTY),
+        (Answer(0, stdout="Title: Release plan\n\n"), DEVIN_EMPTY),
     ],
 )
 def test_a_devin_failure_fails_the_run_and_keeps_the_summary_before_it(

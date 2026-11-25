@@ -1456,12 +1456,12 @@ class HistoryWindow(Adw.ApplicationWindow):
         command.wait_finish(result)
         self.update_action.set_enabled(True)
         self.updating.set_revealed(False)
-        outcome = window_view.update(
-            log.read_text(errors="replace"), exited_ok=command.get_successful()
-        )
+        exited_ok = command.get_successful()
+        outcome = window_view.update(log.read_text(errors="replace"), exited_ok=exited_ok)
         dialog = Adw.AlertDialog(heading=outcome.heading, body=outcome.body, close_response="close")
         dialog.add_response("close", "Close")
-        if outcome.failed:
+        # What a failed update printed is worth reading.
+        if not exited_ok:
             dialog.add_response("details", "Details")
         dialog.choose(self, None, self.update_answered, log)
 
