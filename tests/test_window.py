@@ -12,7 +12,7 @@ from datetime import UTC, datetime, timedelta
 from importlib.metadata import version
 from pathlib import Path
 from types import TracebackType
-from typing import cast, override
+from typing import ClassVar, cast, override
 
 import pytest
 from keyring.errors import KeyringLocked
@@ -3612,6 +3612,59 @@ def test_gitlab_shows_the_last_thing_glab_said_as_written(
     dialog = open_settings(shown)
 
     assert glab_said(shown_said) in texts(dialog)
+    dialog.close()
+
+
+class HeldGlab(Gio.Subprocess):
+    """Stands in for a `minutas settings gitlab` the window started, answering when told to."""
+
+    started: ClassVar[list["HeldGlab"]] = []
+
+    def __init__(self, said: str) -> None:
+        super().__init__()
+        self.said = said
+        self.answer: Callable[[], None] = lambda: None
+
+    @classmethod
+    @override
+    def new(  # ty: ignore[incompatible-method-override] - Gio's new is a constructor
+        cls, argv: Sequence[str], flags: Gio.SubprocessFlags
+    ) -> "HeldGlab":
+        started = cls(f"glab answer {len(cls.started) + 1}")
+        cls.started.append(started)
+        return started
+
+    @override
+    def communicate_utf8_async(  # ty: ignore[incompatible-method-override] - Gio's stub
+        self,
+        stdin_buf: str | None,
+        cancellable: object,
+        callback: Callable[..., None],
+        *data: object,
+    ) -> None:
+        self.answer = lambda: callback(self, Gio.Task.new(None, None, None, None), *data)
+
+    @override
+    def communicate_utf8_finish(self, result: Gio.AsyncResult) -> tuple[bool, str, str]:
+        return True, "", self.said
+
+
+@pytest.mark.usefixtures("agaric_settings")
+def test_gitlab_shows_what_glab_said_to_the_last_question_whatever_order_the_answers_come_in(
+    history: Callable[[], window.HistoryWindow], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    shown = history()
+    dialog = open_settings(shown)
+    HeldGlab.started.clear()
+    monkeypatch.setattr(window.Gio, "Subprocess", HeldGlab)
+
+    shown.ask_glab(None, dialog)
+    shown.ask_glab(None, dialog)
+    first, last = HeldGlab.started
+    last.answer()
+    first.answer()
+
+    assert dialog.gitlab.get_description() == glab_said("glab answer 2")
     dialog.close()
 
 

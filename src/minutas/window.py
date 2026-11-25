@@ -300,6 +300,8 @@ class SettingsDialog(Adw.PreferencesDialog):
     def __init__(self, window: "HistoryWindow") -> None:
         super().__init__(title="Settings")
         self.found: list[summarizer.Model] = []
+        # How many times glab has been asked: only the latest question's answer is shown.
+        self.glab_asked = 0
         titles = [tool.title for tool in summarizer.TOOLS]
         self.summarizer = Adw.ComboRow(title="Summarizer", model=Gtk.StringList.new(titles))
         self.summarizer.set_selected(summarizer.TOOLS.index(summarizer.chosen()))
@@ -1635,12 +1637,20 @@ class HistoryWindow(Adw.ApplicationWindow):
             | Gio.SubprocessFlags.STDOUT_SILENCE
             | Gio.SubprocessFlags.STDERR_PIPE,
         )
-        command.communicate_utf8_async(token, None, self.glab_answered, dialog)
+        dialog.glab_asked += 1
+        command.communicate_utf8_async(token, None, self.glab_answered, dialog, dialog.glab_asked)
 
     def glab_answered(
-        self, command: Gio.Subprocess, result: Gio.AsyncResult, dialog: SettingsDialog
+        self,
+        command: Gio.Subprocess,
+        result: Gio.AsyncResult,
+        dialog: SettingsDialog,
+        asked: int,
     ) -> None:
         _, _, said = command.communicate_utf8_finish(result)
+        # A slower answer to an earlier question would show the wrong server's login.
+        if asked != dialog.glab_asked:
+            return
         # A group's description is always markup; what glab says is not.
         shown = GLib.markup_escape_text(last_line(said or "") or GLAB_SILENT)
         dialog.gitlab.set_description(f"{shown}\n\n{GITLAB_NOTE}")
