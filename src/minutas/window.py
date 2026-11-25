@@ -1794,15 +1794,15 @@ class HistoryWindow(Adw.ApplicationWindow):
         menu = Gio.Menu()
         menu.append_section(None, chosen)
         menu.append_section(None, others)
-        if summarizer.context_names():
-            menu.append_section("Context", self.context_menu())
+        if names := summarizer.context_names():
+            menu.append_section("Context", self.context_menu(names))
         presets.set_menu_model(menu)
 
-    def context_menu(self) -> Gio.Menu:
-        """A check item for each context preset, ticked while every summary includes it."""
+    def context_menu(self, names: list[str]) -> Gio.Menu:
+        """A check item for each context preset named, ticked while every summary includes it."""
         ticked = settings.summary_context()
         menu = Gio.Menu()
-        for place, name in enumerate(summarizer.context_names()):
+        for place, name in enumerate(names):
             # A check item's action holds whether it is ticked, and takes no target.
             action = Gio.SimpleAction.new_stateful(
                 f"context-{place}", None, GLib.Variant("b", name in ticked)
