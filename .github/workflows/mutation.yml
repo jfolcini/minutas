@@ -36,8 +36,9 @@ jobs:
         with:
           enable-cache: false
 
+      # One more try after a pause, as _validate.yml's lint job's install.
       - name: Install
-        run: uv sync
+        run: uv sync || { sleep 30; uv sync; }
 
       # The suite runs the history window on Ubuntu's own PyGObject, GTK and libadwaita, on an Xvfb
       # display and a session bus of their own (tests/conftest.py); the calendar's tests read

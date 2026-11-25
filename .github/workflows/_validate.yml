@@ -38,8 +38,10 @@ jobs:
         with:
           enable-cache: false
 
+      # actionlint-py builds from source, fetching actionlint from GitHub's releases, and gives
+      # up on the 403 GitHub now and then answers there: one more try after a pause.
       - name: Install the toolchain
-        run: uv sync
+        run: uv sync || { sleep 30; uv sync; }
 
       # eslint needs the extension's node_modules; the extension job runs it.
       - name: prek, pre-commit stage
@@ -106,8 +108,9 @@ jobs:
           RESOLUTION: ${{ matrix.resolution }}
         run: uv lock --resolution "$RESOLUTION"
 
+      # One more try after a pause, as the lint job's install.
       - name: Install
-        run: uv sync
+        run: uv sync || { sleep 30; uv sync; }
 
       # The window's tests run it on Ubuntu's own PyGObject, GTK and libadwaita, on an Xvfb
       # display and a session bus of their own (tests/conftest.py); the calendar's tests read
