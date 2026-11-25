@@ -276,6 +276,19 @@ step_glab() {
   report glab "$found; Publish to GitLab stays off until glab 1.91 or newer is installed from GitLab's own .deb: https://gitlab.com/gitlab-org/cli/-/releases"
 }
 
+# Publish to GitHub posts through gh, and Ubuntu's own is new enough: 2.45 has every flag it uses.
+step_gh() {
+  local found="gh isn't on the PATH"
+  if [[ $(gh --version 2>/dev/null) =~ ([0-9]+)\.([0-9]+)(\.[0-9]+)? ]]; then
+    if ((BASH_REMATCH[1] > 2 || (BASH_REMATCH[1] == 2 && BASH_REMATCH[2] >= 45))); then
+      report gh ok
+      return
+    fi
+    found="the PATH has gh ${BASH_REMATCH[0]}"
+  fi
+  report gh "$found; Publish to GitHub stays off until gh 2.45 or newer is installed: \`sudo apt install gh\`, or see https://cli.github.com"
+}
+
 step_devin() {
   if command -v devin >/dev/null; then
     report "Devin CLI" ok
@@ -319,6 +332,7 @@ main() {
   fi
   step_agaric_mcp
   step_glab
+  step_gh
   step_devin
   summary
 }

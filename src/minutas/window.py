@@ -25,9 +25,10 @@ gi.require_version("Adw", "1")
 gi.require_version("Gtk", "4.0")
 from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402 - after the versions are chosen
 
-from minutas import gitlab, settings, store, summarizer, window_view, worker  # noqa: E402
+from minutas import github, gitlab, settings, store, summarizer, window_view, worker  # noqa: E402
 from minutas.window_view import (  # noqa: E402
     PUBLISH,
+    PUBLISH_GITHUB,
     PUBLISH_GITLAB,
     SUMMARIZE,
     TRANSCRIBE,
@@ -51,12 +52,23 @@ CUSTOM_NAME = "Custom name…"
 RENAME_NOTE = "A typed name is kept for good, and the next Publish to Agaric applies it."
 ASK_LINK = "Paste an issue link to comment on it, or a project link to open a new issue"
 NOT_A_LINK = "Not a GitLab issue or project link"
+ASK_GITHUB_LINK = "Paste an issue link to comment on it, or a repository link to open a new issue"
+NOT_A_GITHUB_LINK = "Not a GitHub issue or repository link"
+GIST_NOTE = (
+    "The transcript goes to a secret gist, which anyone with its link can read. GitHub takes no "
+    "audio, so it is left out."
+)
+GITHUB_LINK_NOTE = (
+    "Where Publish to GitHub starts: an issue link to comment on it, or a repository link to open "
+    "a new issue. Empty for none."
+)
 AUDIO_LIMITS_NOTE = (
     "Audio over a limit is deleted, oldest first, once it has been transcribed: when you save, "
     "when a recording stops and when the Recordings window opens. The transcripts and everything "
     "published stay."
 )
 AUDIO_LIMITS_SAVED = "Audio limits saved"
+UNSAVED_LIMITS = "The audio limits shown aren't saved. Closing drops them unless you save them."
 ASKING_AGARIC = "Asking Agaric for the spaces the agent may use…"
 PASTE_AGARIC = "Paste the agent's config from Agaric, or its token"
 AGARIC_STORED = "Stored in the keyring"
@@ -65,6 +77,13 @@ GET_AGARIC_CONFIG = (
     "To connect Agaric: in Agaric, open Settings → Agent access, add an agent with read-write "
     "access to the Work space, copy the config it shows, and paste it below."
 )
+ASKING_GLAB = "Asking glab whether it is logged in…"
+GLAB_SILENT = "Asking glab stopped without saying why"
+GITLAB_NOTE = (
+    "Publish to GitLab posts with glab's login. A token pasted below goes to glab, which keeps it "
+    "in the keyring; it is never shown back."
+)
+PASTE_GITLAB = "Paste a personal access token with the api scope"
 # The command line's word for opening the Settings; no recording id is a word.
 SETTINGS = "settings"
 DEVIN_CLI = "Devin CLI"
@@ -93,6 +112,7 @@ def load_views(running: Mapping[str, Collection[str]]) -> list[RowView]:
     missing_tools = {
         SUMMARIZE: "" if found else summarizer.DEVIN_MISSING,
         PUBLISH_GITLAB: gitlab.glab_problem(),
+        PUBLISH_GITHUB: github.gh_problem(),
     }
     age_limit_days, _ = settings.audio_limits()
     # Inside the lock, so a recording being discarded is seen whole or not at all.
@@ -190,7 +210,7 @@ class SpaceRow(Adw.ComboRow):
 
 class SettingsDialog(Adw.PreferencesDialog):
     """The settings: each change is saved as it is made, but the audio limits, which delete
-    audio, wait for Save and a warning."""
+    audio, wait for Save and a warning; closing with them unsaved asks what to do with them."""
 
     def __init__(self, window: "HistoryWindow") -> None:
         super().__init__(title="Settings")
@@ -227,26 +247,81 @@ class SettingsDialog(Adw.PreferencesDialog):
         for row in (self.token, self.pasted, self.space):
             self.agaric.add(row)
 
+        self.gitlab = Adw.PreferencesGroup(title="GitLab", description=ASKING_GLAB)
+        self.gitlab_link = Adw.EntryRow(
+            title="Default project or issue link",
+            text=settings.gitlab_link() or "",
+            show_apply_button=True,
+        )
+        self.gitlab_link.connect("apply", window.gitlab_link_applied)
+        # Left empty: glab keeps the token, and it is never shown back.
+        self.gitlab_token = Adw.PasswordEntryRow(title=PASTE_GITLAB, show_apply_button=True)
+        self.gitlab_token.connect("apply", window.gitlab_token_pasted)
+        self.gitlab.add(self.gitlab_link)
+        self.gitlab.add(self.gitlab_token)
+        self.github = self.github_group(window)
+
         age_limit_days, size_limit_gb = settings.audio_limits()
         self.age = limit_row("Age limit", "Days", age_limit_days, settings.AUDIO_AGE_LIMIT_DAYS)
         self.size = limit_row("Size limit", "GB", size_limit_gb, settings.AUDIO_SIZE_LIMIT_GB)
-        self.audio = Adw.PreferencesGroup(
-            title="Audio limits", header_suffix=button("Save", window.save_audio_limits)
-        )
+        self.audio = Adw.PreferencesGroup(title="Audio limits")
         self.audio.add(self.age[0])
         self.audio.add(self.size[0])
+        for switch, value in (self.age, self.size):
+            switch.connect("notify::enable-expansion", window.limits_changed)
+            value.connect("notify::value", window.limits_changed)
+        # A widget that is no row goes below the group's rows.
+        self.save_limits = Gtk.Button(
+            label="Save", halign=Gtk.Align.END, margin_top=12, sensitive=False
+        )
+        self.save_limits.connect("clicked", window.save_audio_limits)
+        self.audio.add(self.save_limits)
+        self.connect("close-attempt", window.settings_closing)
 
+        self.top_bar = self.top_bar_group(window)
+
+        page = Adw.PreferencesPage()
+        for group in (
+            transcription,
+            summary,
+            self.agaric,
+            self.gitlab,
+            self.github,
+            self.audio,
+            self.top_bar,
+        ):
+            page.add(group)
+        self.add(page)
+
+    def chosen_limits(self) -> tuple[int | None, int | None]:
+        return chosen_limit(*self.age), chosen_limit(*self.size)
+
+    def show_unsaved_limits(self) -> None:
+        """Offers Save while the limits shown are not the saved ones, and asks before closing
+        then."""
+        unsaved = self.chosen_limits() != settings.audio_limits()
+        self.save_limits.set_sensitive(unsaved)
+        self.set_can_close(not unsaved)
+
+    def top_bar_group(self, window: "HistoryWindow") -> Adw.PreferencesGroup:
+        """How many recent recordings the top-bar menu lists."""
         self.recent = Adw.SpinRow.new_with_range(1, settings.MOST_RECENT_IN_MENU, 1)
         self.recent.set_title("Recent recordings")
         self.recent.set_value(settings.recent_in_menu())
         self.recent.connect("notify::value", window.recent_chosen)
-        self.top_bar = Adw.PreferencesGroup(title="Top-bar menu")
-        self.top_bar.add(self.recent)
+        group = Adw.PreferencesGroup(title="Top-bar menu")
+        group.add(self.recent)
+        return group
 
-        page = Adw.PreferencesPage()
-        for group in (transcription, summary, self.agaric, self.audio, self.top_bar):
-            page.add(group)
-        self.add(page)
+    def github_group(self, window: "HistoryWindow") -> Adw.PreferencesGroup:
+        """The default link Publish to GitHub starts from."""
+        self.github_link = Adw.EntryRow(
+            title="Default link", text=settings.github_link() or "", show_apply_button=True
+        )
+        self.github_link.connect("apply", window.github_link_set)
+        group = Adw.PreferencesGroup(title="GitHub", description=GITHUB_LINK_NOTE)
+        group.add(self.github_link)
+        return group
 
     def show_skill(self) -> None:
         chosen = settings.summary_skill()
@@ -430,6 +505,9 @@ class Details:
         self.publish_gitlab = ActionControls(
             "Publish to GitLab", "Open in GitLab", PUBLISH_GITLAB, recording_id, window
         )
+        self.publish_github = ActionControls(
+            "Publish to GitHub", "Open in GitHub", PUBLISH_GITHUB, recording_id, window
+        )
         for row in (
             *(controls.row for controls in self.tracks.values()),
             self.files,
@@ -437,6 +515,7 @@ class Details:
             self.summarize.row,
             self.publish.row,
             self.publish_gitlab.row,
+            self.publish_github.row,
         ):
             expander.add_row(row)
 
@@ -446,7 +525,12 @@ class Details:
         if speakers == list(self.speakers):
             return
         # An expander row only adds at its end: the rows below step out, and back in after them.
-        below = (self.summarize.row, self.publish.row, self.publish_gitlab.row)
+        below = (
+            self.summarize.row,
+            self.publish.row,
+            self.publish_gitlab.row,
+            self.publish_github.row,
+        )
         for row in [*(controls.row for controls in self.speakers.values()), *below]:
             self.expander.remove(row)
         self.speakers = {key: SpeakerControls(view.recording_id, key) for key in speakers}
@@ -476,6 +560,7 @@ class Details:
         self.presets.set_tooltip_text(view.summarize.disabled or None)
         self.publish.display(view.publish)
         self.publish_gitlab.display(view.publish_gitlab)
+        self.publish_github.display(view.publish_github)
 
     def stop_playing(self) -> None:
         for controls in self.tracks.values():
@@ -526,6 +611,7 @@ class HistoryWindow(Adw.ApplicationWindow):
         self.running: dict[str, dict[str, Gio.Subprocess]] = {
             PUBLISH: {},
             PUBLISH_GITLAB: {},
+            PUBLISH_GITHUB: {},
             SUMMARIZE: {},
         }
         # How many runs a recording had when the window started its command for an action
@@ -722,6 +808,7 @@ class HistoryWindow(Adw.ApplicationWindow):
             SUMMARIZE: view.summarize,
             PUBLISH: view.publish,
             PUBLISH_GITLAB: view.publish_gitlab,
+            PUBLISH_GITHUB: view.publish_github,
         }
         return actions[action]
 
@@ -894,6 +981,7 @@ class HistoryWindow(Adw.ApplicationWindow):
         else:
             command.communicate_utf8_async(None, None, self.models_listed, dialog)
         self.ask_agaric(["--list-spaces"], None, self.spaces_listed, dialog)
+        self.ask_glab(None, dialog)
 
     def models_listed(
         self, command: Gio.Subprocess, result: Gio.AsyncResult, dialog: SettingsDialog
@@ -957,12 +1045,40 @@ class HistoryWindow(Adw.ApplicationWindow):
         against = "" if size_limit_gb is None else f" of {size_limit_gb} GB"
         dialog.audio.set_description(f"Kept audio: {kept}{against}.\n\n{AUDIO_LIMITS_NOTE}")
 
-    def save_audio_limits(self, save: Gtk.Button) -> None:
-        """Says what the limits shown would delete at once, and saves them if accepted."""
-        dialog = settings_of(save)
-        over = store.recordings_over_limits(
-            now(), chosen_limit(*dialog.age), chosen_limit(*dialog.size)
+    def limits_changed(self, row: Adw.PreferencesRow, _property: object) -> None:
+        settings_of(row).show_unsaved_limits()
+
+    def settings_closing(self, dialog: SettingsDialog) -> None:
+        """Asks whether to save the audio limits shown, or discard them, before closing."""
+        question = Adw.AlertDialog(
+            heading="Unsaved audio limits",
+            body=UNSAVED_LIMITS,
+            default_response="save",
+            close_response="cancel",
         )
+        question.add_response("cancel", "Cancel")
+        question.add_response("discard", "Discard")
+        question.add_response("save", "Save")
+        question.set_response_appearance("discard", Adw.ResponseAppearance.DESTRUCTIVE)
+        question.set_response_appearance("save", Adw.ResponseAppearance.SUGGESTED)
+        question.choose(dialog, None, self.closing_chosen, dialog)
+
+    def closing_chosen(
+        self, question: Adw.AlertDialog, result: Gio.AsyncResult, dialog: SettingsDialog
+    ) -> None:
+        chosen = question.choose_finish(result)
+        if chosen == "discard":
+            dialog.force_close()
+        elif chosen == "save":
+            self.warn_limits(dialog, closing=True)
+
+    def save_audio_limits(self, save: Gtk.Button) -> None:
+        self.warn_limits(settings_of(save), closing=False)
+
+    def warn_limits(self, dialog: SettingsDialog, *, closing: bool) -> None:
+        """Says what the limits shown would delete at once, and saves them if accepted; closing,
+        the Settings close once they are saved."""
+        over = store.recordings_over_limits(now(), *dialog.chosen_limits())
         size = GLib.format_size(sum(store.audio_size(recording_id) for recording_id in over))
         warning = Adw.AlertDialog(
             heading="Save the audio limits?",
@@ -975,17 +1091,26 @@ class HistoryWindow(Adw.ApplicationWindow):
         warning.set_response_appearance(
             "accept", appearance.DESTRUCTIVE if over else appearance.SUGGESTED
         )
-        warning.choose(dialog, None, self.limits_accepted, dialog)
+        warning.choose(dialog, None, self.limits_accepted, dialog, closing)
 
     def limits_accepted(
-        self, warning: Adw.AlertDialog, result: Gio.AsyncResult, dialog: SettingsDialog
+        self,
+        warning: Adw.AlertDialog,
+        result: Gio.AsyncResult,
+        dialog: SettingsDialog,
+        closing: bool,  # noqa: FBT001 - GTK hands a callback its arguments by position
     ) -> None:
         if warning.choose_finish(result) != "accept":
             return
-        settings.set_audio_limits(chosen_limit(*dialog.age), chosen_limit(*dialog.size))
+        settings.set_audio_limits(*dialog.chosen_limits())
         self.delete_audio_over_limits()
         self.show_kept_audio(dialog)
-        dialog.add_toast(Adw.Toast(title=AUDIO_LIMITS_SAVED))
+        dialog.show_unsaved_limits()
+        if closing:
+            dialog.close()
+            self.say(AUDIO_LIMITS_SAVED)
+        else:
+            dialog.add_toast(Adw.Toast(title=AUDIO_LIMITS_SAVED))
 
     def recent_chosen(self, row: Adw.SpinRow, _property: object) -> None:
         settings.set_recent_in_menu(int(row.get_value()))
@@ -1045,12 +1170,54 @@ class HistoryWindow(Adw.ApplicationWindow):
         if text.strip():
             self.ask_agaric(["--token-from-stdin"], text, self.spaces_listed, settings_of(pasted))
 
+    def ask_glab(self, token: str | None, dialog: SettingsDialog) -> None:
+        """Runs `minutas settings gitlab`, handing it the token pasted on its stdin, and shows
+        what it says once it exits: the window never waits on glab."""
+        command = Gio.Subprocess.new(
+            [*MINUTAS, "settings", "gitlab", *([] if token is None else ["--token-from-stdin"])],
+            Gio.SubprocessFlags.STDIN_PIPE
+            | Gio.SubprocessFlags.STDOUT_SILENCE
+            | Gio.SubprocessFlags.STDERR_PIPE,
+        )
+        command.communicate_utf8_async(token, None, self.glab_answered, dialog)
+
+    def glab_answered(
+        self, command: Gio.Subprocess, result: Gio.AsyncResult, dialog: SettingsDialog
+    ) -> None:
+        _, _, said = command.communicate_utf8_finish(result)
+        # A group's description is always markup; what glab says is not.
+        shown = GLib.markup_escape_text(last_line(said or "") or GLAB_SILENT)
+        dialog.gitlab.set_description(f"{shown}\n\n{GITLAB_NOTE}")
+
+    def gitlab_link_applied(self, row: Adw.EntryRow) -> None:
+        """Saves the default link, once GitLab can post to it; an empty one clears it."""
+        dialog = settings_of(row)
+        typed = row.get_text().strip()
+        target = gitlab.parse_link(typed)
+        if typed and target is None:
+            dialog.add_toast(Adw.Toast(title=NOT_A_LINK))
+            return
+        link = None if target is None else target.link
+        settings.set_gitlab_link(link)
+        row.set_text(link or "")
+        # The login shown is the server's of the link.
+        self.ask_glab(None, dialog)
+
+    def gitlab_token_pasted(self, pasted: Adw.PasswordEntryRow) -> None:
+        text = pasted.get_text()
+        # Gone once taken: a token is never shown back.
+        pasted.set_text("")
+        if text.strip():
+            self.ask_glab(text, settings_of(pasted))
+
     def next_step(self, _button: Gtk.Button, recording_id: str, action: str) -> None:
         shown = self.shown(recording_id, action)
         if action == PUBLISH:
             self.publish(recording_id)
         elif action == PUBLISH_GITLAB:
-            self.ask_link(recording_id, shown.link or "")
+            self.ask_link(recording_id, shown.link or settings.gitlab_link() or "")
+        elif action == PUBLISH_GITHUB:
+            self.ask_github_link(recording_id, shown.link or settings.github_link() or "")
         elif action == SUMMARIZE:
             self.summarize(recording_id, str(shown.prompt))
         elif shown.cancels is not None:
@@ -1140,6 +1307,56 @@ class HistoryWindow(Adw.ApplicationWindow):
             self.start(
                 PUBLISH_GITLAB, recording_id, ["publish", "gitlab", recording_id, target.link]
             )
+
+    def ask_github_link(self, recording_id: str, link: str) -> None:
+        """Asks where to publish to GitHub, saying what the link typed will get, and where the
+        transcript goes."""
+        entry = Gtk.Entry(text=link, activates_default=True)
+        dialog = Adw.AlertDialog(
+            heading="Publish to GitHub",
+            extra_child=entry,
+            default_response="publish",
+            close_response="cancel",
+        )
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("publish", "Publish")
+        dialog.set_response_appearance("publish", Adw.ResponseAppearance.SUGGESTED)
+        entry.connect("changed", self.github_link_typed)
+        dialog.choose(self, None, self.github_link_chosen, entry, recording_id)
+        # Once presented: until then the entry is not inside the dialog.
+        self.github_link_typed(entry)
+
+    def github_link_typed(self, entry: Gtk.Entry) -> None:
+        # The dialog is found, not held: a handler that held it would keep it for good.
+        dialog = cast("Adw.AlertDialog", entry.get_ancestor(Adw.AlertDialog))
+        typed = entry.get_text().strip()
+        target = github.parse_link(typed)
+        if target is not None:
+            said = target.plan
+        else:
+            said = NOT_A_GITHUB_LINK if typed else ASK_GITHUB_LINK
+        dialog.set_body(f"{said}\n\n{GIST_NOTE}")
+        dialog.set_response_enabled("publish", target is not None)
+
+    def github_link_chosen(
+        self, dialog: Adw.AlertDialog, result: Gio.AsyncResult, entry: Gtk.Entry, recording_id: str
+    ) -> None:
+        target = github.parse_link(entry.get_text())
+        if dialog.choose_finish(result) == "publish" and target is not None:
+            self.start(
+                PUBLISH_GITHUB, recording_id, ["publish", "github", recording_id, target.link]
+            )
+
+    def github_link_set(self, entry: Adw.EntryRow) -> None:
+        """Saves the default GitHub link typed, or clears it when empty; refuses another."""
+        dialog = settings_of(entry)
+        typed = entry.get_text().strip()
+        target = github.parse_link(typed)
+        if typed and target is None:
+            dialog.github.set_description(NOT_A_GITHUB_LINK)
+            return
+        settings.set_github_link(None if target is None else target.link)
+        dialog.github.set_description(GITHUB_LINK_NOTE)
 
     def list_presets(self, presets: Gtk.MenuButton, recording_id: str) -> None:
         """The built-in and saved presets, Custom, and the saved ones to delete."""

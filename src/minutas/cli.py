@@ -13,7 +13,17 @@ from typing import cast
 
 from keyring.errors import KeyringError
 
-from minutas import agaric, calendar, gitlab, recorder, settings, store, summarizer, worker
+from minutas import (
+    agaric,
+    calendar,
+    github,
+    gitlab,
+    recorder,
+    settings,
+    store,
+    summarizer,
+    worker,
+)
 
 
 def now() -> datetime:
@@ -189,6 +199,18 @@ def publish_gitlab(args: argparse.Namespace) -> int:
     return 0 if gitlab.publish(recording_id, now(), target) else 1
 
 
+def publish_github(args: argparse.Namespace) -> int:
+    recording_id = args.recording_id
+    if not store.is_recording(recording_id):
+        return fail(f"No recording {recording_id}.")
+    target = github.parse_link(args.link)
+    if target is None:
+        return fail(f"Not a GitHub issue or repository link: {args.link}")
+    if not (store.recording_dir(recording_id) / store.SUMMARY).is_file():
+        return fail(f"{recording_id} has no summary yet: summarize it first.")
+    return 0 if github.publish(recording_id, now(), target) else 1
+
+
 def summarize(args: argparse.Namespace) -> int:
     recording_id = args.recording_id
     if not store.is_recording(recording_id):
@@ -257,6 +279,27 @@ def settings_agaric(args: argparse.Namespace) -> int:
     return 0
 
 
+def settings_gitlab(args: argparse.Namespace) -> int:
+    problem = gitlab.glab_problem()
+    if problem:
+        return fail(problem)
+    host = gitlab.login_host()
+    try:
+        if args.token_from_stdin:
+            # From stdin, never from the arguments, which the shell's history keeps.
+            token = sys.stdin.read().strip()
+            if not token:
+                return fail(
+                    "No token in that: paste a GitLab personal access token with the api scope."
+                )
+            gitlab.log_in(host, token)
+        said = gitlab.login_status(host)
+    except gitlab.GitLabError as error:
+        return fail(str(error))
+    sys.stderr.write(f"{said}\n")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="minutas",
@@ -318,6 +361,14 @@ def build_parser() -> argparse.ArgumentParser:
         "link", help="an issue to comment on, or a project to open an issue in"
     )
     gitlab_command.set_defaults(handler=publish_gitlab)
+    github_command = publish_commands.add_parser(
+        "github", help="post a recording's summary to GitHub, its transcript in a secret gist"
+    )
+    github_command.add_argument("recording_id")
+    github_command.add_argument(
+        "link", help="an issue to comment on, or a repository to open an issue in"
+    )
+    github_command.set_defaults(handler=publish_github)
 
     settings_command = commands.add_parser(
         "settings", help="open the Settings, or change one with a command"
@@ -339,6 +390,18 @@ def build_parser() -> argparse.ArgumentParser:
         " token may use only one",
     )
     agaric_settings.set_defaults(handler=settings_agaric)
+    gitlab_settings = settings_commands.add_parser(
+        "gitlab",
+        help="say whether glab is logged in to the default GitLab link's server, gitlab.com"
+        " without one",
+    )
+    gitlab_settings.add_argument(
+        "--token-from-stdin",
+        action="store_true",
+        help="read an access token from stdin and hand it to glab, which keeps it in the keyring,"
+        " first",
+    )
+    gitlab_settings.set_defaults(handler=settings_gitlab)
     return parser
 
 
