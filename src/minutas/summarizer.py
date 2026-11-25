@@ -16,6 +16,7 @@ goes unread with the rest of that file, so Claude Code has to be logged in with
 managed-mcp.json, Claude Code refuses --strict-mcp-config and the run fails.
 """
 
+import functools
 import json
 import os
 import re
@@ -233,9 +234,16 @@ def claude_problem() -> str:
     path = shutil.which(CLAUDE)
     if path is None:
         return CLAUDE_MISSING
+    # Every refresh of the window asks: the claude found is run again only once it changes.
+    return claude_version_problem(path, Path(path).stat().st_mtime_ns)
+
+
+@functools.cache
+def claude_version_problem(path: str, _changed: int) -> str:
+    """claude_problem's answer for the claude at path as it was at that change."""
     try:
-        # The path just found, never a shell string. Every refresh of the window asks, so a claude
-        # that never answers must not hold it.
+        # The path just found, never a shell string. A claude that never answers must not hold
+        # the window.
         said = subprocess.run(  # noqa: S603
             [path, "--version"],
             capture_output=True,
