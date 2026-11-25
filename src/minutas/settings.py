@@ -18,6 +18,8 @@ AUDIO_SIZE_LIMIT_GB = 5
 # failed run only for those, so it lists one at least.
 RECENT_IN_MENU = 5
 MOST_RECENT_IN_MENU = 20
+# The glossary's name among the vocabularies, which no other vocabulary's can be.
+GLOSSARY = ""
 
 
 def settings_path() -> Path:
@@ -143,6 +145,29 @@ def summary_context() -> list[str]:
 
 def set_summary_context(names: list[str]) -> None:
     save({"summary_context": names})
+
+
+def vocabularies() -> list[str]:
+    """The names of the vocabularies every transcription boosts, GLOSSARY for the glossary."""
+    return cast("list[str]", load().get("vocabularies", [GLOSSARY]))
+
+
+def set_vocabularies(names: list[str]) -> None:
+    save({"vocabularies": names})
+
+
+def bad_preset_name(name: str) -> bool:
+    """Whether the name can't be a context preset's or a vocabulary's, which names its file."""
+    # A slash would put the file in another folder, and a dot first hide it in this one.
+    return not name or "/" in name or name.startswith(".")
+
+
+def preset_names(folder: Path, suffix: str) -> list[str]:
+    """The names of the folder's context presets or vocabularies, in alphabetical order."""
+    files = folder.glob(f"*{suffix}")
+    names = (file.stem for file in files if file.is_file())
+    # pathlib's glob, unlike the shell's, finds hidden files too.
+    return sorted((name for name in names if not bad_preset_name(name)), key=str.casefold)
 
 
 def gitlab_link() -> str | None:

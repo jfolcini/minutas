@@ -218,7 +218,7 @@ def summarize(args: argparse.Namespace) -> int:
     prompt = args.prompt.strip()
     if not prompt:
         return fail("A prompt can't be blank.")
-    bad = next((name for name in args.context if summarizer.bad_context_name(name)), None)
+    bad = next((name for name in args.context if settings.bad_preset_name(name)), None)
     if bad is not None:
         return fail(f"No context preset can be named {bad}.")
     if not (store.recording_dir(recording_id) / summarizer.TRANSCRIPT).is_file():

@@ -270,3 +270,28 @@ def test_set_summary_context_keeps_it_with_the_other_settings_in_its_order() -> 
 
     assert settings.summary_context() == ["Team glossary", "Project"]
     assert settings.summary_model() == "swe-2-high"
+
+
+def test_the_glossary_is_the_only_vocabulary_used_until_others_are_chosen() -> None:
+    assert settings.vocabularies() == [settings.GLOSSARY]
+
+
+def test_set_vocabularies_keeps_them_with_the_other_settings() -> None:
+    settings.set_summary_model("swe-2-high")
+
+    settings.set_vocabularies(["Atlas"])
+
+    assert settings.vocabularies() == ["Atlas"]
+    assert settings.summary_model() == "swe-2-high"
+
+
+@pytest.mark.parametrize(
+    ("name", "bad"),
+    [("", True), (".hidden", True), ("..", True), ("a/b", True), ("Team glossary", False)],
+)
+def test_a_preset_name_is_bad_when_empty_hidden_or_holding_a_slash(name: str, *, bad: bool) -> None:
+    assert settings.bad_preset_name(name) is bad
+
+
+def test_the_glossary_is_no_preset_name() -> None:
+    assert settings.bad_preset_name(settings.GLOSSARY) is True

@@ -18,7 +18,7 @@ from pathlib import Path
 from types import FrameType
 from typing import IO, TypedDict, cast
 
-from minutas import store, transcriber
+from minutas import settings, store, transcriber
 
 UNIT = "minutas-transcribe.service"
 ACTION = "transcribe"
@@ -30,11 +30,12 @@ CANCEL_SIGNAL = signal.SIGUSR1
 STOP_TRANSCRIBER = ["systemctl", "--user", "kill", f"--signal={CANCEL_SIGNAL.name}", UNIT]
 SPEECH_MISSING = "Speech environment not found; run install.sh"
 OUT_OF_MEMORY = "Transcription ran out of its memory limit"
+VOCABULARY_UNREADABLE = "Can't read the vocabulary {path}: fix it in Settings, or switch it off"
 # A runaway transcription is killed at its own limit instead of swapping the desktop to death,
 # and its run fails with OUT_OF_MEMORY. No MemoryHigh: below MemoryMax it throttles the process
 # so it never reaches the kill and the queue stalls behind it.
 MEMORY_LIMITS = ("MemoryMax=6G", "MemorySwapMax=512M")
-# What the worker's unit must see as its caller does: the data and the glossary.
+# What the worker's unit must see as its caller does: the data, the settings and the vocabularies.
 FORWARDED_ENVIRONMENT = ("XDG_DATA_HOME", "XDG_CONFIG_HOME")
 # A worker that found the queue empty is gone, and one just started holds its lock, within a
 # fraction of a second.
@@ -74,11 +75,36 @@ def glossary() -> Path:
     return Path(config_home) / "minutas" / "glossary.txt"
 
 
+def vocabulary_dir() -> Path:
+    return glossary().parent / "vocabulary"
+
+
+def vocabulary_file(name: str) -> Path:
+    return glossary() if name == settings.GLOSSARY else vocabulary_dir() / f"{name}.txt"
+
+
+def vocabulary_names() -> list[str]:
+    """Every vocabulary's name but the glossary's, in alphabetical order."""
+    return settings.preset_names(vocabulary_dir(), ".txt")
+
+
+def vocabulary_words(file: Path) -> list[str]:
+    try:
+        return file.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        raise WorkerError(VOCABULARY_UNREADABLE.format(path=file)) from None
+
+
 def word_list(recording_id: str) -> list[str]:
-    """The phrases the transcriber boosts: the meeting's attendees, then the glossary."""
+    """The phrases the transcriber boosts, each once: the meeting's attendees, then the words of
+    the glossary and of every other vocabulary used, in alphabetical order, but those deleted."""
     attendees = store.load_recording(recording_id).get("attendees", [])
-    listed = glossary().read_text(encoding="utf-8").splitlines() if glossary().is_file() else []
-    return [*attendees, *listed]
+    used = settings.vocabularies()
+    names = [name for name in [settings.GLOSSARY, *vocabulary_names()] if name in used]
+    files = [file for file in map(vocabulary_file, names) if file.is_file()]
+    listed = [line for file in files for line in vocabulary_words(file)]
+    phrases = (phrase.strip() for phrase in [*attendees, *listed])
+    return list(dict.fromkeys(phrase for phrase in phrases if phrase))
 
 
 def open_worker_lock() -> IO[str]:
@@ -282,7 +308,10 @@ def transcribe(recording_id: str, index: int) -> Outcome:
     # environment's own with builds for Ubuntu's Python. -P keeps the file's own folder off the
     # path, where minutas.calendar would take the standard library's place.
     command = [str(python), "-P", transcriber.__file__, str(folder)]
-    words = word_list(recording_id)
+    try:
+        words = word_list(recording_id)
+    except WorkerError as error:
+        return failed(str(error))
     if words:
         (folder / WORDS).write_text("".join(f"{word}\n" for word in words), encoding="utf-8")
         command += ["--words", str(folder / WORDS)]

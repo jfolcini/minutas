@@ -480,21 +480,11 @@ def test_the_chosen_context_is_what_is_ticked_in_its_order_without_a_deleted_one
     assert summarizer.chosen_context() == ["Project", "Team"]
 
 
-@pytest.mark.parametrize(
-    ("name", "bad"),
-    [("", True), (".hidden", True), ("..", True), ("a/b", True), ("Team glossary", False)],
-)
-def test_a_context_name_is_bad_when_empty_hidden_or_holding_a_slash(
-    name: str, *, bad: bool
-) -> None:
-    assert summarizer.bad_context_name(name) is bad
-
-
 @given(st.text())
 def test_a_context_name_that_is_not_refused_names_a_markdown_file_right_in_the_folder(
     name: str,
 ) -> None:
-    if summarizer.bad_context_name(name):
+    if settings.bad_preset_name(name):
         return
     file = summarizer.context_file(name)
     assert (file.parent, file.name) == (settings.settings_path().parent / "context", f"{name}.md")

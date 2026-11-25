@@ -14,6 +14,7 @@ import shutil
 import sys
 from collections.abc import Callable, Collection, Mapping, Sequence
 from datetime import UTC, datetime
+from functools import partial
 from importlib.metadata import metadata
 from pathlib import Path
 from typing import cast, override
@@ -91,8 +92,15 @@ DEVINS_DEFAULT = "Devin's default"
 ASKING_DEVIN = "Asking Devin for the models your account can use…"
 BUILT_IN_SKILL = "Built-in: meeting notes"
 VOCABULARY_NOTE = (
-    "Names, products and jargon to listen for, one per line, besides each meeting's attendees; "
-    "used from the next transcription, or Run again"
+    "Names, products and jargon to listen for, one per line, besides each meeting's attendees. "
+    "The vocabularies switched on are used from the next transcription, or Run again. Keep them "
+    "to words your meetings use: a long list of common words can make them heard where they "
+    "weren't said."
+)
+NEW_VOCABULARY_NOTE = "Its file then opens in the text editor: one word or phrase a line."
+VOCABULARY_TRASH_WARNING = (
+    "Its file goes to the Trash, where it can be restored. Transcripts already written stay as "
+    "they are."
 )
 CONTEXT_NOTE = (
     "Glossaries, background and references a summary can rely on, a Markdown file each, ticked "
@@ -100,8 +108,8 @@ CONTEXT_NOTE = (
     "so paste references in as text."
 )
 NEW_CONTEXT_NOTE = "Its name in the Summarize menu. Its file then opens in the text editor."
-CONTEXT_NAME_BAD = "A context's name can't start with a dot or hold a slash"
-CONTEXT_NAME_TAKEN = "There is a context named {name} already"
+NAME_BAD = "A {kind}'s name can't start with a dot or hold a slash"
+NAME_TAKEN = "There is a {kind} named {name} already"
 CONTEXT_TRASH_WARNING = (
     "Its file goes to the Trash, where it can be restored. Summaries already written stay as "
     "they are."
@@ -199,6 +207,18 @@ def last_line(said: str) -> str:
     return lines[-1].strip() if lines else ""
 
 
+def vocabulary_row(title: str, name: str, window: "HistoryWindow") -> Adw.ActionRow:
+    row = text_row(title)
+    row.add_suffix(button("Open", window.open_vocabulary, name))
+    if name != settings.GLOSSARY:
+        row.add_suffix(button("Delete", window.ask_to_delete_vocabulary, name))
+    used = Gtk.Switch(active=name in settings.vocabularies(), valign=Gtk.Align.CENTER)
+    used.connect("notify::active", window.vocabulary_switched, name)
+    row.add_suffix(used)
+    row.set_activatable_widget(used)
+    return row
+
+
 class SpaceRow(Adw.ComboRow):
     """The spaces the agent may use, by name, the one it publishes to chosen; shown once Agaric
     has listed any."""
@@ -253,11 +273,6 @@ class SettingsDialog(Adw.PreferencesDialog):
         self.built_in = button("Use built-in", window.use_built_in_skill)
         self.skill.add_suffix(self.built_in)
         self.show_skill()
-        self.vocabulary = Adw.ActionRow(title="Vocabulary", subtitle=VOCABULARY_NOTE)
-        self.vocabulary.add_suffix(button("Open", window.open_vocabulary))
-        transcription = Adw.PreferencesGroup(title="Transcription")
-        transcription.add(self.vocabulary)
-
         summary = Adw.PreferencesGroup(title="Summary")
         for row in (self.summarizer, self.model, self.effort, self.skill):
             summary.add(row)
@@ -296,7 +311,7 @@ class SettingsDialog(Adw.PreferencesDialog):
 
         page = Adw.PreferencesPage()
         for group in (
-            transcription,
+            self.transcription_group(window),
             summary,
             self.context_group(window),
             self.agaric,
@@ -327,6 +342,28 @@ class SettingsDialog(Adw.PreferencesDialog):
         group = Adw.PreferencesGroup(title="Top-bar menu")
         group.add(self.recent)
         return group
+
+    def transcription_group(self, window: "HistoryWindow") -> Adw.PreferencesGroup:
+        """The glossary, then the other vocabularies, each with whether it is used, Open and,
+        but for the glossary, Delete; and New… to make one."""
+        self.transcription = Adw.PreferencesGroup(
+            title="Transcription", description=VOCABULARY_NOTE
+        )
+        self.transcription.set_header_suffix(button("New…", window.new_vocabulary))
+        self.vocabulary = vocabulary_row("Vocabulary", settings.GLOSSARY, window)
+        self.transcription.add(self.vocabulary)
+        self.vocabulary_rows: list[Adw.ActionRow] = []
+        self.show_vocabularies(window)
+        return self.transcription
+
+    def show_vocabularies(self, window: "HistoryWindow") -> None:
+        for row in self.vocabulary_rows:
+            self.transcription.remove(row)
+        self.vocabulary_rows = [
+            vocabulary_row(name, name, window) for name in worker.vocabulary_names()
+        ]
+        for row in self.vocabulary_rows:
+            self.transcription.add(row)
 
     def context_group(self, window: "HistoryWindow") -> Adw.PreferencesGroup:
         """The context presets, each with Open and Delete, and New… to make one."""
@@ -1115,12 +1152,38 @@ class HistoryWindow(Adw.ApplicationWindow):
     def open_skill(self, _button: Gtk.Button) -> None:
         self.open(Gio.File.new_for_path(settings.summary_skill() or str(summarizer.BUILT_IN_SKILL)))
 
-    def open_vocabulary(self, _button: Gtk.Button) -> None:
+    def open_vocabulary(self, _button: Gtk.Button, name: str) -> None:
         # The text editor opens a file that exists: the first time, an empty one.
-        glossary = worker.glossary()
-        glossary.parent.mkdir(parents=True, exist_ok=True)
-        glossary.touch()
-        self.open(Gio.File.new_for_path(str(glossary)))
+        file = worker.vocabulary_file(name)
+        file.parent.mkdir(parents=True, exist_ok=True)
+        file.touch()
+        self.open(Gio.File.new_for_path(str(file)))
+
+    def new_vocabulary(self, new: Gtk.Button) -> None:
+        self.ask_name(
+            "New vocabulary", "", self.create_vocabulary, settings_of(new), body=NEW_VOCABULARY_NOTE
+        )
+
+    def create_vocabulary(self, dialog: SettingsDialog, name: str) -> None:
+        """Makes the vocabulary's file, empty and used, and opens it in the text editor."""
+        if self.created_preset(dialog, "vocabulary", name, worker.vocabulary_file(name)):
+            used = [used for used in settings.vocabularies() if used != name]
+            settings.set_vocabularies([*used, name])
+            dialog.show_vocabularies(self)
+
+    def vocabulary_switched(self, switch: Gtk.Switch, _property: object, name: str) -> None:
+        used = [used for used in settings.vocabularies() if used != name]
+        settings.set_vocabularies([*used, name] if switch.get_active() else used)
+
+    def ask_to_delete_vocabulary(self, delete: Gtk.Button, name: str) -> None:
+        dialog = settings_of(delete)
+        trashed = partial(self.vocabulary_trashed, dialog, name)
+        file = worker.vocabulary_file(name)
+        self.ask_to_trash_preset(dialog, "vocabulary", VOCABULARY_TRASH_WARNING, file, trashed)
+
+    def vocabulary_trashed(self, dialog: SettingsDialog, name: str) -> None:
+        settings.set_vocabularies([used for used in settings.vocabularies() if used != name])
+        dialog.show_vocabularies(self)
 
     def new_context(self, new: Gtk.Button) -> None:
         self.ask_name(
@@ -1129,52 +1192,77 @@ class HistoryWindow(Adw.ApplicationWindow):
 
     def create_context(self, dialog: SettingsDialog, name: str) -> None:
         """Makes the context preset's file, empty, and opens it in the text editor."""
-        if summarizer.bad_context_name(name):
-            dialog.add_toast(Adw.Toast(title=CONTEXT_NAME_BAD))
-            return
-        file = summarizer.context_file(name)
-        try:
-            file.parent.mkdir(parents=True, exist_ok=True)
-            file.touch(exist_ok=False)
-        except FileExistsError:
-            said = CONTEXT_NAME_TAKEN.format(name=name)
-        except OSError as error:
-            said = f"Can't create it: {error.strerror}"
-        else:
+        if self.created_preset(dialog, "context", name, summarizer.context_file(name)):
             dialog.show_context(self)
-            self.open(Gio.File.new_for_path(str(file)))
-            return
-        dialog.add_toast(Adw.Toast(title=said, use_markup=False))
 
     def open_context(self, _button: Gtk.Button, name: str) -> None:
         self.open(Gio.File.new_for_path(str(summarizer.context_file(name))))
 
     def ask_to_delete_context(self, delete: Gtk.Button, name: str) -> None:
         dialog = settings_of(delete)
+        trashed = partial(self.context_trashed, dialog, name)
+        file = summarizer.context_file(name)
+        self.ask_to_trash_preset(dialog, "context", CONTEXT_TRASH_WARNING, file, trashed)
+
+    def context_trashed(self, dialog: SettingsDialog, name: str) -> None:
+        settings.set_summary_context([kept for kept in settings.summary_context() if kept != name])
+        dialog.show_context(self)
+
+    def created_preset(self, dialog: SettingsDialog, kind: str, name: str, file: Path) -> bool:
+        """Makes a context preset's or a vocabulary's file, empty, and opens it in the text
+        editor; else says why not."""
+        if settings.bad_preset_name(name):
+            said = NAME_BAD.format(kind=kind)
+        else:
+            try:
+                file.parent.mkdir(parents=True, exist_ok=True)
+                file.touch(exist_ok=False)
+            except FileExistsError:
+                said = NAME_TAKEN.format(kind=kind, name=name)
+            except OSError as error:
+                said = f"Can't create it: {error.strerror}"
+            else:
+                self.open(Gio.File.new_for_path(str(file)))
+                return True
+        dialog.add_toast(Adw.Toast(title=said, use_markup=False))
+        return False
+
+    def ask_to_trash_preset(
+        self,
+        dialog: SettingsDialog,
+        kind: str,
+        warning: str,
+        file: Path,
+        trashed: Callable[[], None],
+    ) -> None:
+        """Asks before moving a context preset's or a vocabulary's file to the Trash, and once it
+        is there, has the rest done."""
         question = Adw.AlertDialog(
-            heading="Move the context to the Trash?",
-            body=CONTEXT_TRASH_WARNING,
-            close_response="cancel",
+            heading=f"Move the {kind} to the Trash?", body=warning, close_response="cancel"
         )
         question.add_response("cancel", "Cancel")
         question.add_response("trash", "Move to Trash")
         question.set_response_appearance("trash", Adw.ResponseAppearance.DESTRUCTIVE)
-        question.choose(dialog, None, self.context_trash_chosen, dialog, name)
+        question.choose(dialog, None, self.preset_trash_chosen, dialog, file, trashed)
 
-    def context_trash_chosen(
-        self, question: Adw.AlertDialog, result: Gio.AsyncResult, dialog: SettingsDialog, name: str
+    def preset_trash_chosen(
+        self,
+        question: Adw.AlertDialog,
+        result: Gio.AsyncResult,
+        dialog: SettingsDialog,
+        file: Path,
+        trashed: Callable[[], None],
     ) -> None:
         if question.choose_finish(result) != "trash":
             return
         try:
             # Never deleted instead, whatever the trash says: the person's notes are theirs.
-            Gio.File.new_for_path(str(summarizer.context_file(name))).trash(None)
+            Gio.File.new_for_path(str(file)).trash(None)
         except GLib.Error as error:
             said = f"Can't move it to the Trash: {error.message}"
             dialog.add_toast(Adw.Toast(title=said, use_markup=False))
             return
-        settings.set_summary_context([kept for kept in settings.summary_context() if kept != name])
-        dialog.show_context(self)
+        trashed()
 
     def use_built_in_skill(self, built_in: Gtk.Button) -> None:
         settings.set_summary_skill(None)

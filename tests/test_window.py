@@ -2715,6 +2715,153 @@ def test_vocabulary_opens_the_glossary_and_makes_it_empty_the_first_time(
     dialog.close()
 
 
+def vocabulary_row(dialog: window.SettingsDialog, title: str) -> Adw.ActionRow:
+    [row] = [
+        row
+        for row in descendants(dialog.transcription)
+        if isinstance(row, Adw.ActionRow) and row.get_title() == title
+    ]
+    return row
+
+
+def vocabulary_rows(dialog: window.SettingsDialog) -> list[tuple[str, bool, list[str]]]:
+    """Each vocabulary's title, whether its switch is on, and its buttons."""
+    rows = [row for row in descendants(dialog.transcription) if isinstance(row, Adw.ActionRow)]
+    return [(row.get_title(), used_switch(row).get_active(), list(buttons(row))) for row in rows]
+
+
+def used_switch(row: Adw.ActionRow) -> Gtk.Switch:
+    [switch] = [widget for widget in descendants(row) if isinstance(widget, Gtk.Switch)]
+    return switch
+
+
+def make_vocabulary(*names: str) -> None:
+    for name in names:
+        worker.vocabulary_file(name).parent.mkdir(parents=True, exist_ok=True)
+        worker.vocabulary_file(name).write_text(f"{name}\n")
+
+
+def name_vocabulary(shown: window.HistoryWindow, dialog: window.SettingsDialog, name: str) -> None:
+    press(dialog.transcription, "New…")
+    asked = open_dialog(shown)
+    assert isinstance(asked, Adw.AlertDialog)
+    assert asked.get_heading() == "New vocabulary"
+    [entry] = [widget for widget in descendants(asked) if isinstance(widget, Gtk.Entry)]
+    entry.set_text(name)
+    press(asked, "Save")
+    draw(shown)
+
+
+@pytest.mark.usefixtures("agaric_settings")
+def test_new_makes_a_vocabulary_empty_and_used_and_opens_it_and_each_is_listed_after_the_glossary(
+    history: Callable[[], window.HistoryWindow], desktop_calls: Desktop
+) -> None:
+    shown = history()
+    dialog = open_settings(shown)
+    assert vocabulary_rows(dialog) == [("Vocabulary", True, ["Open"])]
+    assert dialog.transcription.get_description() == window.VOCABULARY_NOTE
+
+    name_vocabulary(shown, dialog, " Client   Atlas ")
+
+    atlas = worker.vocabulary_file("Client Atlas")
+    assert atlas.read_text() == ""
+    assert desktop_calls.opened == [str(atlas)]
+    assert settings.vocabularies() == [settings.GLOSSARY, "Client Atlas"]
+
+    make_vocabulary("Beta")
+    name_vocabulary(shown, dialog, "Zeta")
+
+    assert vocabulary_rows(dialog) == [
+        ("Vocabulary", True, ["Open"]),
+        ("Beta", False, ["Open", "Delete"]),
+        ("Client Atlas", True, ["Open", "Delete"]),
+        ("Zeta", True, ["Open", "Delete"]),
+    ]
+    press(vocabulary_row(dialog, "Beta"), "Open")
+
+    assert desktop_calls.opened[-1] == str(worker.vocabulary_file("Beta"))
+    assert worker.vocabulary_file("Beta").read_text() == "Beta\n"
+    dialog.close()
+
+
+@pytest.mark.parametrize(
+    ("name", "said"),
+    [
+        ("Atlas", "There is a vocabulary named Atlas already"),
+        (".Atlas", "A vocabulary's name can't start with a dot or hold a slash"),
+    ],
+)
+@pytest.mark.usefixtures("agaric_settings")
+def test_new_refuses_a_vocabulary_name_that_is_taken_or_no_file_name_and_says_why(
+    history: Callable[[], window.HistoryWindow], desktop_calls: Desktop, name: str, said: str
+) -> None:
+    make_vocabulary("Atlas")
+    shown = history()
+    dialog = open_settings(shown)
+
+    name_vocabulary(shown, dialog, name)
+
+    assert said in texts(dialog)
+    assert sorted(path.name for path in worker.vocabulary_dir().iterdir()) == ["Atlas.txt"]
+    assert (desktop_calls.opened, settings.vocabularies()) == ([], [settings.GLOSSARY])
+    dialog.close()
+
+
+@pytest.mark.usefixtures("agaric_settings")
+def test_a_vocabulary_switched_off_or_on_is_used_or_not_from_then_on(
+    history: Callable[[], window.HistoryWindow],
+) -> None:
+    make_vocabulary("Atlas", "Beta")
+    shown = history()
+    dialog = open_settings(shown)
+
+    used_switch(dialog.vocabulary).set_active(False)
+    used_switch(vocabulary_row(dialog, "Beta")).set_active(True)
+
+    assert settings.vocabularies() == ["Beta"]
+
+    used_switch(vocabulary_row(dialog, "Atlas")).set_active(True)
+    used_switch(dialog.vocabulary).set_active(True)
+    used_switch(vocabulary_row(dialog, "Beta")).set_active(False)
+
+    assert settings.vocabularies() == ["Atlas", settings.GLOSSARY]
+    dialog.close()
+
+
+@pytest.mark.usefixtures("agaric_settings")
+def test_delete_moves_a_vocabulary_to_the_trash_once_confirmed_and_stops_using_it(
+    history: Callable[[], window.HistoryWindow], desktop_calls: Desktop, tmp_path: Path
+) -> None:
+    make_vocabulary("Atlas", "Beta")
+    settings.set_vocabularies(["Atlas", settings.GLOSSARY, "Beta"])
+    shown = history()
+    dialog = open_settings(shown)
+
+    press(vocabulary_row(dialog, "Atlas"), "Delete")
+    asked = open_dialog(shown)
+    assert isinstance(asked, Adw.AlertDialog)
+    assert asked.get_heading() == "Move the vocabulary to the Trash?"
+    assert asked.get_body() == window.VOCABULARY_TRASH_WARNING
+    press(asked, "Cancel")
+    draw(shown)
+
+    assert desktop_calls.trashed == []
+    assert [title for title, _, _ in vocabulary_rows(dialog)] == ["Vocabulary", "Atlas", "Beta"]
+
+    press(vocabulary_row(dialog, "Atlas"), "Delete")
+    press(open_dialog(shown), "Move to Trash")
+    draw(shown)
+
+    assert [path for path, _ in desktop_calls.trashed] == [str(worker.vocabulary_file("Atlas"))]
+    assert (tmp_path / "Trash" / "Atlas.txt").read_text() == "Atlas\n"
+    assert vocabulary_rows(dialog) == [
+        ("Vocabulary", True, ["Open"]),
+        ("Beta", True, ["Open", "Delete"]),
+    ]
+    assert settings.vocabularies() == [settings.GLOSSARY, "Beta"]
+    dialog.close()
+
+
 def context_rows(dialog: window.SettingsDialog) -> list[str]:
     return [title for title, _ in lines(dialog.context)]
 
