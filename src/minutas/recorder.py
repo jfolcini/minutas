@@ -18,6 +18,9 @@ from minutas import store
 UNIT = "minutas-recorder.service"
 # 16 kHz mono is what every speech model downstream takes, so no bits go above that band.
 CAPTURE_CAPS = "audio/x-raw,rate=16000,channels=1"
+# How often each track says how loud it was, in nanoseconds, for minutas.capture to tell when
+# nothing has been heard for minutes: once a second is plenty for that.
+LEVEL_INTERVAL = 1_000_000_000
 # A runaway pipeline is killed at its limit instead of swapping the desktop to death; the tracks
 # keep what it wrote and the recording is marked incomplete. Neither MemoryHigh nor swap: both
 # would stall capture instead.
@@ -86,6 +89,12 @@ def track_branch(source: list[str], file_name: str) -> list[str]:
     return [
         *source,
         *("!", "audioconvert", "!", "audioresample", "!", CAPTURE_CAPS),
+        # Below hearing, 20 Hz takes out a microphone's constant offset, which the level would
+        # otherwise measure under soft speech. The filter works on floats, Opus on integers.
+        *("!", "audioconvert", "!", "audiocheblimit", "mode=high-pass", "cutoff=20"),
+        *("!", "audioconvert"),
+        # Measures the audio as it passes, holding none of it back.
+        *("!", "level", f"interval={LEVEL_INTERVAL}"),
         *("!", "opusenc", "bitrate=32000", "!", "oggmux"),
         # Unbuffered, so a killed recorder leaves every finished Ogg page on disk.
         *("!", "filesink", "buffer-mode=unbuffered", f"location={file_name}"),

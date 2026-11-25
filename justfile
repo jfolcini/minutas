@@ -91,7 +91,7 @@ mutants:
 
 # Render the README's screenshots of the window into docs/screenshots, from made-up recordings (needs xvfb).
 screenshots:
-    xvfb-run -a -s "-screen 0 2560x5000x24 -nolisten tcp" dbus-run-session -- uv run python scripts/screenshots.py docs/screenshots
+    xvfb-run -a -s "-screen 0 2560x6400x24 -nolisten tcp" dbus-run-session -- uv run python scripts/screenshots.py docs/screenshots
 
 # --- Outer loop --------------------------------------------------------------
 

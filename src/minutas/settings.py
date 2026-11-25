@@ -18,6 +18,10 @@ AUDIO_SIZE_LIMIT_GB = 5
 # failed run only for those, so it lists one at least.
 RECENT_IN_MENU = 5
 MOST_RECENT_IN_MENU = 20
+# How long both tracks are quiet before the top bar reminds that it is still recording, in
+# minutes, until turned off, which saves it as None.
+SILENCE_REMINDER_MINUTES = 5
+LONGEST_SILENCE_REMINDER = 120
 # The glossary's name among the vocabularies, which no other vocabulary's can be.
 GLOSSARY = ""
 
@@ -91,6 +95,17 @@ def recent_in_menu() -> int:
 
 def set_recent_in_menu(count: int) -> None:
     save({"recent_in_menu": count})
+
+
+def silence_reminder_minutes() -> int | None:
+    value = load().get("silence_reminder_minutes", SILENCE_REMINDER_MINUTES)
+    if value is None or (type(value) is int and 1 <= value <= LONGEST_SILENCE_REMINDER):
+        return value
+    return SILENCE_REMINDER_MINUTES
+
+
+def set_silence_reminder_minutes(minutes: int | None) -> None:
+    save({"silence_reminder_minutes": minutes})
 
 
 def echo_cancel() -> bool:

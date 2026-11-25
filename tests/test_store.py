@@ -249,6 +249,8 @@ def test_set_typed_name_fails_for_a_recording_that_is_gone() -> None:
         lambda: store.mark_paused("2026-11-18T13-05-42", START),
         lambda: store.mark_resumed("2026-11-18T13-05-42", START),
         lambda: store.mark_discarded("2026-11-18T13-05-42"),
+        lambda: store.mark_silent("2026-11-18T13-05-42", START),
+        lambda: store.mark_heard("2026-11-18T13-05-42"),
         lambda: store.mark_echo_cancelled("2026-11-18T13-05-42", echo_cancelled=True),
     ],
 )
@@ -595,6 +597,58 @@ def test_status_says_the_active_recording_is_paused_and_for_how_long_it_was() ->
     store.write_status()
 
     assert read_status()["recording"] == {**active, "paused_seconds": 30}
+
+
+def test_a_silence_lasts_until_the_recording_is_heard_again() -> None:
+    recording_id = store.create_recording(START)["id"]
+
+    store.mark_silent(recording_id, START + timedelta(seconds=60))
+
+    assert store.load_recording(recording_id).get("silent_since") == "2026-11-18T13:06:42+00:00"
+
+    store.mark_heard(recording_id)
+
+    assert "silent_since" not in store.load_recording(recording_id)
+
+
+def test_hearing_a_recording_that_was_not_silent_changes_nothing() -> None:
+    recording_id = store.create_recording(START)["id"]
+    before = store.load_recording(recording_id)
+
+    store.mark_heard(recording_id)
+
+    assert store.load_recording(recording_id) == before
+
+
+@pytest.mark.parametrize(
+    "end",
+    [
+        lambda recording_id: store.mark_paused(recording_id, START + timedelta(seconds=90)),
+        lambda recording_id: store.mark_stopped(
+            recording_id, START + timedelta(seconds=90), incomplete=False
+        ),
+    ],
+)
+def test_a_pause_or_a_stop_ends_a_silence(end: Callable[[str], None]) -> None:
+    recording_id = store.create_recording(START)["id"]
+    store.mark_silent(recording_id, START + timedelta(seconds=60))
+
+    end(recording_id)
+
+    assert "silent_since" not in store.load_recording(recording_id)
+
+
+def test_status_says_since_when_the_active_recording_has_been_silent() -> None:
+    recording_id = store.create_recording(START)["id"]
+    store.mark_silent(recording_id, START + timedelta(seconds=60))
+
+    store.write_status()
+
+    assert read_status()["recording"] == {
+        "id": "2026-11-18T13-05-42",
+        "started_at": "2026-11-18T13:05:42+00:00",
+        "silent_since": "2026-11-18T13:06:42+00:00",
+    }
 
 
 def test_status_leaves_the_pauses_out_of_a_recordings_duration() -> None:

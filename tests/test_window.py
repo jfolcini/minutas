@@ -3708,11 +3708,11 @@ def test_the_default_github_link_is_saved_cleared_or_refused_as_typed(
     dialog.close()
 
 
-def limits(dialog: Adw.Dialog) -> dict[str, tuple[Adw.ExpanderRow, Adw.SpinRow]]:
-    """Each limit's switch and value, by the limit's title."""
+def limits(dialog: window.SettingsDialog) -> dict[str, tuple[Adw.ExpanderRow, Adw.SpinRow]]:
+    """Each audio limit's switch and value, by the limit's title."""
     return {
         expander.get_title(): (expander, value)
-        for expander in descendants(dialog)
+        for expander in descendants(dialog.audio)
         if isinstance(expander, Adw.ExpanderRow)
         for value in descendants(expander)
         if isinstance(value, Adw.SpinRow)
@@ -4007,6 +4007,53 @@ def test_the_top_bar_lists_as_many_recordings_as_set_and_follows_at_once(
 
     assert settings.recent_in_menu() == 2
     assert status_ids() == ["2026-11-18T15-05-42", "2026-11-18T14-05-42"]
+    dialog.close()
+
+
+@pytest.mark.parametrize(("saved", "shown_reminder"), [(25, (True, 25.0)), (None, (False, 5.0))])
+@pytest.mark.usefixtures("agaric_settings")
+def test_the_recording_group_comes_first_with_the_saved_silence_reminder(
+    history: Callable[[], window.HistoryWindow],
+    saved: int | None,
+    shown_reminder: tuple[bool, float],
+) -> None:
+    settings.set_silence_reminder_minutes(saved)
+    shown = history()
+
+    dialog = open_settings(shown)
+
+    titles = [
+        group.get_title()
+        for group in descendants(dialog)
+        if isinstance(group, Adw.PreferencesGroup)
+    ]
+    switch, minutes = dialog.silence
+    adjustment = minutes.get_adjustment()
+    assert titles[:2] == ["Recording", "Transcription"]
+    assert (switch.get_title(), minutes.get_title()) == ("Remind after silence", "Minutes")
+    assert switch.get_subtitle() == window.SILENCE_NOTE
+    assert (switch.get_enable_expansion(), minutes.get_value()) == shown_reminder
+    assert (adjustment.get_lower(), adjustment.get_upper()) == (1.0, 120.0)
+    dialog.close()
+
+
+@pytest.mark.usefixtures("agaric_settings")
+def test_the_silence_reminder_is_saved_as_it_changes(
+    history: Callable[[], window.HistoryWindow],
+) -> None:
+    shown = history()
+    dialog = open_settings(shown)
+    switch, minutes = dialog.silence
+    saved: list[int | None] = []
+
+    minutes.set_value(3)
+    saved.append(settings.silence_reminder_minutes())
+    switch.set_enable_expansion(False)
+    saved.append(settings.silence_reminder_minutes())
+    switch.set_enable_expansion(True)
+    saved.append(settings.silence_reminder_minutes())
+
+    assert saved == [3, None, 3]
     dialog.close()
 
 

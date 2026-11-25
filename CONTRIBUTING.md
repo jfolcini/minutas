@@ -18,7 +18,7 @@ uv run just ext setup   # the extension's oxfmt, oxlint, TypeScript and vitest, 
 
 The extension's tools need Node and npm; its tests need GNOME Shell and gjs (`sudo apt install gnome-shell gjs` on Ubuntu 24.04).
 
-The test suite runs the Recordings window for real, on Ubuntu's own PyGObject, GTK and libadwaita and on a display and session bus of its own, never your desktop's, the recorder's pipeline on GStreamer with a test source, and the player on the good plugins' scaletempo: `sudo apt install python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 gir1.2-gstreamer-1.0 gstreamer1.0-plugins-base gstreamer1.0-plugins-good xvfb dbus-daemon`.
+The test suite runs the Recordings window for real, on Ubuntu's own PyGObject, GTK and libadwaita and on a display and session bus of its own, never your desktop's, the recorder's pipeline on GStreamer with a test source, its silence measured by the good plugins' level, and the player on their scaletempo: `sudo apt install python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 gir1.2-gstreamer-1.0 gstreamer1.0-plugins-base gstreamer1.0-plugins-good xvfb dbus-daemon`.
 
 ### The `just` task runner
 
@@ -35,7 +35,7 @@ The test suite runs the Recordings window for real, on Ubuntu's own PyGObject, G
 | Type-check | `just typecheck` | `uv run ty check` |
 | Module boundaries and declared dependencies | `just imports` | `uv run lint-imports && uv run deptry src` |
 | Mutation testing (report only) | `just mutate` | `uv run mutmut run` |
-| Render the README's screenshots into `docs/screenshots` | `just screenshots` | `xvfb-run -a -s "-screen 0 2560x5000x24 -nolisten tcp" dbus-run-session -- uv run python scripts/screenshots.py docs/screenshots` |
+| Render the README's screenshots into `docs/screenshots` | `just screenshots` | `xvfb-run -a -s "-screen 0 2560x6400x24 -nolisten tcp" dbus-run-session -- uv run python scripts/screenshots.py docs/screenshots` |
 | Every hook over the whole tree (CI's lint job) | `just lint` | `uv run prek run --all-files` |
 | Everything CI checks | `just verify` | |
 | Push and confirm the remote has the commit | `just push` | |

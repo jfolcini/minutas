@@ -31,8 +31,8 @@ ME = "Me"
 SUMMARY = "summary.md"
 ACTIONS = ("transcribe", "summarize", "publish_agaric", "publish_gitlab", "publish_github")
 # What status.json says of the recording in progress; the pause keys only once it has been
-# paused, the last only once it has been continued.
-ACTIVE_IN_STATUS = ("id", "started_at", "paused_at", "paused_seconds", "continued")
+# paused, continued only once it has been continued, silent_since only while it is silent.
+ACTIVE_IN_STATUS = ("id", "started_at", "paused_at", "paused_seconds", "continued", "silent_since")
 INTERRUPTED = "interrupted"
 # Where a name can come from, lowest first: a name gives way only to one from as high a source.
 NAME_ORDER = ("default", "summary", "calendar", "typed")
@@ -59,6 +59,9 @@ class Recording(TypedDict):
     discarded: NotRequired[bool]
     # It was stopped and then recorded into again: Discard would take what it held before.
     continued: NotRequired[bool]
+    # When neither track was heard any more, once that has lasted as long as the settings'
+    # silence reminder; there only until either is heard again, it pauses or it stops.
+    silent_since: NotRequired[str]
     # There when echo cancellation was on as it started: whether its mic track is PipeWire's
     # echo-cancelled mic, or the plain one because that did not start.
     echo_cancelled: NotRequired[bool]
@@ -223,6 +226,8 @@ def mark_paused(recording_id: str, paused: datetime) -> None:
     with lock():
         recording = load_recording(recording_id)
         recording["paused_at"] = paused.isoformat(timespec="seconds")
+        # Nothing is heard while paused, which is no silence: it is counted again from the resume.
+        recording.pop("silent_since", None)
         write_json(recording_dir(recording_id) / "recording.json", recording)
 
 
@@ -230,6 +235,20 @@ def mark_resumed(recording_id: str, resumed: datetime) -> None:
     with lock():
         recording = load_recording(recording_id)
         end_pause(recording, resumed)
+        write_json(recording_dir(recording_id) / "recording.json", recording)
+
+
+def mark_silent(recording_id: str, since: datetime) -> None:
+    with lock():
+        recording = load_recording(recording_id)
+        recording["silent_since"] = since.isoformat(timespec="seconds")
+        write_json(recording_dir(recording_id) / "recording.json", recording)
+
+
+def mark_heard(recording_id: str) -> None:
+    with lock():
+        recording = load_recording(recording_id)
+        recording.pop("silent_since", None)
         write_json(recording_dir(recording_id) / "recording.json", recording)
 
 
@@ -271,6 +290,8 @@ def mark_stopped(recording_id: str, stopped: datetime, *, incomplete: bool) -> N
     with lock():
         recording = load_recording(recording_id)
         end_pause(recording, stopped)
+        # A Continue counts silence afresh.
+        recording.pop("silent_since", None)
         recording["stopped_at"] = stopped.isoformat(timespec="seconds")
         recording["incomplete"] = incomplete
         write_json(recording_dir(recording_id) / "recording.json", recording)

@@ -314,6 +314,31 @@ expect "$DIALOG" "'[]'"
 expect "$MENU" '["Record","---","---","Recordings","Settings"]'
 expect "$PANEL" '{"recordingStyle":false,"timerVisible":false}'
 
+echo "== a recording silent as long as the Settings say reminds once that it still records; its Finish finishes it"
+click Record
+expect "$MENU" "[\"Pause\",$RECORDING_ITEMS"
+read -r id at <"$WORK/active"
+silent="{\"version\":1,\"recording\":{\"id\":\"$id\",\"started_at\":\"$at\",\"silent_since\":\"$(date --iso-8601=seconds --date='10 minutes ago')\"},\"recent\":[]}"
+REMINDERS="Main.messageTray.getSources().filter(s => s.title === 'Minutas').flatMap(s => s.notifications).filter(n => n.title === 'Still recording')"
+write_status "$silent"
+expect "$NOTES" "Still recording | Nothing heard for 10 minutes"
+expect "${REMINDERS}[0].urgency" "'3'" # CRITICAL
+# The same silence, read again, reminds of it no more.
+write_status "$silent"
+sleep 1
+expect "$REMINDERS.length" "'1'"
+# The lock screen disables the extension, and the reminder goes with it: a silence still going
+# once it is unlocked reminds again.
+gnome-extensions disable "$UUID"
+expect "$B === undefined" "'true'"
+gnome-extensions enable "$UUID"
+expect "$REMINDERS.length" "'1'"
+stops=$(grep -cxF "record stop" "$WORK/minutas.log")
+ev "${REMINDERS}[0].actions.find(a => a.label === 'Finish').activate()" >/dev/null
+expect "$MENU" '["Record","---","Meeting · '
+check "the reminder's Finish ran minutas record stop" test "$(grep -cxF "record stop" "$WORK/minutas.log")" -eq $((stops + 1))
+expect "$REMINDERS.length" "'0'"
+
 echo "== the recorder dies"
 now=$(date --iso-8601=seconds) id2=$(date +%Y-%m-%dT%H-%M-%S)
 write_status "{\"version\":1,\"recording\":{\"id\":\"$id2\",\"started_at\":\"$now\"},\"recent\":[$meeting]}"

@@ -10,6 +10,7 @@ import {
     parseStatus,
     recentControls,
     recentLabel,
+    silenceReminder,
     transcriptionControl,
 } from '../status.js';
 
@@ -113,6 +114,20 @@ test('parseStatus rejects a continued or a continuable that is not true or false
     expect(rejected).toStrictEqual([null, null, null, null]);
 });
 
+test('parseStatus reads a recording that has been silent', () => {
+    const silent = {...ACTIVE, silent_since: '2026-11-18T13:10:42+01:00'};
+    expect(parseStatus(JSON.stringify({version: 1, recording: silent, recent: []}))).toStrictEqual(
+        status(silent, [])
+    );
+});
+
+test('parseStatus rejects a silence that is not a time', () => {
+    const rejected = ['a while', null, 600].map(silent_since =>
+        parseStatus(JSON.stringify({version: 1, recording: {...ACTIVE, silent_since}, recent: []}))
+    );
+    expect(rejected).toStrictEqual([null, null, null]);
+});
+
 test('parseStatus rejects a half-written file', () => {
     expect(parseStatus('{"version": 1, "recording": {"id": "2026')).toBeNull();
 });
@@ -213,6 +228,52 @@ test('a recorder that died is announced', () => {
 test('a normal stop announces nothing', () => {
     const stopped = entry({id: ACTIVE.id, started_at: ACTIVE.started_at, transcribe: 'queued'});
     expect(notificationsFor(status(ACTIVE, []), status(null, [stopped]))).toStrictEqual([]);
+});
+
+// Silent since 13:10:42 in ACTIVE's time zone, which is 12:10:42 UTC.
+const SILENT = {...ACTIVE, silent_since: '2026-11-18T13:10:42+01:00'};
+const TEN_MINUTES_ON = Date.parse('2026-11-18T12:20:42.400Z');
+
+test('a recording that is not silent reminds of nothing', () => {
+    expect(silenceReminder(status(ACTIVE, []), status(ACTIVE, []), TEN_MINUTES_ON)).toBeNull();
+});
+
+test('a silence reminds that it is still recording, and for how long nothing was heard', () => {
+    expect(silenceReminder(status(ACTIVE, []), status(SILENT, []), TEN_MINUTES_ON)).toStrictEqual({
+        title: 'Still recording',
+        body: 'Nothing heard for 10 minutes',
+    });
+});
+
+test('a silence of a minute says so in the singular', () => {
+    const minuteOn = Date.parse('2026-11-18T12:11:42Z');
+    expect(silenceReminder(status(ACTIVE, []), status(SILENT, []), minuteOn)).toStrictEqual({
+        title: 'Still recording',
+        body: 'Nothing heard for 1 minute',
+    });
+});
+
+test('a silence reminds once, however often the status is read', () => {
+    expect(silenceReminder(status(SILENT, []), status(SILENT, []), TEN_MINUTES_ON)).toBeNull();
+});
+
+test('a silence after sound reminds again', () => {
+    const later = {...ACTIVE, silent_since: '2026-11-18T13:30:42+01:00'};
+    const reminders = [
+        silenceReminder(status(SILENT, []), status(ACTIVE, []), TEN_MINUTES_ON),
+        silenceReminder(status(ACTIVE, []), status(later, []), Date.parse('2026-11-18T12:40:42Z')),
+    ];
+    expect(reminders).toStrictEqual([
+        null,
+        {title: 'Still recording', body: 'Nothing heard for 10 minutes'},
+    ]);
+});
+
+test('a recording silent when the Shell starts reminds of it', () => {
+    expect(silenceReminder(EMPTY_STATUS, status(SILENT, []), TEN_MINUTES_ON)).toStrictEqual({
+        title: 'Still recording',
+        body: 'Nothing heard for 10 minutes',
+    });
 });
 
 test('formatClock shows minutes and seconds, and hours once there are any', () => {
