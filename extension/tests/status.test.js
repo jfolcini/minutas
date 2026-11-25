@@ -114,7 +114,7 @@ test('parseStatus rejects a continued or a continuable that is not true or false
 });
 
 test('parseStatus rejects a half-written file', () => {
-    expect(parseStatus('{"version": 1, "recording": {"id": "2026')).toStrictEqual(null);
+    expect(parseStatus('{"version": 1, "recording": {"id": "2026')).toBeNull();
 });
 
 test('parseStatus rejects another version', () => {
@@ -130,7 +130,7 @@ test('parseStatus rejects a recent entry whose failed is not a list', () => {
         // @ts-expect-error: the invalid entry this test is about
         recent: [entry({failed: 'summarize'})],
     });
-    expect(parseStatus(text)).toStrictEqual(null);
+    expect(parseStatus(text)).toBeNull();
 });
 
 test('parseStatus rejects an unknown transcribe status', () => {
@@ -140,12 +140,12 @@ test('parseStatus rejects an unknown transcribe status', () => {
         // @ts-expect-error: the invalid entry this test is about
         recent: [entry({transcribe: 'done'})],
     });
-    expect(parseStatus(text)).toStrictEqual(null);
+    expect(parseStatus(text)).toBeNull();
 });
 
 test('parseStatus rejects a recording whose start time does not parse', () => {
     const recording = {id: ACTIVE.id, started_at: 'yesterday'};
-    expect(parseStatus(JSON.stringify({version: 1, recording, recent: []}))).toStrictEqual(null);
+    expect(parseStatus(JSON.stringify({version: 1, recording, recent: []}))).toBeNull();
 });
 
 test('a transcript that finished running is announced', () => {

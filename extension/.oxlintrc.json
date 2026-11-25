@@ -9,10 +9,7 @@
   "globals": {
     "console": "readonly",
     "global": "readonly",
-    "print": "readonly",
-    "printerr": "readonly",
-    "TextDecoder": "readonly",
-    "TextEncoder": "readonly"
+    "TextDecoder": "readonly"
   },
   "rules": {
     "eqeqeq": "error",
