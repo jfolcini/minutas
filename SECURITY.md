@@ -34,7 +34,7 @@ Please include the affected commit, a reproduction, and your assessment of the i
 
 ## Automated coverage
 
-Every pull request runs gitleaks, ruff's security rules (bandit's `S` set), ty with every rule an error, zizmor over the workflows, and `pip-audit` over `uv.lock`. CodeQL and the OpenSSF Scorecard run weekly. Dependabot proposes dependency and Actions updates after a seven-day cooldown.
+Every pull request runs gitleaks, ruff's security rules (bandit's `S` set), ty with every rule an error, zizmor over the workflows, `pip-audit` over `uv.lock`, and CodeQL. CodeQL runs weekly over `main` too, as does the OpenSSF Scorecard. Dependabot proposes dependency and Actions updates after a seven-day cooldown.
 
 ## Supply chain
 
