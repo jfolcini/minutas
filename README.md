@@ -17,14 +17,14 @@ Minutas records your work meetings on GNOME, transcribes them with who said what
 - **Summarizes on demand.** Summarize asks the [Devin CLI](https://docs.devin.ai/cli/reference/commands) or [Claude Code](https://code.claude.com/docs/en/cli-reference), whichever you choose, for a summary in English: General, Standup, 1:1, Stakeholder call, or a prompt you type and can save.
 - **Publishes with one button each.** Publish to Agaric files a meeting page with the audio, transcript and summary. Publish to GitLab and Publish to GitHub comment on an issue, or open one, with the summary and a link to the transcript. Every run is kept with its result and a button that opens what it made.
 - **Says what went wrong and how to fix it.** A failed run shows the reason and the fix, with Retry and Details; a warning mark in the top-bar menu and a notification point you to it. Nothing retries on its own.
-- **Keeps the disk in check.** Audio is kept for 30 days or until all of it takes 5 GB, whichever comes first, and only ever deleted once it has been transcribed; both limits can be changed or turned off. Transcripts, summaries and what you published stay.
+- **Keeps the disk in check.** By default audio is kept for 30 days, and the oldest goes sooner if all of it passes 5 GB. It is only ever deleted once it has been transcribed, and both limits can be changed or turned off. Transcripts, summaries and what you published stay.
 
 ## Requirements
 
 - Ubuntu 24.04 or later, with GNOME on Wayland, the default session. Other distributions, macOS and Windows are not supported yet.
 - An x86_64 or ARM64 computer. No graphics card is needed: everything runs on the CPU.
 - A free [Hugging Face](https://huggingface.co/join) account, for the speaker model (see [Before you start](#before-you-start)).
-- For each optional part, its own tool: Agaric 0.26 or newer for Publish to Agaric, [glab](https://gitlab.com/gitlab-org/cli/-/releases) for GitLab, [gh](https://cli.github.com) for GitHub, and the Devin CLI or Claude Code for Summarize. install.sh tells you which are missing and how to get them.
+- For each optional part, its own tool: Agaric, `glab`, `gh`, and the Devin CLI or Claude Code. [What install.sh does](#what-installsh-does) lists them, with the versions; install.sh tells you which are missing and how to get them.
 - Headphones on calls, so the microphone track holds only your voice.
 
 ## Install
@@ -35,7 +35,7 @@ On Ubuntu 24.04 or later, in a terminal:
 git clone https://github.com/jfolcini/minutas && cd minutas && ./install.sh
 ```
 
-It asks for your password, through `sudo`, only if Ubuntu packages are missing, and for a Hugging Face token once. The first run downloads the speech models and their libraries, which takes a while; later runs only fix or update what changed. When it ends, it lists what is left to do, if anything.
+It asks for your password, through `sudo`, only if Ubuntu packages are missing, and for a Hugging Face token once ([Before you start](#before-you-start)). The first run downloads the speech models and their libraries, which takes a while; later runs only fix or update what changed. When it ends, it lists what is left to do, if anything.
 
 > [!IMPORTANT]
 > **Log out and back in once** when install.sh is done. GNOME on Wayland loads a new top-bar extension only at login, so the Minutas microphone appears in the top bar once you log back in. install.sh says so whenever it is needed: after the first install, and after an update that changed the extension.
@@ -52,7 +52,7 @@ The speaker model, pyannote's [speaker-diarization-community-1](https://huggingf
 
 ### What install.sh does
 
-Everything but the Ubuntu packages goes into your home folder, and everything it downloads besides Ubuntu's own packages is pinned to an exact version in the repository and checked against it.
+Everything but the Ubuntu packages goes into your home folder, and everything it downloads besides Ubuntu's own packages is pinned to an exact version in the repository.
 
 | Step | What it puts in place | Why |
 | --- | --- | --- |
@@ -76,7 +76,7 @@ Then it checks for the optional tools, installs none of them, and says what each
 ## First steps
 
 <p>
-  <img src="docs/screenshots/transcribing.png" width="49%" alt="A recording being transcribed: the collapsed row and the Transcribe action both say Transcribing · 62%, with a progress bar and Cancel">
+  <img src="docs/screenshots/transcribing.png" width="49%" alt="A recording being transcribed: the recording's row and the Transcribe action both say Transcribing · 62%, with a progress bar and Cancel">
 </p>
 
 1. **Record.** Open the microphone menu in the top bar and choose Record. A notification reminds you to tell the participants. Choose Stop when the meeting ends.
@@ -85,7 +85,7 @@ Then it checks for the optional tools, installs none of them, and says what each
 4. **Summarize.** Pick a preset from the Summarize menu, or Custom… to type what the summary should cover.
 5. **Publish.** Publish to Agaric, Publish to GitLab or Publish to GitHub. GitLab and GitHub ask for a link: an issue link gets a comment, a project or repository link a new issue. Each run keeps its result and a button that opens it.
 
-A recording's ⋮ menu renames it or moves it to the Trash; its audio files can be played, saved elsewhere or deleted now. The search button, or Ctrl+F, finds recordings by any word in their name, date or transcript, speakers' names included.
+A recording's ⋮ menu renames it or moves it to the Trash; its audio files can be played, saved elsewhere or deleted now. The search button, or Ctrl+F, finds the recordings that hold every word you type in their name, date or transcript, speakers' names included.
 
 ### Settings
 
