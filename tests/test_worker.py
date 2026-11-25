@@ -678,10 +678,12 @@ def test_work_says_why_a_killed_transcriber_stopped_and_goes_on(
 def test_work_finds_the_reason_in_a_long_log_without_holding_it(system: FakeSystem) -> None:
     recording_id = recording()
     put_runs(recording_id, [queued_run(START)])
-    progress = "transcribing turn 1 of 40\n" * 1000
+    # A library's long warnings, a line each.
+    chunk = ("transcribing turn 1 of 40 " * 40 + "\n") * 25
+    chunks = 1000
 
     def chatty(_: list[str], stderr: TextIO) -> int:
-        stderr.writelines(progress for _chunk in range(100))
+        stderr.writelines(chunk for _chunk in range(chunks))
         stderr.write("Out of memory loading the model\n")
         return 1
 
@@ -690,8 +692,11 @@ def test_work_finds_the_reason_in_a_long_log_without_holding_it(system: FakeSyst
     worker.work()
 
     assert store.load_runs(recording_id)[0]["error"] == "Out of memory loading the model"
-    # Read line by line, the long log never sits in memory whole.
-    assert tracemalloc.get_traced_memory()[1] < 1_000_000
+    # Read line by line, the long log never sits in memory whole. The log is large and the bound
+    # loose because the interpreter's table of interned strings grows in one large block at any
+    # time: Python 3.12's pathlib interns every name in a path, and each atomic write names a new
+    # temporary file.
+    assert tracemalloc.get_traced_memory()[1] < len(chunk) * chunks // 3
 
 
 @pytest.mark.usefixtures("speech", "sigterm", "traced")
