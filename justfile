@@ -89,6 +89,10 @@ mutate PATTERN="":
 mutants:
     uv run mutmut browse
 
+# Render the README's screenshots of the window into docs/screenshots, from made-up recordings (needs xvfb).
+screenshots:
+    xvfb-run -a -s "-screen 0 2560x4200x24 -nolisten tcp" dbus-run-session -- uv run python scripts/screenshots.py docs/screenshots
+
 # --- Outer loop --------------------------------------------------------------
 
 # Every hook over the whole tree: CI's lint job.

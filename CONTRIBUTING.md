@@ -35,6 +35,7 @@ The test suite runs the Recordings window for real, on Ubuntu's own PyGObject, G
 | Type-check | `just typecheck` | `uv run ty check` |
 | Module boundaries and declared dependencies | `just imports` | `uv run lint-imports && uv run deptry src` |
 | Mutation testing (report only) | `just mutate` | `uv run mutmut run` |
+| Render the README's screenshots into `docs/screenshots` | `just screenshots` | `xvfb-run -a -s "-screen 0 2560x4200x24 -nolisten tcp" dbus-run-session -- uv run python scripts/screenshots.py docs/screenshots` |
 | Every hook over the whole tree (CI's lint job) | `just lint` | `uv run prek run --all-files` |
 | Everything CI checks | `just verify` | |
 | Push and confirm the remote has the commit | `just push` | |
@@ -51,6 +52,8 @@ The test suite runs the Recordings window for real, on Ubuntu's own PyGObject, G
 - **At commit**, the hooks fix whitespace, formatting and fixable lint findings in place and abort the commit once: re-stage and commit again. They also run ty, typos, ESLint on the extension, the Markdown, shell and workflow linters, and gitleaks.
 - **At push**, the hooks run the test suite with its coverage floor and `pip-audit` over `uv.lock`, and refuse a direct push to `main`.
 - **CI** runs the same hooks (`.github/workflows/_validate.yml`), the tests, the extension's checks, and a link check over the Markdown.
+
+The README's screenshots are the real Recordings window and its Settings, drawn by GTK from made-up recordings that `scripts/screenshots.py` writes into a temporary folder, on a display and session bus of its own: it never reads or writes your recordings, settings or keyring. Run `just screenshots` after a change to what the window shows, and commit the images it rewrites. It needs the window's packages above, and `sudo apt install fonts-cantarell` for GNOME's font.
 
 Coverage is measured with branches, and `pytest` fails under the floor set in `pyproject.toml` (`[tool.coverage.report] fail_under`); on a pull request every changed line must be covered. The tests run in random order (pytest-randomly; rerun a failure with the `--randomly-seed=…` it prints), with a per-test timeout, with every annotation checked at run time by beartype, and with warnings as errors.
 
