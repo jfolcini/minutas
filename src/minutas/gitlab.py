@@ -159,7 +159,9 @@ def login_status(host: str) -> str:
     if result.returncode == 0:
         return f"glab is logged in to {host}."
     refused = re.search(r"API call failed: (.+)", result.stderr)
-    if refused is not None:
+    # A 401 is no token for the host, as a fresh glab has for gitlab.com, or a stale one: either
+    # way a new token is the fix.
+    if refused is not None and ": 401 " not in refused[1]:
         reason = f"glab couldn't sign in to {host}: {refused[1].strip()}"
     else:
         reason = (

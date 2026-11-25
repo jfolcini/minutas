@@ -2367,6 +2367,8 @@ def test_saving_audio_limits_says_what_goes_and_takes_it_once_accepted(
     kept = GLib.format_size(store.audio_size(FIRST))
     assert dialog.audio.get_description() == f"Kept audio: {kept}.\n\n{window.AUDIO_LIMITS_NOTE}"
     assert window.AUDIO_LIMITS_SAVED in texts(dialog)
+    # Saved: nothing is left to save, or to ask about on closing.
+    assert (buttons(dialog.audio)["Save"].get_sensitive(), dialog.get_can_close()) == (False, True)
     dialog.close()
     assert lines(expand(shown, ten_days_old))[2] == ("Microphone", "Deleted")
     assert lines(expand(shown))[4] == ("Audio files", "Kept until 2026-11-25 13:05")

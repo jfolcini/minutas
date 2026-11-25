@@ -818,27 +818,31 @@ LOGIN_REFUSED = (
     "{message: 401 Unauthorized}\n  ✓ Token found: ****\n\n"
     "x could not authenticate to one or more of the configured GitLab instances.\n"
 )
+OUT_OF_REACH = (
+    f'{HOST}\n  x {HOST}: API call failed: Get "https://{HOST}/api/v4/user": dial tcp: lookup '
+    f"{HOST}: no such host\n\n"
+    "x could not authenticate to one or more of the configured GitLab instances.\n"
+)
+NOT_LOGGED_IN = (
+    f"glab isn't logged in to {HOST}: paste a personal access token for it, with the api scope"
+)
 
 
 @pytest.mark.parametrize(
     ("stderr", "reason"),
     [
+        (NEVER_LOGGED_IN, NOT_LOGGED_IN),
+        # A token GitLab refuses, or none, as a fresh glab has for gitlab.com.
+        (LOGIN_REFUSED, NOT_LOGGED_IN),
         (
-            NEVER_LOGGED_IN,
+            OUT_OF_REACH,
             (
-                f"glab isn't logged in to {HOST}: paste a personal access token for it, with the "
-                "api scope"
-            ),
-        ),
-        (
-            LOGIN_REFUSED,
-            (
-                f"glab couldn't sign in to {HOST}: GET https://{HOST}/api/v4/user: 401 "
-                "{message: 401 Unauthorized}"
+                f'glab couldn\'t sign in to {HOST}: Get "https://{HOST}/api/v4/user": dial tcp: '
+                f"lookup {HOST}: no such host"
             ),
         ),
     ],
-    ids=["never logged in", "refused"],
+    ids=["never logged in", "refused", "out of reach"],
 )
 def test_login_status_says_why_glab_is_not_logged_in(
     glab_auth: FakeGlabAuth, stderr: str, reason: str
