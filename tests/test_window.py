@@ -1837,9 +1837,12 @@ def test_without_gh_publish_to_github_says_how_to_install_it_and_waits_for_a_sum
     assert without_gh.get_sensitive() is True
 
 
-def menu_entries(model: Gio.MenuModel, within: str = "") -> dict[str, tuple[str, GLib.Variant]]:
-    """A menu's items, by label, with the action each activates; a submenu's under its label."""
-    entries: dict[str, tuple[str, GLib.Variant]] = {}
+def menu_entries(
+    model: Gio.MenuModel, within: str = ""
+) -> dict[str, tuple[str, GLib.Variant | None]]:
+    """A menu's items, by label, with the action each activates and its target, which a check
+    item has none of; a submenu's under its label."""
+    entries: dict[str, tuple[str, GLib.Variant | None]] = {}
     for index in range(model.get_n_items()):
         label = model.get_item_attribute_value(index, "label", GLib.VariantType("s"))
         section = model.get_item_link(index, Gio.MENU_LINK_SECTION)
@@ -1853,12 +1856,11 @@ def menu_entries(model: Gio.MenuModel, within: str = "") -> dict[str, tuple[str,
             target = model.get_item_attribute_value(index, "target", None)
             assert label is not None
             assert action is not None
-            assert target is not None
             entries[f"{within}{label.get_string()}"] = (action.get_string(), target)
     return entries
 
 
-def presets_menu(shown: window.HistoryWindow) -> dict[str, tuple[str, GLib.Variant]]:
+def presets_menu(shown: window.HistoryWindow) -> dict[str, tuple[str, GLib.Variant | None]]:
     """What the Summarize menu offers once opened."""
     presets = shown.details[FIRST].presets
     presets.popup()
@@ -2052,6 +2054,106 @@ def test_retry_sends_the_failed_runs_prompt_again(
 
     assert publish.called() == ["summarize", FIRST, "--prompt=Only the blockers."]
     assert ("Summarize", "Succeeded") in lines(row)
+
+
+def context_file(name: str) -> Path:
+    return settings.settings_path().parent / "context" / f"{name}.md"
+
+
+def make_context(*names: str) -> None:
+    for name in names:
+        context_file(name).parent.mkdir(parents=True, exist_ok=True)
+        context_file(name).write_text(f"About {name}.\n")
+
+
+def ticked(shown: window.HistoryWindow) -> list[str]:
+    """The context items of the Summarize menu that are ticked."""
+    found = []
+    for label, (action, target) in presets_menu(shown).items():
+        state = shown.get_action_state(action.removeprefix("win."))
+        if target is None and state is not None and state.get_boolean():
+            found.append(label)
+    return found
+
+
+def test_context_ticked_in_the_summarize_menu_goes_with_every_summary_until_unticked(
+    history: Callable[[], window.HistoryWindow], publish: FakePublish
+) -> None:
+    recording([TRANSCRIBED])
+    make_context("Team glossary", "Project_X")
+    # Ticked once, and deleted since.
+    settings.set_summary_context(["Gone"])
+    shown = history()
+    expand(shown)
+    assert list(presets_menu(shown)) == [
+        "General",
+        "Standup",
+        "1:1",
+        "Stakeholder call",
+        "Custom…",
+        "Project__X",
+        "Team glossary",
+    ]
+    assert ticked(shown) == []
+    project, _ = presets_menu(shown)["Project__X"]
+
+    choose_preset(shown, "Project__X")
+
+    # Ticked at once, as the menu shows it while still open.
+    state = shown.get_action_state(project.removeprefix("win."))
+    assert state is not None
+    assert state.get_boolean() is True
+
+    choose_preset(shown, "Team glossary")
+
+    assert ticked(shown) == ["Project__X", "Team glossary"]
+    assert settings.summary_context() == ["Project_X", "Team glossary"]
+
+    choose_preset(shown, "Project__X")
+
+    assert ticked(shown) == ["Team glossary"]
+    assert settings.summary_context() == ["Team glossary"]
+
+    choose_preset(shown, "General")
+    wait_until(lambda: not shown.running[window.SUMMARIZE])
+
+    general = f"--prompt={summarizer.presets()['General']}"
+    assert publish.called() == ["summarize", FIRST, general, "--context=Team glossary"]
+
+
+def test_custom_goes_with_the_ticked_context_and_skips_a_deleted_one(
+    history: Callable[[], window.HistoryWindow], publish: FakePublish
+) -> None:
+    recording([TRANSCRIBED])
+    make_context("Team", "Project")
+    settings.set_summary_context(["Project", "Team"])
+    shown = history()
+    expand(shown)
+    context_file("Project").unlink()
+
+    dialog, prompt, _ = custom_prompt_dialog(shown)
+    prompt.get_buffer().set_text("Only the blockers.")
+    press(dialog, "Summarize")
+    wait_until(lambda: not shown.running[window.SUMMARIZE])
+
+    assert publish.called() == ["summarize", FIRST, "--prompt=Only the blockers.", "--context=Team"]
+
+
+def test_retry_sends_the_failed_runs_context_again_whatever_is_ticked_now(
+    history: Callable[[], window.HistoryWindow], publish: FakePublish
+) -> None:
+    make_context("Team", "Project")
+    settings.set_summary_context(["Project"])
+    failed = run("summarize", "failed", error="boom", prompt="P", context=["Team"])
+    recording([TRANSCRIBED, failed])
+    publish.will(run("summarize", "succeeded", output="summary.md", prompt="P", context=["Team"]))
+    shown = history()
+    row = expand(shown)
+
+    press(row, "Retry")
+    wait_until(lambda: not shown.running[window.SUMMARIZE])
+
+    assert publish.called() == ["summarize", FIRST, "--prompt=P", "--context=Team"]
 
 
 def test_a_summarize_command_that_dies_mid_run_fails_its_run(
@@ -2609,6 +2711,136 @@ def test_vocabulary_opens_the_glossary_and_makes_it_empty_the_first_time(
 
     assert desktop_calls.opened == [str(glossary), str(glossary)]
     assert glossary.read_text() == "deploy\nPR\n"
+    dialog.close()
+
+
+def context_rows(dialog: window.SettingsDialog) -> list[str]:
+    return [title for title, _ in lines(dialog.context)]
+
+
+def name_context(shown: window.HistoryWindow, dialog: window.SettingsDialog, name: str) -> None:
+    press(dialog.context, "New…")
+    asked = open_dialog(shown)
+    assert isinstance(asked, Adw.AlertDialog)
+    assert asked.get_heading() == "New context"
+    [entry] = [widget for widget in descendants(asked) if isinstance(widget, Gtk.Entry)]
+    entry.set_text(name)
+    press(asked, "Save")
+    draw(shown)
+
+
+@pytest.mark.usefixtures("agaric_settings")
+def test_context_presets_are_listed_and_new_makes_an_empty_one_and_opens_it(
+    history: Callable[[], window.HistoryWindow], desktop_calls: Desktop
+) -> None:
+    shown = history()
+    dialog = open_settings(shown)
+    assert context_rows(dialog) == []
+    assert dialog.context.get_description() == window.CONTEXT_NOTE
+
+    name_context(shown, dialog, " Team   glossary ")
+
+    assert context_file("Team glossary").read_text() == ""
+    assert desktop_calls.opened == [str(context_file("Team glossary"))]
+    assert context_rows(dialog) == ["Team glossary"]
+
+    make_context("Atlas")
+    name_context(shown, dialog, "Zeta")
+
+    assert context_rows(dialog) == ["Atlas", "Team glossary", "Zeta"]
+    [atlas, *_] = [row for row in descendants(dialog.context) if isinstance(row, Adw.ActionRow)]
+    press(atlas, "Open")
+
+    assert desktop_calls.opened[-1] == str(context_file("Atlas"))
+    assert context_file("Atlas").read_text() == "About Atlas.\n"
+    dialog.close()
+
+
+@pytest.mark.parametrize(
+    ("name", "said"),
+    [
+        ("Team", "There is a context named Team already"),
+        ("../Team", "A context's name can't start with a dot or hold a slash"),
+        ("x" * 300, "Can't create it: File name too long"),
+    ],
+)
+@pytest.mark.usefixtures("agaric_settings")
+def test_new_refuses_a_name_that_is_taken_or_no_file_name_and_says_why(
+    history: Callable[[], window.HistoryWindow], desktop_calls: Desktop, name: str, said: str
+) -> None:
+    make_context("Team")
+    shown = history()
+    dialog = open_settings(shown)
+
+    name_context(shown, dialog, name)
+
+    assert said in texts(dialog)
+    assert sorted(path.name for path in context_file("Team").parent.iterdir()) == ["Team.md"]
+    assert context_file("Team").read_text() == "About Team.\n"
+    assert desktop_calls.opened == []
+    dialog.close()
+
+
+def context_row(dialog: window.SettingsDialog, name: str) -> Adw.ActionRow:
+    [row] = [
+        row
+        for row in descendants(dialog.context)
+        if isinstance(row, Adw.ActionRow) and row.get_title() == name
+    ]
+    return row
+
+
+@pytest.mark.usefixtures("agaric_settings")
+def test_delete_moves_a_context_to_the_trash_once_confirmed_and_unticks_it(
+    history: Callable[[], window.HistoryWindow], desktop_calls: Desktop, tmp_path: Path
+) -> None:
+    make_context("Team", "Project")
+    settings.set_summary_context(["Team", "Project"])
+    shown = history()
+    dialog = open_settings(shown)
+
+    press(context_row(dialog, "Team"), "Delete")
+    asked = open_dialog(shown)
+    assert isinstance(asked, Adw.AlertDialog)
+    assert asked.get_heading() == "Move the context to the Trash?"
+    assert asked.get_body() == window.CONTEXT_TRASH_WARNING
+    press(asked, "Cancel")
+    draw(shown)
+
+    assert (desktop_calls.trashed, context_rows(dialog)) == ([], ["Project", "Team"])
+
+    press(context_row(dialog, "Team"), "Delete")
+    press(open_dialog(shown), "Move to Trash")
+    draw(shown)
+
+    assert [path for path, _ in desktop_calls.trashed] == [str(context_file("Team"))]
+    assert (tmp_path / "Trash" / "Team.md").read_text() == "About Team.\n"
+    assert context_rows(dialog) == ["Project"]
+    assert settings.summary_context() == ["Project"]
+    dialog.close()
+
+
+@pytest.mark.usefixtures("agaric_settings")
+def test_a_context_trash_that_fails_says_why_and_deletes_nothing(
+    history: Callable[[], window.HistoryWindow], desktop_calls: Desktop
+) -> None:
+    make_context("Team")
+    settings.set_summary_context(["Team"])
+    desktop_calls.trash_into = GLib.Error(
+        "Unable to find or create trash directory",
+        "g-io-error-quark",
+        Gio.IOErrorEnum.NOT_SUPPORTED,
+    )
+    shown = history()
+    dialog = open_settings(shown)
+
+    press(context_row(dialog, "Team"), "Delete")
+    press(open_dialog(shown), "Move to Trash")
+    draw(shown)
+
+    assert "Can't move it to the Trash: Unable to find or create trash directory" in texts(dialog)
+    assert context_file("Team").read_text() == "About Team.\n"
+    assert (context_rows(dialog), settings.summary_context()) == (["Team"], ["Team"])
     dialog.close()
 
 

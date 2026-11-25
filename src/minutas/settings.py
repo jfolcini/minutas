@@ -136,6 +136,15 @@ def set_summary_skill(path: str | None) -> None:
     save({"summary_skill": path})
 
 
+def summary_context() -> list[str]:
+    """The names of the context presets ticked in the Summarize menu, in the order ticked."""
+    return cast("list[str]", load().get("summary_context", []))
+
+
+def set_summary_context(names: list[str]) -> None:
+    save({"summary_context": names})
+
+
 def gitlab_link() -> str | None:
     """The project or issue link Publish to GitLab starts from; None until one is set."""
     return cast("str | None", load().get("gitlab_link"))

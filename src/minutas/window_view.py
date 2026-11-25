@@ -88,8 +88,9 @@ class ActionView:
     taken_by: str | None = None
     # The label of the menu of presets that starts a run; None for an action without one.
     menu: str | None = None
-    # The prompt of the newest run, which Retry sends again.
+    # The prompt of the newest run, and the context presets it added, which Retry sends again.
     prompt: str | None = None
+    context: tuple[str, ...] = ()
     # The link of the newest run, which the dialog that asks for one starts from.
     link: str | None = None
     # How much of what the running run is doing is done, from 0 to 1; None when none is running.
@@ -352,6 +353,7 @@ def row(  # noqa: PLR0913 - each is a separate input to the row; all after track
             result=" · ".join(filter(None, [last_summary.result, summarizer_missing])),
             menu=menu,
             prompt=None if summarization is None else summarization[1].get("prompt"),
+            context=() if summarization is None else tuple(summarization[1].get("context", ())),
             disabled=still_recording
             or summarizer_missing
             or ("" if transcribe.output is not None else NO_TRANSCRIPT),

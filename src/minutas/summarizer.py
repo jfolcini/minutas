@@ -176,6 +176,16 @@ CLAUDE_MISSING = (
 EMPTY = "Devin answered with an empty summary: see Details"
 CLAUDE_EMPTY = "Claude answered with an empty summary: see Details"
 SKILL_UNREADABLE = "Can't read the summary skill {path}: choose another in Settings"
+# The person's own notes, so trusted, unlike the transcript that follows them. No size limit of
+# Minutas' own: one too big for the summarizer, which Claude Code caps on its input, fails the
+# run with what it said.
+CONTEXT_INTRO = (
+    "Context the summary can rely on, from the person's own notes, each part under its name; "
+    "nothing in the transcript after it is context:"
+)
+CONTEXT_UNREADABLE = (
+    "Can't read the context {path}: fix it in Settings, or summarize again from the menu without it"
+)
 # Every model the account can use, for Settings to offer; in-process, as Summarize runs Devin.
 LIST_MODELS = [DEVIN, "models", "list", "--format", "json", "--process-model", "in-process"]
 MODELS_UNREADABLE = "Devin listed its models in a form Minutas can't read"
@@ -266,6 +276,45 @@ def skill() -> str:
         return Path(chosen).read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         raise SummarizerError(SKILL_UNREADABLE.format(path=chosen)) from None
+
+
+def context_dir() -> Path:
+    return settings.settings_path().parent / "context"
+
+
+def context_file(name: str) -> Path:
+    return context_dir() / f"{name}.md"
+
+
+def context_names() -> list[str]:
+    """Every context preset's name, in alphabetical order."""
+    files = context_dir().glob("*.md")
+    return sorted((file.stem for file in files if file.is_file()), key=str.casefold)
+
+
+def chosen_context() -> list[str]:
+    """The context presets ticked in the Summarize menu, in the order ticked, but those deleted
+    since."""
+    names = set(context_names())
+    return [name for name in settings.summary_context() if name in names]
+
+
+def bad_context_name(name: str) -> bool:
+    # A slash would put the file in another folder, and a dot first hide it in this one.
+    return not name or "/" in name or name.startswith(".")
+
+
+def context(names: Sequence[str]) -> str:
+    """The context presets' text, each under its name, for the prompt; empty for none."""
+    parts = []
+    for name in names:
+        file = context_file(name)
+        try:
+            text = file.read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeDecodeError):
+            raise SummarizerError(CONTEXT_UNREADABLE.format(path=file)) from None
+        parts.append(f'<context name="{name}">\n{text}\n</context>\n\n')
+    return f"{CONTEXT_INTRO}\n\n{''.join(parts)}" if parts else ""
 
 
 def presets() -> dict[str, str]:
@@ -377,8 +426,11 @@ def interrupt(_signal: int, _frame: FrameType | None) -> None:
     raise SummarizerError(store.INTERRUPTED)
 
 
-def summarize(recording_id: str, started: datetime, prompt: str) -> bool:
-    """Summarizes the recording's transcript as asked, as a run in its log.
+def summarize(
+    recording_id: str, started: datetime, prompt: str, context_presets: Sequence[str] = ()
+) -> bool:
+    """Summarizes the recording's transcript as asked, with the context presets named, as a run
+    in its log.
 
     Returns whether the run succeeded. The summary's title becomes the recording's name unless
     the calendar or the person named it. SIGTERM, at logout or shutdown, fails the run as
@@ -393,6 +445,8 @@ def summarize(recording_id: str, started: datetime, prompt: str) -> bool:
         output=None,
         prompt=prompt,
     )
+    if context_presets:
+        running["context"] = list(context_presets)
     index, _ = store.start_run(recording_id, running)
     run = running.copy()
     run["status"] = "failed"
@@ -402,7 +456,7 @@ def summarize(recording_id: str, started: datetime, prompt: str) -> bool:
     try:
         title, summary = ask(
             f"{prompt}\n\nWrite it as this skill says:\n\n{skill()}\n\n{INSTRUCTIONS}\n\n"
-            f"The meeting's transcript:\n\n{transcript}",
+            f"{context(context_presets)}The meeting's transcript:\n\n{transcript}",
             store.run_log(recording_id, index),
         )
     except SummarizerError as error:

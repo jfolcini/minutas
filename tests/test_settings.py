@@ -257,3 +257,16 @@ def test_a_hand_edited_count_of_recent_recordings_out_of_range_is_the_default(
     settings.save({"recent_in_menu": value})
 
     assert settings.recent_in_menu() == 5
+
+
+def test_no_context_is_ticked_until_some_is() -> None:
+    assert settings.summary_context() == []
+
+
+def test_set_summary_context_keeps_it_with_the_other_settings_in_its_order() -> None:
+    settings.set_summary_model("swe-2-high")
+
+    settings.set_summary_context(["Team glossary", "Project"])
+
+    assert settings.summary_context() == ["Team glossary", "Project"]
+    assert settings.summary_model() == "swe-2-high"
