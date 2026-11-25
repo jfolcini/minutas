@@ -903,12 +903,16 @@ def test_keys_a_newer_minutas_wrote_survive_a_change() -> None:
     assert cast("dict[str, object]", store.load_runs(recording_id)[0])["uploads"] == {"x": "y"}
 
 
+@pytest.mark.parametrize(
+    ("damaged", "saved"),
+    [("recording.json", '{"id": 1}'), ("runs.json", '[{"action": "transcribe", "status": 1}]')],
+)
 def test_a_recording_that_does_not_read_stops_no_list_and_is_named(
-    capsys: pytest.CaptureFixture[str],
+    capsys: pytest.CaptureFixture[str], damaged: str, saved: str
 ) -> None:
     good = make_stopped(START)
     bad = make_stopped(START + timedelta(hours=1))
-    (store.recording_dir(bad) / "recording.json").write_text('{"id": 1}')
+    (store.recording_dir(bad) / damaged).write_text(saved)
 
     store.write_status()
 

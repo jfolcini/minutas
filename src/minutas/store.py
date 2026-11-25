@@ -577,9 +577,8 @@ def close_abandoned() -> None:
     mark_stopped(recording["id"], stopped, incomplete=True)
 
 
-def recent_entry(recording: Recording, *, idle: bool) -> dict[str, object]:
+def recent_entry(recording: Recording, runs: list[Run], *, idle: bool) -> dict[str, object]:
     """What status.json says of a stopped recording; idle: nothing is being recorded."""
-    runs = load_runs(recording["id"])
     latest = {run["action"]: run["status"] for run in runs}
     transcriptions = [run for run in runs if run["action"] == "transcribe"]
     return {
@@ -599,16 +598,20 @@ def recent_entry(recording: Recording, *, idle: bool) -> dict[str, object]:
 def write_status() -> None:
     # Read and written under one lock, so the last process to write wrote the newest state.
     with lock():
-        recordings = load_recordings()
-        active = next((r for r in recordings if r["stopped_at"] is None), None)
-        stopped = [r for r in recordings if r["stopped_at"] is not None]
+        # Both its files read, as status.json says of both: one that doesn't read is skipped.
+        folders = sorted(recordings_dir().glob("*/recording.json"), reverse=True)
+        ids = (path.parent.name for path in folders)
+        read = readable(ids, lambda i: (load_recording(i), load_runs(i))).values()
+        active = next((r for r, _ in read if r["stopped_at"] is None), None)
+        stopped = [(r, runs) for r, runs in read if r["stopped_at"] is not None]
         status = {
             "version": 1,
             "recording": None
             if active is None
             else {key: active[key] for key in ACTIVE_IN_STATUS if key in active},
             "recent": [
-                recent_entry(r, idle=active is None) for r in stopped[: settings.recent_in_menu()]
+                recent_entry(r, runs, idle=active is None)
+                for r, runs in stopped[: settings.recent_in_menu()]
             ],
         }
         write_json(data_dir() / "status.json", status)
