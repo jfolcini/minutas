@@ -3,6 +3,8 @@
 No GTK and no files here: the window draws what these functions return.
 """
 
+import re
+import unicodedata
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -40,6 +42,8 @@ NO_AUDIO = "The audio was deleted"
 NO_TRANSCRIPT = "Transcribe first"
 NO_SUMMARY = "Summarize first"
 AGARIC_SILENT = "Asking Agaric stopped without saying why"
+# What NFKD splits off a Latin letter: "é" becomes "e" and one of these.
+ACCENTS = re.compile("[\u0300-\u036f]")
 
 
 @dataclass(frozen=True)
@@ -143,6 +147,22 @@ def duration(seconds: int) -> str:
 def clean_name(typed: str) -> str | None:
     """The name on one line, or None when nothing was typed."""
     return " ".join(typed.split()) or None
+
+
+def folded(text: str) -> str:
+    """The text as search compares it, without case or accents: "jose" finds "José"."""
+    return ACCENTS.sub("", unicodedata.normalize("NFKD", text).casefold())
+
+
+def searched(view: RowView, transcript: str) -> str:
+    """What a search looks in: the name, the subtitle, which starts with the date, and the
+    transcript, which holds the speakers' names; folded."""
+    return folded(f"{view.name}\n{view.subtitle}\n{transcript}")
+
+
+def matches(typed: str, text: str) -> bool:
+    """Whether every word typed is in the text, folded already, whatever its case and accents."""
+    return all(word in text for word in folded(typed).split())
 
 
 def latest(runs: Sequence[store.Run], action: str) -> tuple[int, store.Run] | None:

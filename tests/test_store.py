@@ -10,7 +10,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from minutas import store
+from minutas import settings, store
 
 START = datetime(2026, 11, 18, 13, 5, 42, tzinfo=UTC)
 
@@ -437,6 +437,20 @@ def test_status_lists_the_active_recording_and_five_newest_stopped() -> None:
         "transcribe": None,
         "failed": [],
     }
+
+
+@pytest.mark.parametrize("count", [1, 3])
+def test_status_lists_as_many_stopped_as_the_settings_say(count: int) -> None:
+    for hour in range(4):
+        make_stopped(START + timedelta(hours=hour))
+    settings.set_recent_in_menu(count)
+
+    store.write_status()
+
+    recent = read_status()["recent"]
+    assert isinstance(recent, list)
+    newest = ["2026-11-18T16-05-42", "2026-11-18T15-05-42", "2026-11-18T14-05-42"]
+    assert [entry["id"] for entry in recent] == newest[:count]
 
 
 def test_status_shows_an_incomplete_recording() -> None:

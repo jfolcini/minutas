@@ -116,8 +116,8 @@ One Python program does the work and draws the Recordings window; the GNOME exte
 
 | Component | Job | Main library |
 | --- | --- | --- |
-| GNOME extension | Top-bar menu: record and stop with a timer, the last few recordings with a warning mark on any failed run, Recordings and Settings; notifications on Record ("Tell participants you're recording"), when a transcript is ready, and when a run fails | GJS, GNOME Shell 46+ |
-| Recordings window | Every recording with its name, speakers, actions and their runs (status, error, Retry, Cancel, output link) and its audio files, and Rename and Move to Trash; the Settings, a dialog over it | GTK 4 and libadwaita through PyGObject |
+| GNOME extension | Top-bar menu: record and stop with a timer, the last recordings (as many as the Settings say) with a warning mark on any failed run, Recordings and Settings; notifications on Record ("Tell participants you're recording"), when a transcript is ready, and when a run fails | GJS, GNOME Shell 46+ |
+| Recordings window | Every recording with its name, speakers, actions and their runs (status, error, Retry, Cancel, output link) and its audio files, and Rename and Move to Trash; a search over them; the Settings, a dialog over it | GTK 4 and libadwaita through PyGObject |
 | Player and file buttons | Play, Save a copy, Open folder and Delete now for the recording's two tracks | GTK 4 `MediaFile` and `MediaControls`, `FileDialog`, `FileLauncher` |
 | Recorder | Mic and computer audio as two Opus tracks; survives the lock screen and a Shell restart; if it dies, what was captured is kept; a setting records the echo-cancelled mic instead | `systemd-run --user`, GStreamer or `pw-record`, PipeWire |
 | Store | One folder per recording: the two Opus tracks, transcript, summary, the name and where it came from, the speakers' names, and a JSON log of every run with its status, error and output link | Python standard library |
@@ -157,7 +157,7 @@ The program rewrites `DATA/status.json` atomically after every change, and the e
 }
 ```
 
-- `recording` is the active recording, or `null`; `recent` holds the last five others, newest first.
+- `recording` is the active recording, or `null`; `recent` holds the last others, newest first: as many as the Settings' Top bar group says, five unless changed. The extension announces a ready transcript or a failed run only for a recording `recent` holds, so it holds one at least.
 - `incomplete` means the recorder died before Stop; what it captured is kept.
 - `transcribe` is the latest Transcribe run's status, or `null`; `failed` lists the actions whose latest run failed: `transcribe`, `summarize`, `publish_agaric`, `publish_gitlab`.
 
@@ -205,6 +205,7 @@ The first version supports Devin, GitLab and GNOME on Ubuntu only; GitHub, Claud
 
 Every recording is a row, newest first, with a menu on the line that shows its name: Rename… and Move to Trash…. Expanding it shows its speakers, its audio files and its four actions, each with its last result: an output link, or why it failed and a Retry button.
 
+- **Search:** the header's search button, or Ctrl+F, opens a search bar over the list, and Escape closes it. The list keeps the recordings with every word typed, whatever its case and accents, in the name, in the line under it, which starts with the date, or in the transcript, speakers' names included; with none, "No recordings match" takes the list's place. A transcript is read at the first search that needs it, and again only once its recording changes: a keystroke reads no file.
 - **Name:** Rename… asks for a name, starting from the current one, and says where that came from (calendar, summary, default or typed); a typed name is kept for good, and the next Publish to Agaric applies it.
 - **Speakers:** the call's speakers are listed under Transcribe once it has run, numbered in the order they first speak; each one is set to a calendar attendee or a custom name, and the transcript is written again with it; a transcript already published keeps the names it went with.
 - **Actions:** Transcribe (runs on stop; Run again re-transcribes, for example after the word list changes), Summarize, Publish to Agaric and Publish to GitLab. Every run is kept with its time, status and output link; Publish to Agaric run again adds what the page lacks, such as the summary or a newer one, and applies a changed name.
@@ -216,9 +217,9 @@ Every recording is a row, newest first, with a menu on the line that shows its n
 - **Move to Trash:** asks first, then moves the whole recording's folder, its audio, transcript, summary and run history, to the desktop's Trash, where it can be restored; what was published stays in Agaric and GitLab. It refuses, saying why, while the recording is in progress, while a transcription is queued or running (Cancel it first), or while Summarize or a publish runs for it. A trash that fails says why and deletes nothing: it never falls back to deleting.
 - **Audio limits:** delete tracks as Delete now does, but only once the latest transcription has succeeded and never the recording in progress; they run when a recording stops, when the window opens and when they are saved, with no timer of their own. A change to them waits for Save, unlike every other setting, and Save first warns how many recordings' audio, and how much of it, goes at once, with Accept and Cancel: a scroll over a limit would otherwise delete audio unasked.
 - **Links:** open in the default app: `summary.md` in the text editor, `agaric://` links in Agaric, GitLab links in the browser.
-- **Settings:** a dialog over the window, opened from its main menu or the top-bar menu. Transcription: the vocabulary, the glossary of the word list, with Open, which opens it in the text editor, one word or phrase a line. Summary: the summarizer (only the Devin CLI for now), then the model and its effort, from what `devin models list --format json` offers, and the skill file, Markdown, with Open, which opens it or the built-in one, and Use built-in to go back to the one Minutas ships; Agaric; the audio limits with how much audio is kept against them. Later: the echo-cancelled mic switch, whether `glab` is logged in.
+- **Settings:** a dialog over the window, opened from its main menu or the top-bar menu. Transcription: the vocabulary, the glossary of the word list, with Open, which opens it in the text editor, one word or phrase a line. Summary: the summarizer (only the Devin CLI for now), then the model and its effort, from what `devin models list --format json` offers, and the skill file, Markdown, with Open, which opens it or the built-in one, and Use built-in to go back to the one Minutas ships; Agaric; the audio limits with how much audio is kept against them; Top bar: how many recent recordings the top-bar menu lists, from 1 to 20, five by default, which the menu follows at once. Later: the echo-cancelled mic switch, whether `glab` is logged in.
 - **Agaric:** the agent token, pasted as the config Agaric shows or alone, kept in the GNOME keyring through Python's keyring package and never shown back; whether a token is stored, and without one how to get Agaric's config; the space it publishes to, shown even when it is the only one; and the fix when Agaric isn't running or refuses the token. Agaric is asked through `minutas settings agaric`, run as a command, so the window never waits on it.
-- **Top-bar menu:** record and stop, the last few recordings, Recordings and Settings.
+- **Top-bar menu:** record and stop, the last recordings (as many as the Settings say), Recordings and Settings.
 
 ## When an action fails
 

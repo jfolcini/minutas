@@ -7,13 +7,17 @@ from typing import cast
 
 import keyring
 
-from minutas import store
+from minutas.atomic import write_json
 
 KEYRING_SERVICE = "minutas"
 AGARIC_KEYRING_USERNAME = "agaric"
 # Kept audio is bounded until a limit is turned off, which saves it as None.
 AUDIO_AGE_LIMIT_DAYS = 30
 AUDIO_SIZE_LIMIT_GB = 5
+# How many recordings the top-bar menu lists, newest first. It announces a ready transcript or a
+# failed run only for those, so it lists one at least.
+RECENT_IN_MENU = 5
+MOST_RECENT_IN_MENU = 20
 
 
 def settings_path() -> Path:
@@ -28,7 +32,7 @@ def load() -> dict[str, object]:
 
 def save(changes: dict[str, object]) -> None:
     settings_path().parent.mkdir(parents=True, exist_ok=True)
-    store.write_json(settings_path(), {**load(), **changes})
+    write_json(settings_path(), {**load(), **changes})
 
 
 def agaric_space_id() -> str | None:
@@ -74,6 +78,17 @@ def audio_limits() -> tuple[int | None, int | None]:
 
 def set_audio_limits(age_limit_days: int | None, size_limit_gb: int | None) -> None:
     save({"audio_age_limit_days": age_limit_days, "audio_size_limit_gb": size_limit_gb})
+
+
+def recent_in_menu() -> int:
+    value = load().get("recent_in_menu", RECENT_IN_MENU)
+    if type(value) is int and 1 <= value <= MOST_RECENT_IN_MENU:
+        return value
+    return RECENT_IN_MENU
+
+
+def set_recent_in_menu(count: int) -> None:
+    save({"recent_in_menu": count})
 
 
 def summary_model() -> str | None:
