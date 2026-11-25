@@ -12,6 +12,7 @@ from minutas.window_view import (
     RowView,
     SpeakerView,
     TrackView,
+    UpdateView,
     agaric,
     clean_name,
     duration,
@@ -22,6 +23,7 @@ from minutas.window_view import (
     searched,
     trash_refusal,
     unrecorded_failure,
+    update,
 )
 
 STATUSES = ("queued", "running", "succeeded", "failed", "cancelled")
@@ -218,7 +220,7 @@ def test_duration_never_overstates_and_is_exact_to_its_unit(seconds: int) -> Non
         ),
         (
             [run("transcribe", "failed", error="interrupted"), run("transcribe", "running")],
-            action("Running", "Cancel", cancels=1),
+            action("Running", "Cancel", cancels=1, progress=0.0),
         ),
         (
             [run("transcribe", "succeeded", details="run-0.log", output="transcript.md")],
@@ -257,6 +259,41 @@ def test_transcribe_shows_its_last_result_and_the_next_step(
     runs: list[store.Run], expected: ActionView
 ) -> None:
     assert shown(runs).transcribe == expected
+
+
+@pytest.mark.parametrize(
+    ("progress", "result", "fraction"),
+    [
+        (None, "Running", 0.0),
+        (
+            {"phase": "finding speech on the microphone", "percent": 0},
+            "Finding speech on the microphone · 0%",
+            0.0,
+        ),
+        ({"phase": "identifying speakers", "percent": 40}, "Identifying speakers · 40%", 0.4),
+        ({"phase": "transcribing", "percent": 100}, "Transcribing · 100%", 1.0),
+    ],
+)
+def test_a_running_transcription_shows_its_phase_and_how_far_it_has_got(
+    progress: store.Progress | None, result: str, fraction: float
+) -> None:
+    changes = {} if progress is None else {"progress": progress}
+
+    view = shown([run("transcribe", "running", **changes)])
+
+    assert view.transcribe == action(result, "Cancel", cancels=0, progress=fraction)
+    # The collapsed row says it too, once the transcriber has said any.
+    said = "Transcribing" if progress is None else result
+    assert view.subtitle == f"2026-11-18 13:05 · 30 min · {said}"
+
+
+def test_only_a_running_transcription_shows_progress() -> None:
+    views = [
+        shown([run("transcribe", status)]).transcribe.progress
+        for status in ("queued", "succeeded", "failed", "cancelled")
+    ]
+
+    assert views == [None] * 4
 
 
 @pytest.mark.parametrize(
@@ -776,7 +813,7 @@ def test_an_earlier_failed_publish_does_not_hide_a_retry_that_died() -> None:
 
 def a_run() -> st.SearchStrategy[store.Run]:
     return st.builds(
-        lambda action, status, error, details, output, choice, prompt, link: run(
+        lambda action, status, error, details, output, choice, prompt, link, progress: run(
             action,
             status,
             error=error if status == "failed" else None,
@@ -785,6 +822,7 @@ def a_run() -> st.SearchStrategy[store.Run]:
             choice=choice if status == "failed" else None,
             prompt=prompt,
             link=link,
+            **({} if progress is None or status != "running" else {"progress": progress}),
         ),
         st.sampled_from(store.ACTIONS),
         st.sampled_from(STATUSES),
@@ -803,6 +841,12 @@ def a_run() -> st.SearchStrategy[store.Run]:
         ),
         st.sampled_from(["Summarize this meeting.", "Only the blockers."]),
         st.sampled_from([ISSUE, "https://gitlab.example.com/group/project"]),
+        st.none()
+        | st.builds(
+            lambda phase, percent: store.Progress(phase=phase, percent=percent),
+            st.sampled_from(["identifying speakers", "transcribing"]),
+            st.integers(min_value=0, max_value=100),
+        ),
     )
 
 
@@ -938,6 +982,29 @@ def test_every_row_keeps_the_rules(case: Row) -> None:
             None if gitlab_publication is None else gitlab_publication[1].get("link")
         )
     assert (view.transcribe.menu, view.publish.menu, view.publish_gitlab.menu) == (None,) * 3
+
+
+@given(a_row())
+def test_only_a_running_transcription_shows_how_far_it_has_got(case: Row) -> None:
+    a_recording, runs, tracks, running, missing_tools = case
+    transcription = latest(runs, "transcribe")
+
+    view = row(a_recording, runs, tracks, running=running, missing_tools=missing_tools)
+
+    # Its phase and the percent of it done, from the start of the phase.
+    running_now = transcription is not None and transcription[1]["status"] == "running"
+    assert (view.transcribe.progress is not None) is running_now
+    progress = None if transcription is None else transcription[1].get("progress")
+    if running_now and progress is not None:
+        assert view.transcribe.result == (
+            f"{progress['phase'].capitalize()} · {progress['percent']}%"
+        )
+        assert view.transcribe.progress == progress["percent"] / 100
+    assert (view.summarize.progress, view.publish.progress, view.publish_gitlab.progress) == (
+        None,
+        None,
+        None,
+    )
 
 
 def test_the_audio_files_say_until_when_the_age_limit_keeps_them() -> None:
@@ -1101,3 +1168,47 @@ def test_typing_more_words_only_narrows_the_search(first: str, second: str, text
 @given(st.text(alphabet=f"{SPANISH.replace('z', '')} \n"), st.text(alphabet=SPANISH))
 def test_a_word_with_a_letter_the_text_lacks_finds_nothing(text: str, word: str) -> None:
     assert matches(f"{word}Z", folded(text)) is False
+
+
+INSTALLED = "uv: ok\nApp: installed /home/ana/.local/share/minutas/app and the minutas command\n"
+REOPEN = "Close this window and open it again to run the new version."
+LOGGED_OUT = "\nLeft to do:\n- Log out and back in to load the top-bar extension.\n"
+
+
+@pytest.mark.parametrize(
+    ("said", "shown"),
+    [
+        (
+            f"Updating to v0.4.0.\n{INSTALLED}",
+            UpdateView("Updated", f"Updated to v0.4.0. {REOPEN}"),
+        ),
+        (
+            f"Updating to v0.4.0.\n{INSTALLED}{LOGGED_OUT}",
+            UpdateView(
+                "Updated",
+                f"Updated to v0.4.0. {REOPEN} Log out and back in to load the top-bar extension.",
+            ),
+        ),
+        (
+            "Already on the latest release, v0.4.0.\nuv: ok\nApp: ok\n",
+            UpdateView("Up to date", "Already on the latest release, v0.4.0."),
+        ),
+    ],
+)
+def test_an_update_that_worked_says_what_to_do_next(said: str, shown: UpdateView) -> None:
+    assert update(said, exited_ok=True) == shown
+
+
+def test_a_failed_update_says_the_fix_it_was_given_last() -> None:
+    said = (
+        "Updating to v0.4.0.\nSystem packages: ok\n"
+        "Hugging Face token: failed: none in the GNOME keyring  \n\n"
+    )
+
+    assert update(said, exited_ok=False) == UpdateView(
+        "Update failed", "Hugging Face token: failed: none in the GNOME keyring", failed=True
+    )
+
+
+def test_a_failed_update_that_said_nothing_says_so() -> None:
+    assert update("", exited_ok=False).body == "minutas update stopped without saying why"

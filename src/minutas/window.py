@@ -14,6 +14,8 @@ import shutil
 import sys
 from collections.abc import Callable, Collection, Mapping, Sequence
 from datetime import UTC, datetime
+from importlib.metadata import metadata
+from pathlib import Path
 from typing import cast, override
 
 import gi
@@ -73,6 +75,10 @@ VOCABULARY_NOTE = (
     "Names, products and jargon to listen for, one per line, besides each meeting's attendees; "
     "used from the next transcription, or Run again"
 )
+# Read once: an update replaces the package on disk, not the one this window runs.
+PROJECT = metadata("minutas")
+ABOUT, UPDATE = "about", "update"
+UPDATING = "Updating Minutas…"
 
 
 def now() -> datetime:
@@ -359,6 +365,7 @@ class ActionControls:
         self, title: str, output_label: str, action: str, recording_id: str, window: "HistoryWindow"
     ) -> None:
         self.row = text_row(title)
+        self.progress = Gtk.ProgressBar(valign=Gtk.Align.CENTER)
         self.failed = warning_icon()
         self.details = button("Details", window.show_details, recording_id, action)
         self.output = button(output_label, window.open_output, recording_id, action)
@@ -366,6 +373,7 @@ class ActionControls:
         self.rename = button("Rename", window.rename_page, recording_id)
         self.next_step = button("", window.next_step, recording_id, action)
         for control in (
+            self.progress,
             self.failed,
             self.details,
             self.output,
@@ -377,6 +385,8 @@ class ActionControls:
 
     def display(self, view: ActionView) -> None:
         self.row.set_subtitle(view.result)
+        self.progress.set_visible(view.progress is not None)
+        self.progress.set_fraction(view.progress or 0.0)
         self.failed.set_visible(view.failed)
         self.details.set_visible(view.details is not None)
         self.output.set_visible(view.output is not None)
@@ -531,9 +541,13 @@ class HistoryWindow(Adw.ApplicationWindow):
             action = Gio.SimpleAction(name=name, parameter_type=GLib.VariantType(parameter))
             action.connect("activate", activated)
             self.add_action(action)
-        open_settings = Gio.SimpleAction(name=SETTINGS)
-        open_settings.connect("activate", self.open_settings)
-        self.add_action(open_settings)
+        for name, activated in ((SETTINGS, self.open_settings), (ABOUT, self.show_about)):
+            action = Gio.SimpleAction(name=name)
+            action.connect("activate", activated)
+            self.add_action(action)
+        self.update_action = Gio.SimpleAction(name=UPDATE)
+        self.update_action.connect("activate", self.update)
+        self.add_action(self.update_action)
         self.list = Gtk.ListBox(
             selection_mode=Gtk.SelectionMode.NONE,
             css_classes=["boxed-list"],
@@ -564,21 +578,12 @@ class HistoryWindow(Adw.ApplicationWindow):
         self.pages.add_child(self.scrolled)
         self.pages.add_child(self.no_match)
         self.search = Gtk.SearchEntry(placeholder_text="Search recordings", hexpand=True)
-        self.search.connect("search-changed", self.search_changed)
-        self.search_bar = Gtk.SearchBar(child=Adw.Clamp(child=self.search, maximum_size=400))
-        self.search_bar.connect_entry(self.search)
-        self.add_action(Gio.PropertyAction.new("search", self.search_bar, "search-mode-enabled"))
-        shortcuts = Gtk.ShortcutController()
-        shortcuts.add_shortcut(
-            Gtk.Shortcut(
-                trigger=Gtk.ShortcutTrigger.parse_string("<Control>f"),
-                action=Gtk.NamedAction.new("win.search"),
-            )
-        )
-        self.add_controller(shortcuts)
+        self.search_bar = self.search_bar_for(self.search)
         self.toasts = Adw.ToastOverlay(child=self.pages)
         menu = Gio.Menu()
         menu.append("Settings", f"win.{SETTINGS}")
+        menu.append("Update Minutas", f"win.{UPDATE}")
+        menu.append("About Minutas", f"win.{ABOUT}")
         header = Adw.HeaderBar()
         header.pack_start(
             Gtk.ToggleButton(
@@ -596,6 +601,8 @@ class HistoryWindow(Adw.ApplicationWindow):
         page = Adw.ToolbarView(content=self.toasts)
         page.add_top_bar(header)
         page.add_top_bar(self.search_bar)
+        self.updating = Adw.Banner(title=UPDATING)
+        page.add_top_bar(self.updating)
         self.set_content(page)
         # GLib polls for a monitored file whose folder is missing; in one that exists it waits.
         store.data_dir().mkdir(parents=True, exist_ok=True)
@@ -611,6 +618,22 @@ class HistoryWindow(Adw.ApplicationWindow):
             action.connect("activate", activated)
             self.add_action(action)
         self.delete_audio_over_limits()
+
+    def search_bar_for(self, search: Gtk.SearchEntry) -> Gtk.SearchBar:
+        """The bar that holds the search, opened by win.search and Ctrl+F."""
+        search.connect("search-changed", self.search_changed)
+        bar = Gtk.SearchBar(child=Adw.Clamp(child=search, maximum_size=400))
+        bar.connect_entry(search)
+        self.add_action(Gio.PropertyAction.new("search", bar, "search-mode-enabled"))
+        shortcuts = Gtk.ShortcutController()
+        shortcuts.add_shortcut(
+            Gtk.Shortcut(
+                trigger=Gtk.ShortcutTrigger.parse_string("<Control>f"),
+                action=Gtk.NamedAction.new("win.search"),
+            )
+        )
+        self.add_controller(shortcuts)
+        return bar
 
     def status_changed(
         self,
@@ -1038,7 +1061,11 @@ class HistoryWindow(Adw.ApplicationWindow):
                 worker.queue(recording_id, now())
 
     def show_details(self, _button: Gtk.Button, recording_id: str, action: str) -> None:
-        log = store.recording_dir(recording_id) / str(self.shown(recording_id, action).details)
+        self.show_log(
+            store.recording_dir(recording_id) / str(self.shown(recording_id, action).details)
+        )
+
+    def show_log(self, log: Path) -> None:
         text = Gtk.TextView(
             editable=False,
             monospace=True,
@@ -1220,6 +1247,51 @@ class HistoryWindow(Adw.ApplicationWindow):
             store.fail_left_running(recording_id, action, problem)
             self.say(problem)
         self.refresh()
+
+    def show_about(self, *_activated: object) -> None:
+        links = dict(link.split(", ", 1) for link in PROJECT.get_all("Project-URL", []))
+        Adw.AboutDialog(
+            application_name="Minutas",
+            application_icon="audio-input-microphone",
+            version=PROJECT["Version"],
+            comments=PROJECT["Summary"],
+            license_type=Gtk.License.GPL_3_0,
+            website=links["Repository"],
+            issue_url=links["Issues"],
+        ).present(self)
+
+    def update(self, *_activated: object) -> None:
+        """Runs `minutas update`, saying so until it ends, then what came of it.
+
+        It prints to a file, not to this window: closing the window, which an update ends by
+        asking for, must not cut it off midway.
+        """
+        log = store.data_dir() / "update.log"
+        # The launcher writes over the file without truncating it: the last update's tail stays.
+        log.unlink(missing_ok=True)
+        launcher = Gio.SubprocessLauncher.new(Gio.SubprocessFlags.STDERR_MERGE)
+        launcher.set_stdout_file_path(str(log))
+        command = launcher.spawnv([*MINUTAS, "update"])
+        self.update_action.set_enabled(False)
+        self.updating.set_revealed(True)
+        command.wait_async(None, self.updated, log)
+
+    def updated(self, command: Gio.Subprocess, result: Gio.AsyncResult, log: Path) -> None:
+        command.wait_finish(result)
+        self.update_action.set_enabled(True)
+        self.updating.set_revealed(False)
+        outcome = window_view.update(
+            log.read_text(errors="replace"), exited_ok=command.get_successful()
+        )
+        dialog = Adw.AlertDialog(heading=outcome.heading, body=outcome.body, close_response="close")
+        dialog.add_response("close", "Close")
+        if outcome.failed:
+            dialog.add_response("details", "Details")
+        dialog.choose(self, None, self.update_answered, log)
+
+    def update_answered(self, dialog: Adw.AlertDialog, result: Gio.AsyncResult, log: Path) -> None:
+        if dialog.choose_finish(result) == "details":
+            self.show_log(log)
 
 
 class History(Adw.Application):

@@ -44,6 +44,9 @@ NO_SUMMARY = "Summarize first"
 AGARIC_SILENT = "Asking Agaric stopped without saying why"
 # What NFKD splits off a Latin letter: "é" becomes "e" and one of these.
 ACCENTS = re.compile("[\u0300-\u036f]")
+# What install.sh says, run by an update too, when GNOME Shell has a new extension to load.
+LOG_OUT = "Log out and back in to load the top-bar extension."
+UPDATE_SILENT = "minutas update stopped without saying why"
 
 
 @dataclass(frozen=True)
@@ -88,6 +91,8 @@ class ActionView:
     prompt: str | None = None
     # The link of the newest run, which the dialog that asks for one starts from.
     link: str | None = None
+    # How much of what the running run is doing is done, from 0 to 1; None when none is running.
+    progress: float | None = None
 
 
 @dataclass(frozen=True)
@@ -122,6 +127,16 @@ class AgaricView:
     choices: tuple[tuple[str, str], ...]
     # The place among choices of the space set; None when it is not among them.
     chosen: int | None
+
+
+@dataclass(frozen=True)
+class UpdateView:
+    """What the window says once `minutas update` has ended."""
+
+    heading: str
+    body: str
+    # What it printed is worth reading: Details shows it.
+    failed: bool = False
 
 
 def limits_warning(over: int, size: str) -> str:
@@ -281,6 +296,15 @@ def row(  # noqa: PLR0913 - each is a separate input to the row; all after track
     transcribing = None if transcription is None else IN_PROGRESS.get(transcription[1]["status"])
     if transcription is not None and transcribing is not None:
         transcribe = replace(transcribe, label="Cancel", disabled="", cancels=transcription[0])
+    if transcription is not None and transcription[1]["status"] == "running":
+        progress = transcription[1].get("progress")
+        if progress is not None:
+            # The collapsed row says it too, in place of "Transcribing".
+            transcribing = f"{progress['phase'].capitalize()} · {progress['percent']}%"
+            transcribe = replace(transcribe, result=transcribing)
+        transcribe = replace(
+            transcribe, progress=0.0 if progress is None else progress["percent"] / 100
+        )
 
     # Started from its menu of presets; its only button is Retry, after a run that did not end well.
     last_summary = last_result(runs, SUMMARIZE, "Not summarized", "", "")
@@ -393,3 +417,19 @@ def agaric(listed: str, stderr: str, space_id: str | None) -> AgaricView:
         choices=choices,
         chosen=next((place for place, (space, _) in enumerate(choices) if space == space_id), None),
     )
+
+
+def update(said: str, *, exited_ok: bool) -> UpdateView:
+    """What the window says of an update, from all that `minutas update` printed: first which
+    release it moved to, or that it was already on the latest, then what install.sh did."""
+    lines = [line.strip() for line in said.splitlines() if line.strip()]
+    if not exited_ok:
+        return UpdateView("Update failed", lines[-1] if lines else UPDATE_SILENT, failed=True)
+    first = lines[0] if lines else ""
+    if first.startswith("Updating to "):
+        release = first.removeprefix("Updating to ").removesuffix(".")
+        heading = "Updated"
+        body = f"Updated to {release}. Close this window and open it again to run the new version."
+    else:
+        heading, body = "Up to date", first
+    return UpdateView(heading, f"{body} {LOG_OUT}" if LOG_OUT in said else body)

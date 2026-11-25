@@ -435,6 +435,7 @@ def test_status_lists_the_active_recording_and_five_newest_stopped() -> None:
         "duration_seconds": 1839,
         "incomplete": False,
         "transcribe": None,
+        "progress": None,
         "failed": [],
     }
 
@@ -484,6 +485,36 @@ def test_status_takes_transcribe_and_failed_from_the_latest_runs() -> None:
     assert isinstance(recent, list)
     assert recent[0]["transcribe"] == "running"
     assert recent[0]["failed"] == ["publish_agaric", "publish_gitlab"]
+
+
+def test_status_says_how_far_the_latest_transcription_has_got() -> None:
+    recording_id = make_stopped(START)
+    progress = {"phase": "identifying speakers", "percent": 40}
+    write_runs(
+        recording_id,
+        [
+            {"action": "transcribe", "status": "running", "progress": {"phase": "x", "percent": 9}},
+            {"action": "transcribe", "status": "running", "progress": progress},
+            {"action": "summarize", "status": "succeeded"},
+        ],
+    )
+
+    store.write_status()
+
+    recent = read_status()["recent"]
+    assert isinstance(recent, list)
+    assert (recent[0]["transcribe"], recent[0]["progress"]) == ("running", progress)
+
+
+def test_status_has_no_progress_before_the_transcriber_says_any() -> None:
+    recording_id = make_stopped(START)
+    write_runs(recording_id, [{"action": "transcribe", "status": "running"}])
+
+    store.write_status()
+
+    recent = read_status()["recent"]
+    assert isinstance(recent, list)
+    assert (recent[0]["transcribe"], recent[0]["progress"]) == ("running", None)
 
 
 def test_status_replaces_the_file_without_leaving_temporary_files() -> None:

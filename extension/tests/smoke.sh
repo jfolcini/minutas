@@ -63,6 +63,13 @@ case "\$*" in
 esac
 EOF
   chmod +x "$WORK/bin/minutas"
+  # The default browser: logs the links the extension opens.
+  printf '#!/bin/bash\necho "$1" >>"%s/browser.log"\n' "$WORK" >"$WORK/bin/smoke-browser"
+  chmod +x "$WORK/bin/smoke-browser"
+  mkdir -p "$WORK/data/applications"
+  printf '[Desktop Entry]\nType=Application\nName=Smoke browser\nExec=%s/bin/smoke-browser %%u\nMimeType=x-scheme-handler/https;\n' "$WORK" \
+    >"$WORK/data/applications/smoke-browser.desktop"
+  printf '[Default Applications]\nx-scheme-handler/https=smoke-browser.desktop\n' >"$WORK/config/mimeapps.list"
   env -i HOME="$WORK/home" XDG_CONFIG_HOME="$WORK/config" XDG_DATA_HOME="$WORK/data" \
     XDG_CACHE_HOME="$WORK/cache" XDG_STATE_HOME="$WORK/state" XDG_RUNTIME_DIR="$RUNTIME" \
     PATH="$WORK/bin:/usr/local/bin:/usr/bin:/bin" LANG=C.UTF-8 GIO_USE_VFS=local \
@@ -76,7 +83,8 @@ WORK=$MINUTAS_SMOKE_WORK
 OUT=$MINUTAS_SMOKE_OUT
 DATA="$XDG_DATA_HOME/minutas"
 B="Main.panel.statusArea['$UUID']"
-MENU="$B.menu._getMenuItems().flatMap(i => i._getMenuItems ? i._getMenuItems().map(j => j.label.text + (j.get_n_children() > 2 ? ' [warning icon]' : '')) : [i.label.text || '---'])"
+# The visible items, and every separator: the menu shows or hides those only as it opens or closes.
+MENU="$B.menu._getMenuItems().filter(i => i.actor.visible || i.label?.text === '').flatMap(i => i._getMenuItems ? i._getMenuItems().map(j => j.label.text + (j.get_n_children() > 2 ? ' [warning icon]' : '')) : [i.label.text || '---'])"
 PANEL="({recordingStyle: $B.has_style_class_name('screen-recording-indicator'), timerVisible: $B.get_first_child().get_child_at_index(1).visible})"
 TIMER="$B.get_first_child().get_child_at_index(1).text"
 NOTES="Main.messageTray.getSources().filter(s => s.title === 'Minutas').flatMap(s => s.notifications.map(n => n.title + ' | ' + n.body))"
@@ -102,10 +110,20 @@ check() {
   shift
   if "$@"; then echo "  ok: $description"; else fail "$description"; fi
 }
+INSTALL_URL=https://github.com/jfolcini/minutas#install
+# Polls, because the browser starts asynchronously.
+expect_opened() {
+  for _ in $(seq 40); do
+    [ "$(grep -cxF "$INSTALL_URL" "$WORK/browser.log" 2>/dev/null)" = "$1" ] && echo "  ok: opened $INSTALL_URL ($1)" && return
+    sleep 0.25
+  done
+  fail "expected $INSTALL_URL $1 time(s) in $WORK/browser.log"
+}
 expect_log() { check "ran minutas $1" grep -qxF -- "$1" "$WORK/minutas.log"; }
 click() { ev "$B.menu._getMenuItems().flatMap(i => i._getMenuItems ? i._getMenuItems() : [i]).find(i => i.label.text.startsWith('$1')).activate(null)" >/dev/null; }
 write_status() { mkdir -p "$DATA" && printf '%s' "$1" >"$DATA/.status.tmp" && mv "$DATA/.status.tmp" "$DATA/status.json"; }
-recent() { echo "{\"id\":\"$1\",\"name\":\"$2\",\"started_at\":\"$3\",\"duration_seconds\":$4,\"incomplete\":$5,\"transcribe\":$6,\"failed\":$7}"; }
+# A recent recording; an eighth argument is its progress.
+recent() { echo "{\"id\":\"$1\",\"name\":\"$2\",\"started_at\":\"$3\",\"duration_seconds\":$4,\"incomplete\":$5,\"transcribe\":$6,\"failed\":$7${8:+,\"progress\":$8}}"; }
 screenshot() {
   ev "$B.menu.open()" >/dev/null
   sleep 1
@@ -151,6 +169,16 @@ expect_log "record stop"
 read -r id at <"$WORK/active"
 meeting=$(recent "$id" Meeting "$at" 7 false '"succeeded"' '["summarize"]')
 
+echo "== a running transcription says how far it has got, on the same item"
+speakers() { recent "$id" Meeting "$at" 7 false '"running"' '[]' "{\"phase\":\"identifying speakers\",\"percent\":$1}"; }
+ITEM="$B.menu._getMenuItems().find(i => i._getMenuItems)._getMenuItems()[0]"
+write_status "{\"version\":1,\"recording\":null,\"recent\":[$(speakers 40)]}"
+expect "$MENU" ' · 0:07 · identifying speakers… 40%"'
+ev "$ITEM._smokeMark = true" >/dev/null
+write_status "{\"version\":1,\"recording\":null,\"recent\":[$(speakers 41)]}"
+expect "$MENU" ' · 0:07 · identifying speakers… 41%"'
+expect "$ITEM._smokeMark === true" "'true'"
+
 echo "== transcript ready, and clicking it opens the history"
 write_status "{\"version\":1,\"recording\":null,\"recent\":[$(recent "$id" Meeting "$at" 7 false '"succeeded"' '[]')]}"
 expect "$NOTES" "Transcript ready | Meeting, ${at:0:10} ${at:11:5}"
@@ -183,11 +211,25 @@ touch "$WORK/fail-next"
 click Record
 expect "$NOTES" "Couldn't start recording | error: already recording"
 
-echo "== no minutas on the PATH or in ~/.local/bin"
+echo "== no minutas on the PATH or in ~/.local/bin: the notification and the menu open the install instructions"
 mv "$WORK/bin/minutas" "$WORK/minutas.away"
 click Record
 expect "$NOTES" "Minutas isn't installed"
-mv "$WORK/minutas.away" "$WORK/bin/minutas"
+ev "Main.messageTray.getSources().find(s => s.title === 'Minutas').notifications.find(n => n.title.startsWith('Minutas isn')).activate()" >/dev/null
+expect_opened 1
+ev "$B.menu.open()" >/dev/null
+expect "$MENU" '["Install Minutas…","---","---"]'
+# Its separators hidden too, on this first opening: closing the menu hides them anyway.
+expect "$B.menu._getMenuItems().filter(i => i.actor.visible).length" "'1'"
+screenshot menu-not-installed.png
+click Install
+expect_opened 2
+# Back in ~/.local/bin, where install.sh puts it and the Shell's PATH often doesn't reach.
+mkdir -p "$HOME/.local/bin"
+mv "$WORK/minutas.away" "$HOME/.local/bin/minutas"
+ev "$B.menu.open()" >/dev/null
+expect "$MENU" '["Record","---","Standup · '
+ev "$B.menu.close()" >/dev/null
 
 echo "== a recent recording and Recordings open the recordings; Settings, the settings"
 click Standup
