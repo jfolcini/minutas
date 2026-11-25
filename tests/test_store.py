@@ -21,7 +21,7 @@ def make_stopped(started: datetime, *, seconds: int = 60, incomplete: bool = Fal
     return recording["id"]
 
 
-def write_runs(recording_id: str, runs: list[dict[str, object]]) -> None:
+def write_runs(recording_id: str, runs: list[store.Run]) -> None:
     (store.recording_dir(recording_id) / "runs.json").write_text(json.dumps(runs))
 
 
@@ -699,13 +699,13 @@ def test_status_takes_transcribe_and_failed_from_the_latest_runs() -> None:
     write_runs(
         recording_id,
         [
-            {"action": "publish_gitlab", "status": "failed"},
-            {"action": "publish_github", "status": "failed"},
-            {"action": "transcribe", "status": "failed"},
-            {"action": "summarize", "status": "failed"},
-            {"action": "transcribe", "status": "running"},
-            {"action": "publish_agaric", "status": "failed"},
-            {"action": "summarize", "status": "succeeded"},
+            a_run("publish_gitlab", "failed"),
+            a_run("publish_github", "failed"),
+            a_run("transcribe", "failed"),
+            a_run("summarize", "failed"),
+            a_run("transcribe", "running"),
+            a_run("publish_agaric", "failed"),
+            a_run("summarize", "succeeded"),
         ],
     )
 
@@ -723,9 +723,9 @@ def test_status_says_how_far_the_latest_transcription_has_got() -> None:
     write_runs(
         recording_id,
         [
-            {"action": "transcribe", "status": "running", "progress": {"phase": "x", "percent": 9}},
-            {"action": "transcribe", "status": "running", "progress": progress},
-            {"action": "summarize", "status": "succeeded"},
+            a_run("transcribe", "running", progress={"phase": "x", "percent": 9}),
+            a_run("transcribe", "running", progress=progress),
+            a_run("summarize", "succeeded"),
         ],
     )
 
@@ -738,7 +738,7 @@ def test_status_says_how_far_the_latest_transcription_has_got() -> None:
 
 def test_status_has_no_progress_before_the_transcriber_says_any() -> None:
     recording_id = make_stopped(START)
-    write_runs(recording_id, [{"action": "transcribe", "status": "running"}])
+    write_runs(recording_id, [a_run("transcribe", "running")])
 
     store.write_status()
 
@@ -859,6 +859,48 @@ def test_save_runs_replaces_the_run_log() -> None:
     store.save_runs("2026-11-18T13-05-42", runs)
 
     assert store.load_runs("2026-11-18T13-05-42") == runs
+
+
+@pytest.mark.parametrize(
+    "saved",
+    [
+        '[{"action": "transcribe", "status": 1}]',
+        '[{"action": "transcribe", "status": "failed", "error": null}]',
+        '{"action": "transcribe"}',
+    ],
+    ids=["wrong type", "missing field", "no list"],
+)
+def test_runs_of_the_wrong_shape_fail_where_they_are_read(saved: str) -> None:
+    recording_id = make_stopped(START)
+    (store.recording_dir(recording_id) / "runs.json").write_text(saved)
+
+    with pytest.raises(ValueError, match="validation error"):
+        store.load_runs(recording_id)
+
+
+def test_a_recording_of_the_wrong_shape_fails_where_it_is_read() -> None:
+    recording_id = make_stopped(START)
+    folder = store.recording_dir(recording_id)
+    saved = json.loads((folder / "recording.json").read_text())
+    (folder / "recording.json").write_text(json.dumps({**saved, "incomplete": "no"}))
+
+    with pytest.raises(ValueError, match="validation error"):
+        store.load_recording(recording_id)
+
+
+def test_keys_a_newer_minutas_wrote_survive_a_change() -> None:
+    recording_id = make_stopped(START)
+    folder = store.recording_dir(recording_id)
+    saved = json.loads((folder / "recording.json").read_text())
+    (folder / "recording.json").write_text(json.dumps({**saved, "mood": {"calm": True}}))
+    run = {**a_run("publish_gitlab", "succeeded"), "uploads": {"x": "y"}}
+    (folder / "runs.json").write_text(json.dumps([run]))
+
+    store.set_typed_name(recording_id, "Planning")
+    store.start_run(recording_id, a_run("summarize", "running"))
+
+    assert cast("dict[str, object]", store.load_recording(recording_id))["mood"] == {"calm": True}
+    assert cast("dict[str, object]", store.load_runs(recording_id)[0])["uploads"] == {"x": "y"}
 
 
 def a_run(action: str, status: str, **changes: object) -> store.Run:

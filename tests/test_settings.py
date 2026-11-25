@@ -302,6 +302,14 @@ def test_the_glossary_is_no_preset_name() -> None:
     assert settings.bad_preset_name(settings.GLOSSARY) is True
 
 
+def test_settings_that_are_no_json_object_fail_where_they_are_read() -> None:
+    settings.settings_path().parent.mkdir(parents=True)
+    settings.settings_path().write_text('["echo_cancel", false]')
+
+    with pytest.raises(ValueError, match="validation error"):
+        settings.load()
+
+
 def test_silence_reminds_after_5_minutes_until_changed() -> None:
     assert settings.silence_reminder_minutes() == 5
 

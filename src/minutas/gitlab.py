@@ -8,7 +8,6 @@ limit is left out, with a note.
 The Settings hand glab a token here, and ask whether it is logged in: glab holds the login.
 """
 
-import json
 import re
 import shlex
 import shutil
@@ -221,8 +220,8 @@ def post(target: Target, step: str, arguments: list[str], key: str, log: Path) -
         reason = f"Could not {step}: {failure(target, result.stderr, result.returncode)}"
         raise (UploadLimitError if TOO_BIG in result.stderr else GitLabError)(reason)
     try:
-        found = cast("dict[str, object]", json.loads(result.stdout))[key]
-    except (ValueError, KeyError, TypeError):
+        found = settings.JSON_OBJECT.validate_json(result.stdout).get(key)
+    except ValueError:
         found = None
     if not isinstance(found, str | int):
         reason = f"Could not {step}: {UNEXPECTED}"

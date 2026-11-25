@@ -1755,7 +1755,7 @@ class HistoryWindow(Adw.ApplicationWindow):
         # Once presented: until then the entry is not inside the dialog.
         self.link_typed(entry, asks)
 
-    def link_typed(self, entry: Gtk.Entry, asks: "LinkAsk") -> None:
+    def link_typed(self, entry: Gtk.Entry, asks: LinkAsk) -> None:
         # The dialog is found, not held: a handler that held it would keep it for good.
         dialog = cast("Adw.AlertDialog", entry.get_ancestor(Adw.AlertDialog))
         typed = entry.get_text().strip()

@@ -6,13 +6,14 @@ changes: whatever reads it, publishing included, reads the current names.
 """
 
 import fcntl
-import json
 import os
 from collections.abc import Generator, Iterable, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import NotRequired, TypedDict, cast
+
+from pydantic import ConfigDict, TypeAdapter, with_config
 
 from minutas import settings
 from minutas.atomic import write_json, write_text
@@ -38,6 +39,13 @@ INTERRUPTED = "interrupted"
 NAME_ORDER = ("default", "summary", "calendar", "typed")
 
 
+# What the store reads back is checked against these types: JSON of the wrong type fails as
+# a ValueError where it is read. A key these types don't know, which a newer Minutas may have
+# written, is kept, so writing a recording back never drops it.
+STORED = ConfigDict(extra="allow", strict=True)
+
+
+@with_config(STORED)
 class Recording(TypedDict):
     id: str
     started_at: str
@@ -67,6 +75,7 @@ class Recording(TypedDict):
     echo_cancelled: NotRequired[bool]
 
 
+@with_config(STORED)
 class Segment(TypedDict):
     """What one speaker said in one turn, as the transcriber leaves it."""
 
@@ -78,6 +87,7 @@ class Segment(TypedDict):
     text: str
 
 
+@with_config(STORED)
 class Choice(TypedDict):
     """What a failed run asks before it can go on.
 
@@ -89,6 +99,7 @@ class Choice(TypedDict):
     page_id: NotRequired[str]
 
 
+@with_config(STORED)
 class Progress(TypedDict):
     """How far a running transcription has got."""
 
@@ -98,6 +109,7 @@ class Progress(TypedDict):
     percent: int
 
 
+@with_config(STORED)
 class Run(TypedDict):
     action: str
     status: str
@@ -118,6 +130,11 @@ class Run(TypedDict):
     link: NotRequired[str]
     # How far a Transcribe run has got, while it runs.
     progress: NotRequired[Progress]
+
+
+RECORDING = TypeAdapter(Recording)
+RUNS = TypeAdapter(list[Run])
+SEGMENT_LIST = TypeAdapter(list[Segment])
 
 
 def data_dir() -> Path:
@@ -165,13 +182,15 @@ def create_recording(started: datetime) -> Recording:
 
 
 def load_recording(recording_id: str) -> Recording:
-    saved = json.loads((recording_dir(recording_id) / "recording.json").read_text())
+    saved = settings.JSON_OBJECT.validate_json(
+        (recording_dir(recording_id) / "recording.json").read_text()
+    )
     # A recording made before names had a source holds the default name.
-    return {"name_source": "default", **saved}
+    return RECORDING.validate_python({"name_source": "default", **saved})
 
 
 def load_runs(recording_id: str) -> list[Run]:
-    return cast("list[Run]", json.loads((recording_dir(recording_id) / "runs.json").read_text()))
+    return RUNS.validate_json((recording_dir(recording_id) / "runs.json").read_text())
 
 
 def save_runs(recording_id: str, runs: list[Run]) -> None:
@@ -389,8 +408,9 @@ def format_transcript(segments: Iterable[Segment], names: Mapping[str, str]) -> 
 
 
 def load_segments(recording_id: str) -> list[Segment]:
-    segments = (recording_dir(recording_id) / SEGMENTS).read_text(encoding="utf-8")
-    return cast("list[Segment]", json.loads(segments))
+    return SEGMENT_LIST.validate_json(
+        (recording_dir(recording_id) / SEGMENTS).read_text(encoding="utf-8")
+    )
 
 
 def save_speakers(recording: Recording, segments: list[Segment], speakers: dict[str, str]) -> None:
