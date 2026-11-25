@@ -10,12 +10,13 @@ from datetime import datetime
 from minutas import store
 
 TRANSCRIBE, SUMMARIZE, PUBLISH = "transcribe", "summarize", "publish_agaric"
-PUBLISH_GITLAB = "publish_gitlab"
+PUBLISH_GITLAB, PUBLISH_GITHUB = "publish_gitlab", "publish_github"
 # The actions the window runs as commands, by the title it gives them.
 COMMAND_TITLES = {
     SUMMARIZE: "Summarize",
     PUBLISH: "Publish to Agaric",
     PUBLISH_GITLAB: "Publish to GitLab",
+    PUBLISH_GITHUB: "Publish to GitHub",
 }
 TRACK_TITLES = dict(zip(store.TRACKS, ("Microphone", "Call"), strict=True))
 # Each starts the Rename dialog's body, a sentence of its own.
@@ -108,6 +109,7 @@ class RowView:
     summarize: ActionView
     publish: ActionView
     publish_gitlab: ActionView
+    publish_github: ActionView
     # When the age limit deletes the tracks; empty when it never will.
     kept_until: str = ""
     # Why Move to Trash refuses; empty when the recording can go.
@@ -243,6 +245,31 @@ def subtitle(recording: store.Recording, transcribing: str | None) -> str:
     return " · ".join(part for part in said if part is not None)
 
 
+def link_publisher(
+    runs: Sequence[store.Run], action: str, *, running: bool, tool_problem: str, disabled: str
+) -> tuple[ActionView, bool]:
+    """Publish to GitLab or GitHub, whose every press asks for a link, starting from the newest
+    run's; and whether that run failed.
+
+    tool_problem: why its tool is missing or too old, empty when it is there. disabled: why the
+    button can't be pressed, empty when it can.
+    """
+    last = last_result(runs, action, "Not published", "Publish", "Publish again")
+    label = f"{last.label}…"
+    if running:
+        shown = ActionView(result="Running", label=label, disabled="Publishing", output=last.output)
+        return shown, last.failed
+    newest = latest(runs, action)
+    shown = replace(
+        last,
+        label=label,
+        result=" · ".join(filter(None, [last.result, tool_problem])),
+        link=None if newest is None else newest[1].get("link"),
+        disabled=disabled,
+    )
+    return shown, last.failed
+
+
 def row(  # noqa: PLR0913 - each is a separate input to the row; all after tracks go by name
     recording: store.Recording,
     runs: Sequence[store.Run],
@@ -262,6 +289,7 @@ def row(  # noqa: PLR0913 - each is a separate input to the row; all after track
     """
     summarizer_missing = missing_tools.get(SUMMARIZE, "")
     glab_problem = missing_tools.get(PUBLISH_GITLAB, "")
+    gh_problem = missing_tools.get(PUBLISH_GITHUB, "")
     publishing, summarizing = PUBLISH in running, SUMMARIZE in running
     stopped = recording["stopped_at"] is not None
     still_recording = "" if stopped else STILL_RECORDING
@@ -321,26 +349,21 @@ def row(  # noqa: PLR0913 - each is a separate input to the row; all after track
     else:
         publish = replace(last_publish, disabled=still_recording)
 
-    # Every press asks for a link, starting from the newest run's.
-    last_gitlab = last_result(runs, PUBLISH_GITLAB, "Not published", "Publish", "Publish again")
-    last_gitlab = replace(last_gitlab, label=f"{last_gitlab.label}…")
-    if PUBLISH_GITLAB in running:
-        publish_gitlab = ActionView(
-            result="Running",
-            label=last_gitlab.label,
-            disabled="Publishing",
-            output=last_gitlab.output,
-        )
-    else:
-        gitlab_run = latest(runs, PUBLISH_GITLAB)
-        publish_gitlab = replace(
-            last_gitlab,
-            result=" · ".join(filter(None, [last_gitlab.result, glab_problem])),
-            link=None if gitlab_run is None else gitlab_run[1].get("link"),
-            disabled=still_recording
-            or glab_problem
-            or ("" if last_summary.output is not None else NO_SUMMARY),
-        )
+    no_summary = "" if last_summary.output is not None else NO_SUMMARY
+    publish_gitlab, gitlab_failed = link_publisher(
+        runs,
+        PUBLISH_GITLAB,
+        running=PUBLISH_GITLAB in running,
+        tool_problem=glab_problem,
+        disabled=still_recording or glab_problem or no_summary,
+    )
+    publish_github, github_failed = link_publisher(
+        runs,
+        PUBLISH_GITHUB,
+        running=PUBLISH_GITHUB in running,
+        tool_problem=gh_problem,
+        disabled=still_recording or gh_problem or no_summary,
+    )
 
     kept_until = ""
     if age_limit_days is not None and tracks and store.may_lose_audio(recording, runs):
@@ -355,7 +378,8 @@ def row(  # noqa: PLR0913 - each is a separate input to the row; all after track
         warning=transcribe.failed
         or last_summary.failed
         or last_publish.failed
-        or last_gitlab.failed,
+        or gitlab_failed
+        or github_failed,
         tracks=tuple(
             TrackView(
                 file=name,
@@ -377,6 +401,7 @@ def row(  # noqa: PLR0913 - each is a separate input to the row; all after track
         summarize=summarize,
         publish=publish,
         publish_gitlab=publish_gitlab,
+        publish_github=publish_github,
         kept_until=kept_until,
         trash_disabled=trash_refusal(recording, runs, running),
     )

@@ -200,6 +200,44 @@ def test_glab_snap_says_to_install_the_deb_instead(sandbox: Sandbox) -> None:
     )
 
 
+# --- gh ----------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "version", ["gh version 2.45.0 (2024-03-04)", "gh version 3.0.1 (2027-01-01)\nhttps://x"]
+)
+def test_gh_new_enough_on_the_path_is_ok(sandbox: Sandbox, version: str) -> None:
+    sandbox.fake("gh", f'echo "{version}"')
+
+    result = sandbox.run("step_gh")
+
+    assert result.stdout == "gh: ok\n"
+    assert sandbox.calls() == ["gh --version"]
+
+
+@pytest.mark.parametrize(
+    ("version", "found"),
+    [
+        ("gh version 2.44.1 (2024-02-01)", "the PATH has gh 2.44.1"),
+        ("gh version 1.99.0 (2021-01-01)", "the PATH has gh 1.99.0"),
+        (None, "gh isn't on the PATH"),
+    ],
+)
+def test_gh_older_or_missing_says_where_to_get_it(
+    sandbox: Sandbox, version: str | None, found: str
+) -> None:
+    if version is not None:
+        sandbox.fake("gh", f'echo "{version}"')
+
+    result = sandbox.run("step_gh")
+
+    assert result.returncode == 0
+    assert result.stdout == (
+        f"gh: {found}; Publish to GitHub stays off until gh 2.45 or newer is installed: "
+        "`sudo apt install gh`, or see https://cli.github.com\n"
+    )
+
+
 # --- App ---------------------------------------------------------------------------------------
 
 

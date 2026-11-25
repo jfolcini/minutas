@@ -137,6 +137,14 @@ test('a newly failed action is announced by its display name', () => {
     ]);
 });
 
+test('a failed Publish to GitHub is announced by its display name', () => {
+    const previous = status(null, [entry()]);
+    const current = status(null, [entry({failed: ['publish_github']})]);
+    assertEqual(notificationsFor(previous, current), [
+        {recordingId: entry().id, title: 'Publish to GitHub failed', body: 'Meeting, 2026-11-18 12:00'},
+    ]);
+});
+
 test('an unchanged snapshot announces nothing again', () => {
     const same = status(null, [entry({failed: ['summarize']})]);
     assertEqual(notificationsFor(same, same), []);

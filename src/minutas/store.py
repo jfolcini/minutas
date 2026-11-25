@@ -22,7 +22,7 @@ TRANSCRIPT = "transcript.md"
 # The transcriber's key for the mic track's speaker, who has no other name.
 ME = "Me"
 SUMMARY = "summary.md"
-ACTIONS = ("transcribe", "summarize", "publish_agaric", "publish_gitlab")
+ACTIONS = ("transcribe", "summarize", "publish_agaric", "publish_gitlab", "publish_github")
 RECENT_IN_STATUS = 5
 INTERRUPTED = "interrupted"
 # Where a name can come from, lowest first: a name gives way only to one from as high a source.
@@ -89,7 +89,7 @@ class Run(TypedDict):
     note: NotRequired[str | None]
     # What a Summarize run asked Devin, so Retry asks the same.
     prompt: NotRequired[str]
-    # The issue or project link a Publish to GitLab run posted to, which the next one offers.
+    # The link a Publish to GitLab or GitHub run posted to, which the next one offers.
     link: NotRequired[str]
     # How far a Transcribe run has got, while it runs.
     progress: NotRequired[Progress]

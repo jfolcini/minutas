@@ -180,3 +180,20 @@ def test_set_gitlab_link_keeps_it_with_the_other_settings_and_none_clears_it() -
     settings.set_gitlab_link(None)
 
     assert settings.gitlab_link() is None
+
+
+def test_no_default_github_link_is_set_until_one_is() -> None:
+    assert settings.github_link() is None
+
+
+def test_set_github_link_keeps_it_with_the_other_settings_and_none_clears_it() -> None:
+    settings.set_summary_model("swe-2-high")
+
+    settings.set_github_link("https://github.com/owner/repo")
+
+    assert settings.github_link() == "https://github.com/owner/repo"
+
+    settings.set_github_link(None)
+
+    assert settings.github_link() is None
+    assert settings.summary_model() == "swe-2-high"
