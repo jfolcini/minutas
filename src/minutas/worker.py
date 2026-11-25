@@ -94,8 +94,11 @@ def vocabulary_names() -> list[str]:
 
 
 def vocabulary_words(file: Path) -> list[str]:
+    """Its words; none once it has been deleted."""
     try:
         return file.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        return []
     except (OSError, UnicodeDecodeError):
         raise WorkerError(VOCABULARY_UNREADABLE.format(path=file)) from None
 
@@ -106,8 +109,7 @@ def word_list(recording_id: str) -> list[str]:
     attendees = store.load_recording(recording_id).get("attendees", [])
     used = settings.vocabularies()
     names = [name for name in [settings.GLOSSARY, *vocabulary_names()] if name in used]
-    files = [file for file in map(vocabulary_file, names) if file.is_file()]
-    listed = [line for file in files for line in vocabulary_words(file)]
+    listed = [line for name in names for line in vocabulary_words(vocabulary_file(name))]
     phrases = (phrase.strip() for phrase in [*attendees, *listed])
     return list(dict.fromkeys(phrase for phrase in phrases if phrase))
 
