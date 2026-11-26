@@ -177,7 +177,7 @@ The program rewrites `DATA/status.json` atomically after every change, and the e
 - A recording that was stopped and continued says `"continued": true`, and the time it was stopped is in its `paused_seconds`: its `started_at` stays, and its timer goes on from where it stopped.
 - `incomplete` means the recorder died before Finish; what it captured is kept.
 - `transcribe` is the latest Transcribe run's status, or `null`; `progress` is how far it has got while it runs, its phase and the whole percent of that phase done (`{"phase": "identifying speakers", "percent": 40}`), else `null`; `failed` lists the actions whose latest run failed: `transcribe`, `summarize`, `publish_agaric`, `publish_gitlab`, `publish_github`.
-- `transcribing` says a Transcribe run is queued or running on any recording, one older than `recent` holds included, as Run again in the Recordings window can make it.
+- `transcribing` says a Transcribe run is queued or running on any recording, one older than `recent` holds included, which the Recordings window can transcribe too.
 - `continuable` says `minutas record continue` would take the recording now: nothing is recording, its latest Transcribe run has not succeeded, both its tracks are there, and no part of an earlier Continue is still to be joined.
 
 ## Installing and updating
