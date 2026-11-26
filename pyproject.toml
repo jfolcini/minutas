@@ -1,6 +1,6 @@
 [project]
 name = "minutas"
-version = "0.0.1"
+version = "0.0.2"
 description = "Records work meetings on GNOME, transcribes them and publishes them to Agaric, GitLab and GitHub."
 readme = "README.md"
 license = "GPL-3.0-or-later"
