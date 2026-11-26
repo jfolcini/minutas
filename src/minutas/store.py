@@ -615,5 +615,11 @@ def write_status() -> None:
                 recent_entry(r, runs, idle=active is None)
                 for r, runs in stopped[: settings.recent_in_menu()]
             ],
+            # Any recording's, not only recent's: Run again reaches every recording.
+            "transcribing": any(
+                run["action"] == "transcribe" and run["status"] in {"queued", "running"}
+                for _, runs in read
+                for run in runs
+            ),
         }
         write_json(data_dir() / "status.json", status)
