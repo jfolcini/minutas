@@ -533,7 +533,7 @@ def test_a_recording_abandoned_with_no_audio_since_before_its_pauses_lasted_no_t
 def test_status_with_nothing_recorded() -> None:
     store.write_status()
 
-    assert read_status() == {"version": 1, "recording": None, "recent": []}
+    assert read_status() == {"version": 1, "recording": None, "recent": [], "transcribing": False}
 
 
 def test_status_lists_the_active_recording_and_five_newest_stopped() -> None:
@@ -734,6 +734,34 @@ def test_status_says_how_far_the_latest_transcription_has_got() -> None:
     recent = read_status()["recent"]
     assert isinstance(recent, list)
     assert (recent[0]["transcribe"], recent[0]["progress"]) == ("running", progress)
+
+
+@pytest.mark.parametrize("queued_or_running", ["queued", "running"])
+def test_status_says_a_transcription_is_under_way_on_a_recording_older_than_recent(
+    queued_or_running: str,
+) -> None:
+    oldest = make_stopped(START)
+    write_runs(oldest, [a_run("transcribe", "succeeded"), a_run("transcribe", queued_or_running)])
+    make_stopped(START + timedelta(hours=1))
+    settings.set_recent_in_menu(1)
+
+    store.write_status()
+
+    status = read_status()
+    recent = status["recent"]
+    assert isinstance(recent, list)
+    assert [entry["id"] for entry in recent] == ["2026-11-18T14-05-42"]
+    assert status["transcribing"] is True
+
+
+def test_status_says_no_transcription_is_under_way_once_every_one_has_ended() -> None:
+    recording_id = make_stopped(START)
+    ended = [a_run("transcribe", status) for status in ("succeeded", "failed", "cancelled")]
+    write_runs(recording_id, [*ended, a_run("summarize", "running")])
+
+    store.write_status()
+
+    assert read_status()["transcribing"] is False
 
 
 def test_status_has_no_progress_before_the_transcriber_says_any() -> None:

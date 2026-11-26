@@ -33,12 +33,37 @@ const entry = (fields = {}) => ({
 const SPEAKERS = {phase: 'identifying speakers', percent: 40};
 
 const ACTIVE = {id: '2026-11-18T13-05-42', started_at: '2026-11-18T13:05:42+01:00'};
-/** @type {(recording: Active | null, recent: Recent[]) => import('../status.js').Status} */
-const status = (recording, recent) => ({recording, recent});
+/**
+ * @type {(recording: Active | null, recent: Recent[], transcribing?: boolean) =>
+ *     import('../status.js').Status}
+ */
+const status = (recording, recent, transcribing = false) => ({recording, recent, transcribing});
 
 test('parseStatus reads the contract example', () => {
-    const text = JSON.stringify({version: 1, recording: ACTIVE, recent: [entry()]});
+    const text = JSON.stringify({
+        version: 1,
+        recording: ACTIVE,
+        recent: [entry()],
+        transcribing: false,
+    });
     expect(parseStatus(text)).toStrictEqual(status(ACTIVE, [entry()]));
+});
+
+test('parseStatus reads that a transcription is under way', () => {
+    const text = JSON.stringify({version: 1, recording: null, recent: [], transcribing: true});
+    expect(parseStatus(text)).toStrictEqual(status(null, [], true));
+});
+
+test('parseStatus reads a status.json written before transcribing was in it as none under way', () => {
+    const text = JSON.stringify({version: 1, recording: null, recent: [entry()]});
+    expect(parseStatus(text)).toStrictEqual(status(null, [entry()], false));
+});
+
+test('parseStatus rejects a transcribing that is not true or false', () => {
+    const rejected = ['yes', 1, null].map(transcribing =>
+        parseStatus(JSON.stringify({version: 1, recording: null, recent: [], transcribing}))
+    );
+    expect(rejected).toStrictEqual([null, null, null]);
 });
 
 test("parseStatus reads a running transcription's progress", () => {

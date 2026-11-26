@@ -271,7 +271,7 @@ def test_record_start_failure_leaves_no_recording(
 
     assert capsys.readouterr().err == "Could not start the recorder: Failed to connect to bus\n"
     assert list(store.recordings_dir().iterdir()) == []
-    assert read_status() == {"version": 1, "recording": None, "recent": []}
+    assert read_status() == {"version": 1, "recording": None, "recent": [], "transcribing": False}
 
 
 def died_at_once(folder: Path) -> None:
@@ -295,7 +295,7 @@ def test_record_start_removes_what_a_recorder_that_died_at_once_left(
         "Could not start the recorder: no audio reached its tracks\n",
     )
     assert list(store.recordings_dir().iterdir()) == []
-    assert read_status() == {"version": 1, "recording": None, "recent": []}
+    assert read_status() == {"version": 1, "recording": None, "recent": [], "transcribing": False}
 
 
 def test_record_start_keeps_audio_a_failed_start_captured(
@@ -619,7 +619,7 @@ def test_record_discard_stops_the_recorder_and_moves_the_recording_to_the_trash(
     assert fake_calendar.asked == []
     assert fake_worker.starts == 0
     assert json.loads((fake_trash.into / recording_id / "runs.json").read_text()) == []
-    assert read_status() == {"version": 1, "recording": None, "recent": []}
+    assert read_status() == {"version": 1, "recording": None, "recent": [], "transcribing": False}
 
 
 def test_record_discard_keeps_a_recording_the_trash_refused_and_says_why(
@@ -1822,16 +1822,16 @@ def test_record_continue_records_into_the_recording_again_and_cancels_its_transc
     assert fake_recorder.tracks == [("mic.continued.opus", "call.continued.opus")]
     assert fake_worker.cancelled == [(recording_id, 1)]
     # The time since the stop is one more pause: the timer goes on from the minute it had.
-    assert read_status() == {
-        "version": 1,
-        "recording": {
+    status = read_status()
+    assert (status["recording"], status["recent"]) == (
+        {
             "id": recording_id,
             "started_at": "2026-11-18T13:05:42+00:00",
             "paused_seconds": 40,
             "continued": True,
         },
-        "recent": [],
-    }
+        [],
+    )
 
 
 @pytest.mark.parametrize("transcriptions", [[], ["failed"], ["queued", "cancelled"]])

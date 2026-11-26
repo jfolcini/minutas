@@ -70,7 +70,7 @@ case "\$*" in
     ;;
   "record stop")
     read -r id at <"$WORK/active"
-    write "{\"version\":1,\"recording\":null,\"recent\":[{\"id\":\"\$id\",\"name\":\"Meeting\",\"started_at\":\"\$at\",\"duration_seconds\":7,\"incomplete\":false,\"transcribe\":\"queued\",\"failed\":[]}]}"
+    write "{\"version\":1,\"recording\":null,\"recent\":[{\"id\":\"\$id\",\"name\":\"Meeting\",\"started_at\":\"\$at\",\"duration_seconds\":7,\"incomplete\":false,\"transcribe\":\"queued\",\"failed\":[]}],\"transcribing\":true}"
     ;;
   "record discard")
     write '{"version":1,"recording":null,"recent":[]}'
@@ -106,6 +106,7 @@ B="Main.panel.statusArea['$UUID']"
 MENU="$B.menu._getMenuItems().filter(i => i.actor.visible || i.label?.text === '').flatMap(i => i._getMenuItems ? i._getMenuItems().map(j => j.label.text + (j.get_n_children() > 2 ? ' [warning icon]' : '')) : [i.label.text || '---'])"
 PANEL="({recordingStyle: $B.has_style_class_name('screen-recording-indicator'), timerVisible: $B.get_first_child().get_child_at_index(1).visible})"
 PILL="({recording: $B.has_style_class_name('screen-recording-indicator'), paused: $B.has_style_class_name('screen-sharing-indicator'), icon: $B.get_first_child().get_child_at_index(0).icon_name})"
+TRANSCRIBING="$B.get_first_child().get_child_at_index(2).visible"
 RECORDING_ITEMS='"Finish","Discard…",'
 # The confirmation dialogs on screen (the Shell keeps hidden ones of its own); of the open ones
 # (0 is the Shell's State.OPENED), the title and the buttons.
@@ -228,6 +229,7 @@ expect "$DIALOG" "'[]'"
 expect "$MENU" '["Record","---","Meeting · '
 expect "$MENU" ' · 0:07 · transcribing…","Cancel transcription","---","Recordings","Settings"]'
 expect "$PANEL" '{"recordingStyle":false,"timerVisible":false}'
+expect "$TRANSCRIBING" "'true'"
 read -r id at <"$WORK/active"
 meeting=$(recent "$id" Meeting "$at" 7 false '"succeeded"' '["summarize"]')
 
@@ -267,6 +269,7 @@ expect "$NOTES" "Transcribe failed | Meeting"
 echo "== transcript ready, and clicking it opens the history"
 write_status "{\"version\":1,\"recording\":null,\"recent\":[$(recent "$id" Meeting "$at" 7 false '"succeeded"' '[]')]}"
 expect "$NOTES" "Transcript ready | Meeting, ${at:0:10} ${at:11:5}"
+expect "$TRANSCRIBING" "'false'"
 ev "Main.messageTray.getSources().find(s => s.title === 'Minutas').notifications.find(n => n.title === 'Transcript ready').activate()" >/dev/null
 sleep 1
 expect_log "history --recording $id"

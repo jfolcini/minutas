@@ -86,7 +86,7 @@ Then it checks for the optional tools, installs none of them, and says what each
 </p>
 
 1. **Record.** Open the microphone menu in the top bar and choose Record. A notification reminds you to tell the participants. Choose Finish when the meeting ends.
-2. **Wait for the transcript.** Transcription starts on its own. The top-bar menu and the Recordings window show how far it has got, and a notification says when the transcript is ready: click it, or the recording in the menu, to open it in the Recordings window.
+2. **Wait for the transcript.** Transcription starts on its own. A yellow dot beside the top-bar microphone says one is waiting or running, which can slow the computer down; the top-bar menu and the Recordings window show how far it has got, and a notification says when the transcript is ready: click it, or the recording in the menu, to open it in the Recordings window.
 3. **Name the speakers.** Expand the recording: the call's speakers are listed as Speaker 1, Speaker 2… in the order they first speak. Name each one with its Name menu, from the meeting's attendees or a name you type, and the transcript is written again with the names. "Me" is always the microphone track.
 4. **Summarize.** Pick a preset from the Summarize menu, or Custom… to type what the summary should cover.
 5. **Publish.** Publish to Agaric, Publish to GitLab or Publish to GitHub. GitLab and GitHub ask for a link: an issue link gets a comment, a project or repository link a new issue. Each run keeps its result and a button that opens it.

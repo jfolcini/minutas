@@ -11,7 +11,7 @@
  * @typedef {Recording & {name: string, duration_seconds: number, incomplete: boolean,
  *     transcribe: RunStatus, progress?: Progress | null, failed: string[], continuable?: boolean}} Recent
  */
-/** @typedef {{recording: Active | null, recent: Recent[]}} Status */
+/** @typedef {{recording: Active | null, recent: Recent[], transcribing: boolean}} Status */
 /** @typedef {{recordingId: string, title: string, body: string}} Notice */
 /** @typedef {{title: string, body: string}} Reminder */
 /** @typedef {{label: string, args: string[], failureTitle: string}} Control */
@@ -29,7 +29,7 @@ const ACTION_NAMES = {
 
 // What a missing status.json means: nothing has been recorded yet.
 /** @type {Status} */
-export const EMPTY_STATUS = {recording: null, recent: []};
+export const EMPTY_STATUS = {recording: null, recent: [], transcribing: false};
 
 // The validators take what JSON.parse returns.
 /** @param {any} value */
@@ -100,10 +100,15 @@ export function parseStatus(text) {
         data?.version !== 1 ||
         !(data.recording === null || isActive(data.recording)) ||
         !Array.isArray(data.recent) ||
-        !data.recent.every(isRecent)
+        !data.recent.every(isRecent) ||
+        !isFlag(data.transcribing)
     )
         return null;
-    return {recording: data.recording, recent: data.recent};
+    return {
+        recording: data.recording,
+        recent: data.recent,
+        transcribing: data.transcribing === true,
+    };
 }
 
 /** @param {string} startedAt */

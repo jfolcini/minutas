@@ -30,6 +30,9 @@ const PAUSED_ICON = 'media-playback-pause-symbolic';
 // timer, red while it records and orange while it is paused.
 const RECORDING_STYLE = 'screen-recording-indicator';
 const PAUSED_STYLE = 'screen-sharing-indicator';
+// A transcription queued or running, the work that can slow the computer down: libadwaita's yellow.
+const TRANSCRIBING_STYLE =
+    'width: 8px; height: 8px; border-radius: 4px; background-color: #f6d32d;';
 // The Shell's theme has no destructive button: libadwaita's red, readable on its light and dark.
 const DESTRUCTIVE_STYLE = 'background-color: #c01c28; color: #ffffff;';
 const INSTALL_URL = 'https://github.com/jfolcini/minutas#install';
@@ -54,6 +57,12 @@ export default class MinutasExtension extends Extension {
         box.add_child(this._icon);
         this._elapsedLabel = new St.Label({y_align: Clutter.ActorAlign.CENTER, visible: false});
         box.add_child(this._elapsedLabel);
+        this._transcribingDot = new St.Widget({
+            style: TRANSCRIBING_STYLE,
+            y_align: Clutter.ActorAlign.CENTER,
+            visible: false,
+        });
+        box.add_child(this._transcribingDot);
         this._button.add_child(box);
 
         const menu = this._button.menu;
@@ -123,6 +132,7 @@ export default class MinutasExtension extends Extension {
         this._button = null;
         this._icon = null;
         this._elapsedLabel = null;
+        this._transcribingDot = null;
         this._installItem = null;
         this._recordItem = null;
         this._pauseItem = null;
@@ -173,9 +183,10 @@ export default class MinutasExtension extends Extension {
     }
 
     _render() {
-        const {recording, recent} = this._status;
+        const {recording, recent, transcribing} = this._status;
         const paused = Boolean(recording?.paused_at);
         this._showItems();
+        this._transcribingDot.visible = transcribing;
         this._pauseItem.label.text = paused ? 'Resume' : 'Pause';
         this._icon.icon_name = paused ? PAUSED_ICON : ICON;
         this._elapsedLabel.visible = recording !== null;
