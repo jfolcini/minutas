@@ -355,8 +355,14 @@ touch "$WORK/fail-next"
 click Record
 expect "$NOTES" "Couldn't start recording | error: already recording"
 
-echo "== no minutas on the PATH or in ~/.local/bin: the notification and the menu open the install instructions"
+echo "== no minutas on the PATH or in ~/.local/bin: enabling says nothing; the notification and the menu open the install instructions"
 mv "$WORK/bin/minutas" "$WORK/minutas.away"
+gnome-extensions disable "$UUID"
+expect "$B === undefined" "'true'"
+gnome-extensions enable "$UUID"
+expect "$MENU" '["Install Minutas…","---","---"]'
+sleep 1
+expect "$NOTES" "'[]'"
 click Record
 expect "$NOTES" "Minutas isn't installed"
 ev "Main.messageTray.getSources().find(s => s.title === 'Minutas').notifications.find(n => n.title.startsWith('Minutas isn')).activate()" >/dev/null
