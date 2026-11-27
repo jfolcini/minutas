@@ -41,7 +41,8 @@ export default class MinutasExtension extends Extension {
     enable() {
         this._cancellable = new Gio.Cancellable();
         // Kept across disable: the Shell disables extensions while the screen is locked, and
-        // what happened meanwhile (a transcript, a failed run) is announced after unlocking.
+        // what happened meanwhile (a transcript, a failed run) is announced after unlocking. It
+        // is plain data parsed from status.json, holding nothing of the Shell's.
         this._status ??= EMPTY_STATUS;
         this._statusReads = 0;
         this._timerId = null;
@@ -99,8 +100,10 @@ export default class MinutasExtension extends Extension {
         this._render();
         this._readStatus();
         // Enable runs at login, after a crash or a logout may have left a recording open or
-        // transcriptions queued, some on recordings older than status.json lists.
-        this._run(['repair'], "Couldn't start transcribing");
+        // transcriptions queued, some on recordings older than status.json lists. Without the
+        // command, running it would only announce "Minutas isn't installed" at every login and
+        // unlock; the menu already offers to install it.
+        if (this._installed) this._run(['repair'], "Couldn't start transcribing");
     }
 
     disable() {
@@ -108,6 +111,8 @@ export default class MinutasExtension extends Extension {
         this._monitor.disconnect(this._monitorId);
         this._monitor.cancel();
         this._stopTimer();
+        // Destroying the source also destroys its notifications; the handlers connected on these
+        // and on the dialog go with them.
         this._source?.destroy();
         // The silence reminder went with the source, so a silence still going once the screen
         // is unlocked reminds again.
@@ -117,14 +122,15 @@ export default class MinutasExtension extends Extension {
                 recording: {...this._status.recording, silent_since: undefined},
             };
         this._dialog?.destroy();
-        // The Shell ties handlers between the panel, the menu and the section to owners without a
-        // destroy signal, so destroy() leaves them connected, and they would keep every disabled
-        // indicator alive.
+        // Panel._onMenuSet and PopupMenuBase.addMenuItem connect handlers between the panel, the
+        // menu and the section with connectObject, to owners without a destroy signal, so
+        // destroy() leaves them connected, and they would keep every disabled indicator alive.
         const menu = this._button.menu;
         menu.disconnect(this._menuOpenId);
         menu.disconnectObject(Main.panel);
         menu.disconnectObject(this._recentSection);
         this._recentSection.disconnectObject(menu);
+        // Its children go with it: the icon, the timer and the dot, and the menu with its items.
         this._button.destroy();
         this._cancellable = null;
         this._monitor = null;
@@ -342,6 +348,9 @@ export default class MinutasExtension extends Extension {
         Gio.AppInfo.launch_default_for_uri(INSTALL_URL, global.create_app_launch_context(0, -1));
     }
 
+    // Every action is a minutas command: recording and transcribing run in the program's own
+    // services, outside the Shell. Disabling stops waiting for a command, not the command, so a
+    // Recordings window it opened stays open through the lock screen.
     _run(args, failureTitle, onSuccess) {
         const executable = this._findCommand();
         if (!executable) {
